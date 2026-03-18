@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 
 STEP_PATTERN = re.compile(r"step_(\d+)_last_hidden_states_meta\.pt$")
-DEFAULT_VLAC_MODEL_PATH = os.environ.get("CRITIC4VLA_VLAC_MODEL_PATH", "/data/yxz/models/VLAC")
+DEFAULT_VLAC_MODEL_PATH = os.environ.get("CRITIC4VLA_VLAC_MODEL_PATH", "VLAC_model_path")
 DEFAULT_VLAC_MODEL_TYPE = os.environ.get("CRITIC4VLA_VLAC_MODEL_TYPE", "internvl2")
 
 
