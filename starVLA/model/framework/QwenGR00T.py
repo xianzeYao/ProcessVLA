@@ -35,6 +35,7 @@ logger = initialize_overwatch(__name__)
 IGNORE_INDEX = -100
 
 from starVLA.model.framework.base_framework import baseframework
+from starVLA.model.framework.signal_utils import build_signal_save_payload, compute_signal
 from starVLA.model.modules.vlm import get_vlm_model
 from starVLA.model.modules.action_model.GR00T_ActionHeader import get_action_model, FlowmatchingActionHead
 from starVLA.training.trainer_utils.trainer_tools import resize_images
@@ -127,7 +128,34 @@ class Qwen_GR00T(baseframework):
                 )
                 state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
 
-            action_loss = self.action_model(last_hidden_repeated, actions_target_repeated, state_repeated)  # (B, chunk_len, action_dim)
+            use_signal_train = kwargs.get(
+                "use_signal_train",
+                self.config.framework.get("use_signal_train", False),
+            )
+            signal_repeated = None
+            if use_signal_train:
+                cached_signals = [example.get("signal", None) for example in examples]
+                if all(signal is not None for signal in cached_signals):
+                    signal = torch.as_tensor(
+                        np.asarray(cached_signals),
+                        device=last_hidden.device,
+                        dtype=last_hidden.dtype,
+                    ).reshape(len(examples))
+                else:
+                    signal = compute_signal(
+                        batch_images=batch_images,
+                        instructions=instructions,
+                        device=last_hidden.device,
+                        dtype=last_hidden.dtype,
+                    )
+                signal_repeated = signal.repeat(repeated_diffusion_steps)
+
+            action_loss = self.action_model(
+                last_hidden_repeated,
+                actions_target_repeated,
+                state_repeated,
+                signal=signal_repeated,
+            )  # (B, chunk_len, action_dim)
 
 
 
@@ -172,11 +200,55 @@ class Qwen_GR00T(baseframework):
             # last_hidden_state: [B, seq_len, H]
             last_hidden = qwenvl_outputs.hidden_states[-1]   # [B, L, H]
 
+        base_last_hidden = last_hidden
+        use_signal = kwargs.get(
+            "use_signal",
+            self.config.framework.get("use_signal_infer", False),
+        )
+        inject_signal = kwargs.get(
+            "inject_signal",
+            self.config.framework.get("inject_signal_infer", False),
+        )
+        use_signal = bool(use_signal or inject_signal)
+        inject_signal = bool(inject_signal)
+        signal = None
+        if use_signal:
+            signal = compute_signal(
+                batch_images=batch_images,
+                instructions=instructions,
+                device=last_hidden.device,
+                dtype=last_hidden.dtype,
+            )
+
+        hidden_save_path = kwargs.get("hidden_save_path", None)
+        if hidden_save_path:
+            save_payload = build_signal_save_payload(
+                qwen_inputs=qwen_inputs,
+                last_hidden=last_hidden,
+                base_last_hidden=base_last_hidden,
+                signal=signal,
+                batch_images=batch_images,
+                instructions=instructions,
+                tokenizer=self.qwen_vl_interface.processor.tokenizer,
+                image_token_id=self.qwen_vl_interface.model.config.image_token_id,
+            )
+            save_payload["signal_flags"] = {
+                "use_signal": use_signal,
+                "inject_signal": inject_signal,
+            }
+            save_path = Path(hidden_save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(save_payload, save_path)
+
         state = torch.from_numpy(np.array(state)).to(last_hidden.device, dtype=last_hidden.dtype) if state is not None else None
         
         # Step 4: Action Expert Forward
         with torch.autocast("cuda", dtype=torch.float32):
-            pred_actions = self.action_model.predict_action(last_hidden, state)  # (B, chunk_len, action_dim)
+            pred_actions = self.action_model.predict_action(
+                last_hidden,
+                state,
+                signal=signal if inject_signal else None,
+            )  # (B, chunk_len, action_dim)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}

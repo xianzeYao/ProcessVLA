@@ -6,6 +6,7 @@
 
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -266,13 +267,40 @@ class FlowmatchingActionHead(nn.Module):
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
+    def _apply_signal_placeholder(
+        self,
+        vl_embs: torch.Tensor,
+        signal: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if signal is None:
+            return vl_embs
 
-    def forward(self, vl_embs: torch.Tensor, actions: torch.Tensor, state: torch.Tensor = None, encoder_attention_mask=None):
+        signal_tensor = torch.as_tensor(
+            signal, device=vl_embs.device, dtype=vl_embs.dtype
+        ).reshape(-1)
+        if signal_tensor.shape[0] != vl_embs.shape[0]:
+            raise ValueError(
+                f"Signal should have batch dimension {vl_embs.shape[0]}, got {tuple(signal_tensor.shape)}."
+            )
+
+        # Reserved for future signal-conditioning logic.
+        return vl_embs
+
+
+    def forward(
+        self,
+        vl_embs: torch.Tensor,
+        actions: torch.Tensor,
+        state: torch.Tensor = None,
+        encoder_attention_mask=None,
+        signal: Optional[torch.Tensor] = None,
+    ):
         """
         vl_embs: shape (B, seq_length, feature_dim)
         actions: shape (B, future_action_window_size, D_action)
         """
         device = vl_embs.device
+        vl_embs = self._apply_signal_placeholder(vl_embs, signal)
 
         # Embed noised action trajectory.
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
@@ -318,7 +346,12 @@ class FlowmatchingActionHead(nn.Module):
         return loss
 
     @torch.no_grad()
-    def predict_action(self, vl_embs: torch.Tensor, state: torch.Tensor = None) -> torch.Tensor:
+    def predict_action(
+        self,
+        vl_embs: torch.Tensor,
+        state: torch.Tensor = None,
+        signal: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         # Set initial actions as the sampled noise.
         batch_size = vl_embs.shape[0]
         device = vl_embs.device
@@ -332,6 +365,7 @@ class FlowmatchingActionHead(nn.Module):
         dt = 1.0 / num_steps
         
         state_features = self.state_encoder(state) if state is not None else None
+        vl_embs = self._apply_signal_placeholder(vl_embs, signal)
 
         # Run denoising steps.
         for t in range(num_steps):

@@ -31,6 +31,9 @@ class ModelClient:
         adaptive_ensemble_alpha = 0.1,
         host="0.0.0.0",
         port=10095,
+        use_signal: Optional[bool] = None,
+        inject_signal: Optional[bool] = None,
+        signal_dump_root: Optional[str] = None,
     ) -> None:
         
         # build client to connect server policy
@@ -52,6 +55,8 @@ class ModelClient:
         self.previous_gripper_action = None
 
         self.task_description = None
+        self.task_id = None
+        self.episode_idx = None
         self.image_history = deque(maxlen=self.horizon)
         if self.action_ensemble:
             self.action_ensembler = AdaptiveEnsembler(self.action_ensemble_horizon, self.adaptive_ensemble_alpha)
@@ -61,14 +66,42 @@ class ModelClient:
 
         self.action_norm_stats = self.get_action_stats(self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
         self.action_chunk_size = self.get_action_chunk_size(policy_ckpt_path=policy_ckpt_path)
+        self.signal_dump_root = (
+            Path(signal_dump_root).expanduser().resolve()
+            if signal_dump_root
+            else None
+        )
+        self.use_signal_infer = self.resolve_infer_flag(
+            override=use_signal,
+            default=self.get_infer_flag(
+                policy_ckpt_path=policy_ckpt_path,
+                key="use_signal_infer",
+                fallback_key="use_signal",
+            ),
+        )
+        self.inject_signal_infer = self.resolve_infer_flag(
+            override=inject_signal,
+            default=self.get_infer_flag(
+                policy_ckpt_path=policy_ckpt_path,
+                key="inject_signal_infer",
+                fallback_key="inject_signal",
+            ),
+        )
         
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
         self.num_image_history = min(self.num_image_history + 1, self.horizon)
 
-    def reset(self, task_description: str) -> None:
+    def reset(
+        self,
+        task_description: str,
+        task_id: int | None = None,
+        episode_idx: int | None = None,
+    ) -> None:
         self.task_description = task_description
+        self.task_id = task_id
+        self.episode_idx = episode_idx
         self.image_history.clear()
         if self.action_ensemble:
             self.action_ensembler.reset()
@@ -112,6 +145,18 @@ class ModelClient:
 
         action_chunk_size = self.action_chunk_size
         if step % action_chunk_size == 0:
+            if self.signal_dump_root is not None:
+                task_slug = (self.task_description or "unknown_task").replace(" ", "_").replace("/", "_")
+                episode_tag = self.episode_idx if self.episode_idx is not None else 0
+                hiddenstates_file_path = (
+                    self.signal_dump_root
+                    / f"{task_slug}_episode_{episode_tag}"
+                    / f"step_{step}_last_hidden_states_meta.pt"
+                )
+                hiddenstates_file_path.parent.mkdir(parents=True, exist_ok=True)
+                vla_input["hidden_save_path"] = str(hiddenstates_file_path)
+            vla_input["use_signal"] = self.use_signal_infer
+            vla_input["inject_signal"] = self.inject_signal_infer
             response = self.client.predict_action(vla_input)
             try:
                 normalized_actions = response["data"]["normalized_actions"] # B, chunk, D        
@@ -162,6 +207,26 @@ class ModelClient:
         model_config, _ = read_mode_config(policy_ckpt_path)  # read config and norm_stats
         # import ipdb; ipdb.set_trace()
         return model_config['framework']['action_model']['future_action_window_size'] + 1
+
+    @staticmethod
+    def parse_bool_flag(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
+    @staticmethod
+    def resolve_infer_flag(override: Optional[bool], default: bool) -> bool:
+        return default if override is None else bool(override)
+
+    @staticmethod
+    def get_infer_flag(policy_ckpt_path, key: str, fallback_key: Optional[str] = None) -> bool:
+        model_config, _ = read_mode_config(policy_ckpt_path)
+        framework_cfg = model_config.get("framework", {})
+        if key in framework_cfg:
+            return ModelClient.parse_bool_flag(framework_cfg.get(key))
+        if fallback_key is not None and fallback_key in framework_cfg:
+            return ModelClient.parse_bool_flag(framework_cfg.get(fallback_key))
+        return False
 
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:

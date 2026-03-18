@@ -1,15 +1,24 @@
-#!/bin/bash
-export PYTHONPATH=$(pwd):${PYTHONPATH} # let LIBERO find the websocket tools from main repo
-export star_vla_python=/mnt/petrelfs/share/yejinhui/Envs/miniconda3/envs/starVLA/bin/python
-your_ckpt=results/Checkpoints/1208_libero_all_QwenPI_qwen3/checkpoints/steps_50000_pytorch_model.pt
-gpu_id=7
-port=5694
-################# star Policy Server ######################
+#!/usr/bin/env bash
+set -euo pipefail
 
-# export DEBUG=true
-CUDA_VISIBLE_DEVICES=$gpu_id ${star_vla_python} deployment/model_server/server_policy.py \
-    --ckpt_path ${your_ckpt} \
-    --port ${port} \
-    --use_bf16
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "${ROOT_DIR}"
 
-# #################################
+STARVLA_PYTHON="${STARVLA_PYTHON:-python}"
+CKPT_PATH="${CKPT_PATH:-/path/to/checkpoint.pt}"
+GPU_ID="${GPU_ID:-0}"
+PORT="${PORT:-5694}"
+USE_BF16="${USE_BF16:-true}"
+
+cmd=(
+  "${STARVLA_PYTHON}"
+  "deployment/model_server/server_policy.py"
+  "--ckpt_path" "${CKPT_PATH}"
+  "--port" "${PORT}"
+)
+
+if [[ "${USE_BF16}" == "true" ]]; then
+  cmd+=("--use_bf16")
+fi
+
+CUDA_VISIBLE_DEVICES="${GPU_ID}" "${cmd[@]}"

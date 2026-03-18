@@ -49,6 +49,11 @@ from starVLA.dataloader.gr00t_lerobot.schema import (
     LeRobotStateActionMetadata,
 )
 from starVLA.dataloader.gr00t_lerobot.transform import ComposedModalityTransform
+from starVLA.model.framework.signal_utils import (
+    aggregate_signal_at_step,
+    load_signal_curve_npz,
+    signal_cache_curve_path,
+)
 
 from functools import partial
 from typing import Tuple, List
@@ -627,6 +632,12 @@ class LeRobotSingleDataset(Dataset):
         self._modality_keys = self._get_modality_keys()
         self._delta_indices = self._get_delta_indices()
         self._all_steps = self._get_all_steps()
+        self._signal_cache_root = None
+        self._signal_name = "vlac"
+        self._signal_align_mode = "current"
+        self._signal_cache_required = False
+        self._signal_curve_cache: dict[int, np.ndarray | None] = {}
+        self._init_signal_cache()
         self.set_transforms_metadata(self.metadata)
         self.set_epoch(0)
 
@@ -635,6 +646,68 @@ class LeRobotSingleDataset(Dataset):
 
         # Check if the dataset is valid
         self._check_integrity()
+
+    def _init_signal_cache(self) -> None:
+        if self.data_cfg is None:
+            return
+
+        signal_cache_root = self.data_cfg.get("signal_cache_root", None)
+        if not signal_cache_root:
+            return
+
+        self._signal_cache_root = Path(signal_cache_root).expanduser().resolve()
+        self._signal_name = str(self.data_cfg.get("signal_name", "vlac"))
+        self._signal_align_mode = str(self.data_cfg.get("signal_align_mode", "current")).lower()
+        self._signal_cache_required = bool(self.data_cfg.get("signal_cache_required", False))
+
+    def _load_signal_curve_for_trajectory(
+        self,
+        trajectory_id: int,
+        target_length: int,
+    ) -> np.ndarray | None:
+        if self._signal_cache_root is None:
+            return None
+
+        trajectory_id = int(trajectory_id)
+        if trajectory_id not in self._signal_curve_cache:
+            curve_path = signal_cache_curve_path(
+                cache_root=self._signal_cache_root,
+                dataset_name=self.dataset_name,
+                trajectory_id=trajectory_id,
+                signal_name=self._signal_name,
+            )
+            if not curve_path.exists():
+                if self._signal_cache_required:
+                    raise FileNotFoundError(f"Signal cache is missing: {curve_path}")
+                self._signal_curve_cache[trajectory_id] = None
+            else:
+                payload = load_signal_curve_npz(curve_path, target_length=target_length)
+                self._signal_curve_cache[trajectory_id] = payload["curve"]
+        return self._signal_curve_cache[trajectory_id]
+
+    def _lookup_cached_signal(
+        self,
+        trajectory_id: int | None,
+        base_index: int | None,
+        action_chunk_length: int,
+    ) -> float | None:
+        if trajectory_id is None or base_index is None:
+            return None
+
+        trajectory_index = self.get_trajectory_index(int(trajectory_id))
+        target_length = int(self.trajectory_lengths[trajectory_index])
+        curve = self._load_signal_curve_for_trajectory(
+            trajectory_id=int(trajectory_id),
+            target_length=target_length,
+        )
+        if curve is None:
+            return None
+        return aggregate_signal_at_step(
+            curve=curve,
+            base_index=int(base_index),
+            action_chunk_length=action_chunk_length,
+            align_mode=self._signal_align_mode,
+        )
 
     @property
     def dataset_path(self) -> Path:
@@ -1341,9 +1414,14 @@ class LeRobotSingleDataset(Dataset):
         trajectory_id, base_index = self.all_steps[index]
         raw_data = self.get_step_data(trajectory_id, base_index)
         data = self.transforms(raw_data)
-        return self._pack_sample(data)
+        return self._pack_sample(data, trajectory_id=trajectory_id, base_index=base_index)
 
-    def _pack_sample(self, data: dict) -> dict:
+    def _pack_sample(
+        self,
+        data: dict,
+        trajectory_id: int | None = None,
+        base_index: int | None = None,
+    ) -> dict:
         """Pack transformed modality data into training sample format."""
         prim_images = []
         wrist_views = []
@@ -1367,7 +1445,19 @@ class LeRobotSingleDataset(Dataset):
             "image": all_images,
             "lang": language,
             "language": language,
+            "dataset_name": self.dataset_name,
+            "trajectory_id": None if trajectory_id is None else int(trajectory_id),
+            "base_index": None if base_index is None else int(base_index),
         }
+
+        signal_value = self._lookup_cached_signal(
+            trajectory_id=trajectory_id,
+            base_index=base_index,
+            action_chunk_length=int(action.shape[0]) if action.ndim > 0 else 1,
+        )
+        if signal_value is not None:
+            sample["signal"] = np.float32(signal_value)
+            sample["signal_name"] = self._signal_name
 
         if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
             state = []
@@ -2291,7 +2381,11 @@ class LeRobotMixtureDataset(Dataset):
                     
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
-                sample = dataset._pack_sample(data)
+                sample = dataset._pack_sample(
+                    data,
+                    trajectory_id=trajectory_id,
+                    base_index=step,
+                )
                 sample["robot_tag"] = dataset.tag
                 return sample
                 

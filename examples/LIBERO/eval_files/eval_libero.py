@@ -8,6 +8,7 @@ import pathlib
 from pathlib import Path
 import requests
 import time
+from typing import Optional
 
 import imageio
 import numpy as np
@@ -53,6 +54,9 @@ class Args:
     post_process_action: bool = True
 
     job_name: str = "test"
+    use_signal: Optional[bool] = None
+    inject_signal: Optional[bool] = None
+    signal_dump_root: Optional[str] = None
 
 
 def eval_libero(args: Args) -> None:
@@ -84,11 +88,18 @@ def eval_libero(args: Args) -> None:
     else:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}")
 
+    signal_dump_root = args.signal_dump_root
+    if signal_dump_root is None and (args.use_signal or args.inject_signal):
+        signal_dump_root = str(pathlib.Path(args.video_out_path) / "signal_dumps")
+
     client_model = ModelClient(
         policy_ckpt_path=args.pretrained_path, # to get unnormalization stats
         host=args.host,
         port=args.port,
         image_size=args.resize_size,
+        use_signal=args.use_signal,
+        inject_signal=args.inject_signal,
+        signal_dump_root=signal_dump_root,
     )
 
 
@@ -110,7 +121,11 @@ def eval_libero(args: Args) -> None:
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment
-            client_model.reset(task_description=task_description)  # Reset the client connection
+            client_model.reset(
+                task_description=task_description,
+                task_id=task_id,
+                episode_idx=episode_idx,
+            )  # Reset the client connection
             env.reset()
 
             # Set initial states
@@ -119,6 +134,7 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
+            replay_wrist_images = []
             full_actions = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
@@ -143,6 +159,7 @@ def eval_libero(args: Args) -> None:
 
                 # Save preprocessed image for replay video
                 replay_images.append(img)
+                replay_wrist_images.append(wrist_img)
 
                 state = np.concatenate(
                     (
@@ -218,6 +235,12 @@ def eval_libero(args: Args) -> None:
                 pathlib.Path(args.video_out_path)
                 / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
                 [np.asarray(x) for x in replay_images],
+                fps=10,
+            )
+            imageio.mimwrite(
+                pathlib.Path(args.video_out_path)
+                / f"rollout_{task_segment}_wrist_episode{episode_idx}_{suffix}.mp4",
+                [np.asarray(x) for x in replay_wrist_images],
                 fps=10,
             )
             

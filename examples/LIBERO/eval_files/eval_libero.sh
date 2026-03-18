@@ -1,41 +1,45 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd /mnt/petrelfs/yejinhui/Projects/starVLA
-conda activate starVLA
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "${ROOT_DIR}"
 
-###########################################################################################
-# === Please modify the following paths according to your environment ===
-export LIBERO_HOME=/mnt/petrelfs/share/yejinhui/Projects/LIBERO
-export LIBERO_CONFIG_PATH=${LIBERO_HOME}/libero
-export LIBERO_Python=/mnt/petrelfs/share/yejinhui/Envs/miniconda3/envs/lerobot/bin/python
+LIBERO_HOME="${LIBERO_HOME:-/path/to/LIBERO}"
+LIBERO_CONFIG_PATH="${LIBERO_CONFIG_PATH:-${LIBERO_HOME}/libero}"
+LIBERO_PYTHON="${LIBERO_PYTHON:-python}"
+HOST="${HOST:-127.0.0.1}"
+PORT="${PORT:-5694}"
+TASK_SUITE_NAME="${TASK_SUITE_NAME:-libero_goal}"
+NUM_TRIALS_PER_TASK="${NUM_TRIALS_PER_TASK:-50}"
+CKPT_PATH="${CKPT_PATH:-/path/to/checkpoint.pt}"
+VIDEO_OUT_PATH="${VIDEO_OUT_PATH:-results/${TASK_SUITE_NAME}/$(basename "${CKPT_PATH}")}"
+USE_SIGNAL="${USE_SIGNAL:-false}"
+INJECT_SIGNAL="${INJECT_SIGNAL:-false}"
+SIGNAL_DUMP_ROOT="${SIGNAL_DUMP_ROOT:-}"
 
-export PYTHONPATH=$PYTHONPATH:${LIBERO_HOME} # let eval_libero find the LIBERO tools
-export PYTHONPATH=$(pwd):${PYTHONPATH} # let LIBERO find the websocket tools from main repo
+export PYTHONPATH="${LIBERO_HOME}:${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
 
+cmd=(
+  "${LIBERO_PYTHON}"
+  "./examples/LIBERO/eval_files/eval_libero.py"
+  "--args.pretrained-path" "${CKPT_PATH}"
+  "--args.host" "${HOST}"
+  "--args.port" "${PORT}"
+  "--args.task-suite-name" "${TASK_SUITE_NAME}"
+  "--args.num-trials-per-task" "${NUM_TRIALS_PER_TASK}"
+  "--args.video-out-path" "${VIDEO_OUT_PATH}"
+)
 
-host="127.0.0.1"
-base_port=5694
-unnorm_key="franka"
-your_ckpt=./results/Checkpoints/1208_libero_all_QwenPI_qwen3/checkpoints/steps_50000_pytorch_model.pt
-export DEBUG=true
+if [[ "${USE_SIGNAL}" == "true" ]]; then
+  cmd+=("--args.use-signal" "true")
+fi
 
-folder_name=$(echo "$your_ckpt" | awk -F'/' '{print $(NF-2)"_"$(NF-1)"_"$NF}')
-# === End of environment variable configuration ===
-###########################################################################################
+if [[ "${INJECT_SIGNAL}" == "true" ]]; then
+  cmd+=("--args.inject-signal" "true")
+fi
 
-LOG_DIR="logs/$(date +"%Y%m%d_%H%M%S")"
-mkdir -p ${LOG_DIR}
+if [[ -n "${SIGNAL_DUMP_ROOT}" ]]; then
+  cmd+=("--args.signal-dump-root" "${SIGNAL_DUMP_ROOT}")
+fi
 
-
-task_suite_name=libero_goal
-num_trials_per_task=50
-video_out_path="results/${task_suite_name}/${folder_name}"
-
-
-${LIBERO_Python} ./examples/LIBERO/eval_files/eval_libero.py \
-    --args.pretrained-path ${your_ckpt} \
-    --args.host "$host" \
-    --args.port $base_port \
-    --args.task-suite-name "$task_suite_name" \
-    --args.num-trials-per-task "$num_trials_per_task" \
-    --args.video-out-path "$video_out_path"
+"${cmd[@]}"
