@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
@@ -200,10 +203,10 @@ def save_signal_curve_npz(
     video_path: str | Path,
     fps: float,
     status: str,
+    extra_arrays: Dict[str, Any] | None = None,
 ) -> Path:
     output_path = Path(output_path).expanduser().resolve()
-    np.savez(
-        output_path,
+    arrays: Dict[str, Any] = dict(
         curve=np.asarray(curve, dtype=np.float32),
         signal_name=str(signal_name),
         instruction=str(instruction),
@@ -211,6 +214,9 @@ def save_signal_curve_npz(
         fps=np.asarray([fps], dtype=np.float32),
         status=np.asarray([status], dtype=object),
     )
+    if extra_arrays:
+        arrays.update(extra_arrays)
+    np.savez(output_path, **arrays)
     return output_path
 
 
@@ -423,6 +429,93 @@ def _load_vlac_runtime(device_name: str):
     return critic
 
 
+def run_vlac_web_trajectory_critic(
+    *,
+    video_path: str | Path,
+    instruction: str,
+    fps: float,
+    reference_video_path: str | Path | None = None,
+    ref_num: int = 6,
+    batch_num: int = 5,
+    skip: int = 5,
+    rich: bool = False,
+    frame_skip: bool = False,
+    think: bool = False,
+    device: torch.device | None = None,
+    done_flag: bool = False,
+    in_context_done: bool = False,
+    done_threshold: float = 0.9,
+    output_path: str | Path | None = None,
+    video_output: bool = False,
+    vlac_python: str | Path | None = None,
+) -> tuple[str | None, list[float], list[float], list[float] | None]:
+    if device is None:
+        raise ValueError("'device' is required for VLAC curve computation.")
+
+    video_path = Path(video_path).expanduser().resolve()
+    resolved_reference = None if reference_video_path is None else Path(reference_video_path).expanduser().resolve()
+    resolved_output_path = video_path.parent if output_path is None else Path(output_path).expanduser().resolve()
+
+    if vlac_python is None:
+        critic = _load_vlac_runtime(str(device))
+        return critic.web_trajectory_critic(
+            task_description=instruction,
+            main_video_path=str(video_path),
+            reference_video_path=None if resolved_reference is None else str(resolved_reference),
+            batch_num=int(batch_num),
+            ref_num=int(ref_num),
+            think=bool(think),
+            skip=int(skip),
+            rich=bool(rich),
+            reverse_eval=False,
+            output_path=str(resolved_output_path),
+            fps=float(fps),
+            frame_skip=bool(frame_skip),
+            done_flag=bool(done_flag),
+            in_context_done=bool(in_context_done),
+            done_threshold=float(done_threshold),
+            video_output=bool(video_output),
+        )
+
+    helper_script = Path(__file__).with_name("vlac_subprocess_runner.py")
+    resolved_python = str(Path(vlac_python).expanduser().resolve())
+    with tempfile.TemporaryDirectory(prefix="vlac_subprocess_") as tmpdir:
+        request_path = Path(tmpdir) / "request.json"
+        response_path = Path(tmpdir) / "response.npz"
+        request_payload = {
+            "instruction": str(instruction),
+            "video_path": str(video_path),
+            "reference_video_path": None if resolved_reference is None else str(resolved_reference),
+            "fps": float(fps),
+            "ref_num": int(ref_num),
+            "batch_num": int(batch_num),
+            "skip": int(skip),
+            "rich": bool(rich),
+            "frame_skip": bool(frame_skip),
+            "think": bool(think),
+            "device": str(device),
+            "done_flag": bool(done_flag),
+            "in_context_done": bool(in_context_done),
+            "done_threshold": float(done_threshold),
+            "output_path": str(resolved_output_path),
+            "video_output": bool(video_output),
+            "model_path": str(DEFAULT_VLAC_MODEL_PATH),
+            "model_type": str(DEFAULT_VLAC_MODEL_TYPE),
+        }
+        request_path.write_text(json.dumps(request_payload, ensure_ascii=False))
+        subprocess.run(
+            [resolved_python, str(helper_script), str(request_path), str(response_path)],
+            check=True,
+        )
+        payload = np.load(response_path, allow_pickle=True)
+        result_video_path = str(payload["result_video_path"][0]) if payload["result_video_path"].size else ""
+        value_list = payload["value_list"].astype(np.float32).tolist()
+        critic_list = payload["critic_list"].astype(np.float32).tolist()
+        done_list_raw = payload["done_list"].astype(np.float32)
+        done_list = None if done_list_raw.size == 0 else done_list_raw.tolist()
+        return (result_video_path or None), value_list, critic_list, done_list
+
+
 def compute_vlac_curve_signal(
     video_path: str | Path,
     instruction: str,
@@ -438,44 +531,49 @@ def compute_vlac_curve_signal(
     frame_skip: bool = False,
     think: bool = False,
     device: torch.device | None = None,
-) -> np.ndarray:
+    return_raw_curve: bool = False,
+    vlac_python: str | Path | None = None,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     if device is None:
         raise ValueError("'device' is required for VLAC curve computation.")
 
-    critic = _load_vlac_runtime(str(device))
     video_path = Path(video_path).expanduser().resolve()
     resolved_reference = None if reference_video_path is None else Path(reference_video_path).expanduser().resolve()
     need_done = signal_kind == "done"
-    _, value_list, critic_list, done_list = critic.web_trajectory_critic(
-        task_description=instruction,
-        main_video_path=str(video_path),
-        reference_video_path=None if resolved_reference is None else str(resolved_reference),
-        batch_num=int(batch_num),
+    _, value_list, critic_list, done_list = run_vlac_web_trajectory_critic(
+        video_path=video_path,
+        instruction=instruction,
+        fps=float(fps),
+        reference_video_path=resolved_reference,
         ref_num=int(ref_num),
-        think=bool(think),
+        batch_num=int(batch_num),
         skip=int(skip),
         rich=bool(rich),
-        reverse_eval=False,
-        output_path=str(video_path.parent),
-        fps=float(fps),
         frame_skip=bool(frame_skip),
+        think=bool(think),
+        device=device,
         done_flag=need_done,
         in_context_done=resolved_reference is not None,
         done_threshold=0.9,
+        output_path=video_path.parent,
         video_output=False,
+        vlac_python=vlac_python,
     )
 
     if signal_kind == "value":
-        curve = np.asarray(value_list, dtype=np.float32)
-        if curve.size > 0 and float(np.nanmax(curve)) > 1.0:
-            curve = curve / 100.0
+        raw_curve = np.asarray(value_list, dtype=np.float32)
+        if raw_curve.size > 0 and float(np.nanmax(raw_curve)) > 1.0:
+            raw_curve = raw_curve / 100.0
     elif signal_kind == "critic":
-        curve = np.asarray([0.0] + [float(v) for v in critic_list], dtype=np.float32)
+        raw_curve = np.asarray([0.0] + [float(v) for v in critic_list], dtype=np.float32)
     elif signal_kind == "done":
-        curve = np.full(frame_count, np.nan, dtype=np.float32) if done_list is None else np.asarray(done_list, dtype=np.float32)
+        raw_curve = np.full(frame_count, np.nan, dtype=np.float32) if done_list is None else np.asarray(done_list, dtype=np.float32)
     else:
         raise ValueError(
             f"Unsupported VLAC signal_kind={signal_kind!r}; expected 'value', 'critic', or 'done'."
         )
 
-    return normalize_curve(curve, frame_count)
+    normalized_curve = normalize_curve(raw_curve, frame_count)
+    if return_raw_curve:
+        return normalized_curve, raw_curve
+    return normalized_curve

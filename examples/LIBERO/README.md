@@ -88,6 +88,8 @@ Finally, each result will also save a video for visualization, as shown below:
 
 ![Example](example.gif)
 
+For a practical guide to pure offline multi-signal visualization on LIBERO, see [OFFLINE_SIGNAL_VISUALIZATION_GUIDE_CN.md](./OFFLINE_SIGNAL_VISUALIZATION_GUIDE_CN.md).
+
 ---
 
 
@@ -120,4 +122,3 @@ Please run the following command to start training:
 bash examples/LIBERO/train_files/run_libero_train.sh
 ```
 ⚠️ **Note:** Please ensure that you specify the correct path in `examples/LIBERO/train_files/run_libero_train.sh`
-

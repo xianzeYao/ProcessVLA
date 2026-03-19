@@ -44,7 +44,8 @@ framework:
       positional_embeddings: null
 
   reduce_in_full_precision: true
-  use_signal_train: false
+  inject_signal_train: false
+  inject_signal_infer: false
 
 
 datasets:

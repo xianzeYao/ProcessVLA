@@ -1,12 +1,10 @@
 # Copyright 2025 NVIDIA Corp. and affiliates. All rights reserved.
-# Modified by [Junqiu YU/ Fudan University] in [2025]. 
-# Modification: [rm and add some connect adapter to match with starVLA, e.g., "rm "].
-# Action repeat is inspired by CogACT
-
+# Modified by [Junqiu YU/ Fudan University] in [2025].
+# 修改内容：针对 starVLA 衔接适配器的删改
+# 动作重复思路来自 CogACT
 
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -14,6 +12,7 @@ from torch import nn
 from torch.distributions import Beta
 from transformers import PretrainedConfig
 from transformers.feature_extraction_utils import BatchFeature
+from typing import Optional
 
 from starVLA.model.modules.action_model.flow_matching_head.action_encoder import (
     SinusoidalPositionalEncoding,
@@ -21,38 +20,45 @@ from starVLA.model.modules.action_model.flow_matching_head.action_encoder import
 )
 
 from starVLA.model.modules.action_model.flow_matching_head.cross_attention_dit import DiT
-
 # TODO try to meger DiT Modules with follow_match_head, they are just the same arch, but diff loss, use diffusers package will be simple
 
+
 class CategorySpecificLinear(nn.Module):
+    """按类别切换权重的线性层。"""
+
     def __init__(self, num_categories, input_dim, hidden_dim):
         super().__init__()
         self.num_categories = num_categories
-        # For each category, we have separate weights and biases.
-        self.W = nn.Parameter(0.02 * torch.randn(num_categories, input_dim, hidden_dim))
+        # 每个类别都有独立的权重和偏置
+        self.W = nn.Parameter(
+            0.02 * torch.randn(num_categories, input_dim, hidden_dim))
         self.b = nn.Parameter(torch.zeros(num_categories, hidden_dim))
 
     def forward(self, x, cat_ids):
         selected_W = self.W[cat_ids]
         selected_b = self.b[cat_ids]
-        # import ipdb; ipdb.set_trace()
         return torch.bmm(x, selected_W) + selected_b.unsqueeze(1)
 
 
 class CategorySpecificMLP(nn.Module):
+    """两层的类别特定 MLP。"""
+
     def __init__(self, num_categories, input_dim, hidden_dim, output_dim):
         super().__init__()
         self.num_categories = num_categories
-        self.layer1 = CategorySpecificLinear(num_categories, input_dim, hidden_dim)
-        self.layer2 = CategorySpecificLinear(num_categories, hidden_dim, output_dim)
+        self.layer1 = CategorySpecificLinear(
+            num_categories, input_dim, hidden_dim)
+        self.layer2 = CategorySpecificLinear(
+            num_categories, hidden_dim, output_dim)
 
     def forward(self, x, cat_ids):
         hidden = F.relu(self.layer1(x, cat_ids))
         return self.layer2(hidden, cat_ids)
 
 
-
 class MLP(nn.Module):
+    """简单两层 MLP。"""
+
     def __init__(self, input_dim, hidden_dim, output_dim):
         super().__init__()
         self.layer1 = nn.Linear(input_dim, hidden_dim)
@@ -63,6 +69,8 @@ class MLP(nn.Module):
 
 
 class ActionEncoder(nn.Module):
+    """动作序列 + 扩散时间步编码到隐藏维。"""
+
     def __init__(self, action_dim, hidden_size):
         super().__init__()
         self.hidden_size = hidden_size
@@ -81,10 +89,7 @@ class ActionEncoder(nn.Module):
         B, T, _ = actions.shape
 
         # 1) Expand each batch's single scalar time 'tau' across all T steps
-        #    so that shape => (B, T)
-        #    e.g. if timesteps is (B,), replicate across T
         if timesteps.dim() == 1 and timesteps.shape[0] == B:
-            # shape (B,) => (B,T)
             timesteps = timesteps.unsqueeze(1).expand(-1, T)
         else:
             raise ValueError(
@@ -106,17 +111,21 @@ class ActionEncoder(nn.Module):
         return x
 
 
-
 class MultiEmbodimentActionEncoder(nn.Module):
+    """支持多形态机器人，按 cat_id 选权重编码动作。"""
+
     def __init__(self, action_dim, hidden_size, num_embodiments):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_embodiments = num_embodiments
 
         # W1: R^{w x d}, W2: R^{w x 2w}, W3: R^{w x w}
-        self.W1 = CategorySpecificLinear(num_embodiments, action_dim, hidden_size)  # (d -> w)
-        self.W2 = CategorySpecificLinear(num_embodiments, 2 * hidden_size, hidden_size)  # (2w -> w)
-        self.W3 = CategorySpecificLinear(num_embodiments, hidden_size, hidden_size)  # (w -> w)
+        self.W1 = CategorySpecificLinear(
+            num_embodiments, action_dim, hidden_size)  # (d -> w)
+        self.W2 = CategorySpecificLinear(
+            num_embodiments, 2 * hidden_size, hidden_size)  # (2w -> w)
+        self.W3 = CategorySpecificLinear(
+            num_embodiments, hidden_size, hidden_size)  # (w -> w)
         self.pos_encoding = SinusoidalPositionalEncoding(hidden_size)
 
     def forward(self, actions, timesteps, cat_ids):
@@ -168,10 +177,14 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
         default=1536, metadata={"help": "Input embedding channel dimension."}
     )
 
-    hidden_size: int = field(default=1024, metadata={"help": "Input embedding dimension."})
-    max_seq_len: int = field(default=1024, metadata={"help": "Maxium Sequence Length"})
-    action_dim: int = field(default=None, metadata={"help": "Action dimension."})
-    action_horizon: int = field(default=None, metadata={"help": "Action horizon."})
+    hidden_size: int = field(default=1024, metadata={
+                             "help": "Input embedding dimension."})
+    max_seq_len: int = field(default=1024, metadata={
+                             "help": "Maxium Sequence Length"})
+    action_dim: int = field(default=None, metadata={
+                            "help": "Action dimension."})
+    action_horizon: int = field(default=None, metadata={
+                                "help": "Action horizon."})
     noise_beta_alpha: float = field(default=1.5, metadata={"help": ""})
     noise_beta_beta: float = field(default=1.0, metadata={"help": ""})
     noise_s: float = field(
@@ -184,15 +197,18 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
         default=None,
         metadata={"help": "Number of inference steps for noise diffusion."},
     )
-    max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
-    tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
+    max_num_embodiments: int = field(
+        default=32, metadata={"help": "Number of embodiments."})
+    tune_projector: bool = field(default=True, metadata={
+                                 "help": "Whether to tune the projector."})
     tune_diffusion_model: bool = field(
         default=True, metadata={"help": "Whether to tune the diffusion model."}
     )
     load_pretrained_det_decode_layer_path: str = field(
         default=None, metadata={"help": "Path to pretrained detection model."}
     )
-    detection_coeff: float = field(default=1.0, metadata={"help": "Detection coefficient."})
+    detection_coeff: float = field(
+        default=1.0, metadata={"help": "Detection coefficient."})
 
     freeze_decode_layer: bool = field(default=False)
     expand_batch: int = field(default=None)
@@ -214,26 +230,34 @@ DiTConfig = {
     "DiT-L": {"input_embedding_dim": 1536, "attention_head_dim": 48, "num_attention_heads": 32},
 }
 
+
 class FlowmatchingActionHead(nn.Module):
+    """
+    动作扩散头：以 VLM 的视觉/语言嵌入为条件，预测未来动作。
+    训练：对动作加噪，模型预测 velocity（去噪方向），用 MSE 监督。
+    推理：从噪声动作出发，多步迭代去噪生成动作序列。
+    """
+
     def __init__(
         self,
         full_config,
     ):
         super().__init__()
         config = full_config.framework.action_model
-        self.hidden_size = config.hidden_size # @JinhuiYE
+        self.hidden_size = config.hidden_size  # @JinhuiYE
         self.full_config = full_config
         action_model_type = config.action_model_type
         action_model_cfg = DiTConfig[action_model_type]
-        
+
         self.input_embedding_dim = action_model_cfg["input_embedding_dim"]
         diffusion_model_cfg = config.diffusion_model_cfg
         diffusion_model_cfg = {**action_model_cfg, **diffusion_model_cfg}
-        self.model = DiT(**diffusion_model_cfg)
+        self.model = DiT(**diffusion_model_cfg)  # 条件扩散 Transformer
         self.action_dim = config.action_dim
         self.action_horizon = config.future_action_window_size + 1
         self.num_inference_timesteps = config.num_inference_timesteps
 
+        # 状态编码器（可选）
         self.state_encoder = MLP(
             input_dim=config.state_dim,
             hidden_dim=self.hidden_size,
@@ -249,11 +273,19 @@ class FlowmatchingActionHead(nn.Module):
             hidden_dim=self.hidden_size,
             output_dim=self.action_dim,
         )
-        self.future_tokens = nn.Embedding(config.num_target_vision_tokens, self.input_embedding_dim)
+        self.condition_dim = diffusion_model_cfg["cross_attention_dim"]
+        self.signal_encoder = MLP(
+            input_dim=1,
+            hidden_dim=self.hidden_size,
+            output_dim=self.condition_dim,
+        )
+        self.future_tokens = nn.Embedding(
+            config.num_target_vision_tokens, self.input_embedding_dim)
         nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
 
         if config.add_pos_embed:
-            self.position_embedding = nn.Embedding(config.max_seq_len, self.input_embedding_dim)
+            self.position_embedding = nn.Embedding(
+                config.max_seq_len, self.input_embedding_dim)
             nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
 
         self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
@@ -261,31 +293,27 @@ class FlowmatchingActionHead(nn.Module):
         self.config = config
 
     def sample_time(self, batch_size, device, dtype):
-        sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype).clamp(max=self.config.noise_s)
+        sample = self.beta_dist.sample([batch_size]).to(
+            device, dtype=dtype).clamp(max=self.config.noise_s)
         return (self.config.noise_s - sample) / self.config.noise_s
 
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
-    def _apply_signal_placeholder(
-        self,
-        vl_embs: torch.Tensor,
-        signal: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    def _append_signal_token(self, vl_embs: torch.Tensor, signal: Optional[torch.Tensor] = None) -> torch.Tensor:
         if signal is None:
             return vl_embs
 
         signal_tensor = torch.as_tensor(
-            signal, device=vl_embs.device, dtype=vl_embs.dtype
-        ).reshape(-1)
-        if signal_tensor.shape[0] != vl_embs.shape[0]:
+            signal, device=vl_embs.device, dtype=vl_embs.dtype)
+        if signal_tensor.ndim != 1 or signal_tensor.shape[0] != vl_embs.shape[0]:
             raise ValueError(
-                f"Signal should have batch dimension {vl_embs.shape[0]}, got {tuple(signal_tensor.shape)}."
+                f"Signal should be shape ({vl_embs.shape[0]},), got {tuple(signal_tensor.shape)}"
             )
-
-        # Reserved for future signal-conditioning logic.
-        return vl_embs
-
+        signal_token = self.signal_encoder(
+            signal_tensor.reshape(vl_embs.shape[0], 1)
+        ).unsqueeze(1).to(dtype=vl_embs.dtype)
+        return torch.cat([vl_embs, signal_token], dim=1)
 
     def forward(
         self,
@@ -300,11 +328,13 @@ class FlowmatchingActionHead(nn.Module):
         actions: shape (B, future_action_window_size, D_action)
         """
         device = vl_embs.device
-        vl_embs = self._apply_signal_placeholder(vl_embs, signal)
+        vl_embs = self._append_signal_token(vl_embs, signal)
 
-        # Embed noised action trajectory.
-        noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
-        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
+        # 1) 采样噪声与时间步，构造 noisy trajectory 和 velocity（目标）
+        noise = torch.randn(
+            actions.shape, device=actions.device, dtype=actions.dtype)
+        t = self.sample_time(
+            actions.shape[0], device=actions.device, dtype=actions.dtype)
         t = t[:, None, None]  # shape (B,1,1) for broadcast
 
         noisy_trajectory = (1 - t) * noise + t * actions
@@ -314,23 +344,24 @@ class FlowmatchingActionHead(nn.Module):
         t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
         action_features = self.action_encoder(noisy_trajectory, t_discretized)
 
+        # 2) 编码状态（可选）
+        state_features = self.state_encoder(
+            state) if state is not None else None
 
-        # embed state
-        state_features = self.state_encoder(state) if state is not None else None
-
-
-        # Maybe add position embedding.
+        # 3) 位置编码
         if self.config.add_pos_embed:
-            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+            pos_ids = torch.arange(
+                action_features.shape[1], dtype=torch.long, device=device)
             pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
             action_features = action_features + pos_embs
 
-        # state and action embedding along sequence dimension.
-        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
+        # 4) 拼接 state/future tokens/动作特征
+        future_tokens = self.future_tokens.weight.unsqueeze(
+            0).expand(vl_embs.shape[0], -1, -1)
         sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1) \
             if state_features is not None else torch.cat((future_tokens, action_features), dim=1)
 
-        # Join VLM features with state and action embedding along sequence dimension.
+        # 5) 与 VLM 条件一起送入 DiT
         model_output = self.model(
             hidden_states=sa_embs,
             encoder_hidden_states=vl_embs,
@@ -339,33 +370,30 @@ class FlowmatchingActionHead(nn.Module):
             return_all_hidden_states=False,  # NOTE (YL): not using flare now
         )
         pred = self.action_decoder(model_output)
-        pred_actions = pred[:, -actions.shape[1] :]
+        pred_actions = pred[:, -actions.shape[1]:]
 
-        # Slice out only the action portion of pred and target.
+        # 6) 只取动作部分，计算 MSE 损失
         loss = ((pred_actions - velocity) ** 2).mean()
         return loss
 
     @torch.no_grad()
-    def predict_action(
-        self,
-        vl_embs: torch.Tensor,
-        state: torch.Tensor = None,
-        signal: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    def predict_action(self, vl_embs: torch.Tensor, state: torch.Tensor = None, signal: Optional[torch.Tensor] = None) -> torch.Tensor:
         # Set initial actions as the sampled noise.
         batch_size = vl_embs.shape[0]
         device = vl_embs.device
-        actions = torch.randn( # yes, here make sure action_horizon align with data loader? or share from clinet?
-            size=(batch_size, self.config.action_horizon, self.config.action_dim),
+        actions = torch.randn(  # yes, here make sure action_horizon align with data loader? or share from clinet?
+            size=(batch_size, self.config.action_horizon,
+                  self.config.action_dim),
             dtype=vl_embs.dtype,
             device=device,
         )
 
         num_steps = self.num_inference_timesteps
         dt = 1.0 / num_steps
-        
-        state_features = self.state_encoder(state) if state is not None else None
-        vl_embs = self._apply_signal_placeholder(vl_embs, signal)
+
+        state_features = self.state_encoder(
+            state) if state is not None else None
+        vl_embs = self._append_signal_token(vl_embs, signal)
 
         # Run denoising steps.
         for t in range(num_steps):
@@ -379,15 +407,16 @@ class FlowmatchingActionHead(nn.Module):
             action_features = self.action_encoder(actions, timesteps_tensor)
             # Maybe add position embedding.
             if self.config.add_pos_embed:
-                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+                pos_ids = torch.arange(
+                    action_features.shape[1], dtype=torch.long, device=device)
                 pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
                 action_features = action_features + pos_embs
 
             # Join vision, language, state and action embedding along sequence dimension.
-            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
+            future_tokens = self.future_tokens.weight.unsqueeze(
+                0).expand(vl_embs.shape[0], -1, -1)
             sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1) \
                 if state_features is not None else torch.cat((future_tokens, action_features), dim=1)
-
 
             # Run model forward.
             model_output = self.model(
@@ -397,7 +426,7 @@ class FlowmatchingActionHead(nn.Module):
             )
             pred = self.action_decoder(model_output)
 
-            pred_velocity = pred[:, -self.action_horizon :]
+            pred_velocity = pred[:, -self.action_horizon:]
 
             # Update actions using euler integration.
             actions = actions + dt * pred_velocity
@@ -412,11 +441,10 @@ class FlowmatchingActionHead(nn.Module):
         return next(iter(self.parameters())).dtype
 
 
-
 def get_action_model(config=None):
     """
     Factory: build FlowmatchingActionHead from global framework config.
-    
+
     Args:
         config: Global config (expects config.framework.action_model namespace).
 

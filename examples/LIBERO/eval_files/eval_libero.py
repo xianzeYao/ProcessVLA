@@ -1,3 +1,4 @@
+from examples.LIBERO.eval_files.model2libero_interface import ModelClient
 import dataclasses
 import datetime as dt
 import json
@@ -17,11 +18,12 @@ import tyro
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-from examples.LIBERO.eval_files.model2libero_interface import ModelClient
 
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+
+
 def _binarize_gripper_open(open_val: np.ndarray | float) -> np.ndarray:
     arr = np.asarray(open_val, dtype=np.float32).reshape(-1)
     v = float(arr[0])
@@ -33,12 +35,13 @@ def _binarize_gripper_open(open_val: np.ndarray | float) -> np.ndarray:
 class Args:
     host: str = "127.0.0.1"
     port: int = 10093
-    resize_size = [224,224]
+    resize_size = [224, 224]
 
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
-    task_suite_name: str = "libero_goal"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+    # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+    task_suite_name: str = "libero_goal"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
 
@@ -54,13 +57,12 @@ class Args:
     post_process_action: bool = True
 
     job_name: str = "test"
-    use_signal: Optional[bool] = None
-    inject_signal: Optional[bool] = None
-    signal_dump_root: Optional[str] = None
+    inject_signal_infer: Optional[bool] = None
 
 
 def eval_libero(args: Args) -> None:
-    logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
+    logging.info(
+        f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
 
     # Set random seed
     np.random.seed(args.seed)
@@ -72,7 +74,7 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Task suite: {args.task_suite_name}")
 
     # args.video_out_path = f"{date_base}+{args.job_name}"
-    
+
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
     if args.task_suite_name == "libero_spatial":
@@ -88,20 +90,13 @@ def eval_libero(args: Args) -> None:
     else:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}")
 
-    signal_dump_root = args.signal_dump_root
-    if signal_dump_root is None and (args.use_signal or args.inject_signal):
-        signal_dump_root = str(pathlib.Path(args.video_out_path) / "signal_dumps")
-
     client_model = ModelClient(
-        policy_ckpt_path=args.pretrained_path, # to get unnormalization stats
+        policy_ckpt_path=args.pretrained_path,  # to get unnormalization stats
         host=args.host,
         port=args.port,
         image_size=args.resize_size,
-        use_signal=args.use_signal,
-        inject_signal=args.inject_signal,
-        signal_dump_root=signal_dump_root,
+        inject_signal_infer=args.inject_signal_infer,
     )
-
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
@@ -113,7 +108,8 @@ def eval_libero(args: Args) -> None:
         initial_states = task_suite.get_task_init_states(task_id)
 
         # Initialize LIBERO environment and task description
-        env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
+        env, task_description = _get_libero_env(
+            task, LIBERO_ENV_RESOLUTION, args.seed)
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -121,11 +117,8 @@ def eval_libero(args: Args) -> None:
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment
-            client_model.reset(
-                task_description=task_description,
-                task_id=task_id,
-                episode_idx=episode_idx,
-            )  # Reset the client connection
+            client_model.reset(task_description=task_description, task_id=task_id,
+                               episode_idx=episode_idx)  # Reset the client connection
             env.reset()
 
             # Set initial states
@@ -139,9 +132,9 @@ def eval_libero(args: Args) -> None:
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
-            
+
             # full_actions = np.load("./debug/action.npy")
-            
+
             while t < max_steps + args.num_steps_wait:
                 # try:
                 # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
@@ -169,7 +162,7 @@ def eval_libero(args: Args) -> None:
                     )
                 )
 
-                observation = { # 
+                observation = {
                     "observation.primary": np.expand_dims(
                         img, axis=0
                     ),  # (H, W, C), dtype=unit8, range(0-255)
@@ -186,20 +179,22 @@ def eval_libero(args: Args) -> None:
                     "lang": observation["instruction"][0],
                 }
 
-                
                 start_time = time.time()
-                
-                response = client_model.step(example=example_dict, step=step) 
-                
+
+                response = client_model.step(example=example_dict, step=step)
+
                 end_time = time.time()
                 # print(f"time: {end_time - start_time}")
-                
-                # # 
+
+                # #
                 raw_action = response["raw_action"]
-                
-                world_vector_delta = np.asarray(raw_action.get("world_vector"), dtype=np.float32).reshape(-1)
-                rotation_delta = np.asarray(raw_action.get("rotation_delta"), dtype=np.float32).reshape(-1)
-                open_gripper = np.asarray(raw_action.get("open_gripper"), dtype=np.float32).reshape(-1)
+
+                world_vector_delta = np.asarray(raw_action.get(
+                    "world_vector"), dtype=np.float32).reshape(-1)
+                rotation_delta = np.asarray(raw_action.get(
+                    "rotation_delta"), dtype=np.float32).reshape(-1)
+                open_gripper = np.asarray(raw_action.get(
+                    "open_gripper"), dtype=np.float32).reshape(-1)
                 gripper = _binarize_gripper_open(open_gripper)
 
                 if not (world_vector_delta.size == 3 and rotation_delta.size == 3 and open_gripper.size == 1):
@@ -211,10 +206,11 @@ def eval_libero(args: Args) -> None:
                         f"rotation_delta={rotation_delta.shape}, gripper={gripper.shape}"
                     )
                 else:
-                    delta_action = np.concatenate([world_vector_delta, rotation_delta, gripper], axis=0)
+                    delta_action = np.concatenate(
+                        [world_vector_delta, rotation_delta, gripper], axis=0)
 
                 full_actions.append(delta_action)
-                
+
                 # __import__("ipdb").set_trace()
                 # see ../robosuite/controllers/controller_factory.py
                 obs, reward, done, info = env.step(delta_action.tolist())
@@ -243,10 +239,10 @@ def eval_libero(args: Args) -> None:
                 [np.asarray(x) for x in replay_wrist_images],
                 fps=10,
             )
-            
+
             full_actions = np.stack(full_actions)
             # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
-            
+
             # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
             # Log current results
             logging.info(f"Success: {done}")
@@ -315,6 +311,7 @@ def start_debugpy_once():
     print("🔍 Waiting for VSCode attach on 0.0.0.0:10092 ...")
     debugpy.wait_for_client()
     start_debugpy_once._started = True
+
 
 if __name__ == "__main__":
     if os.getenv("DEBUG", False):

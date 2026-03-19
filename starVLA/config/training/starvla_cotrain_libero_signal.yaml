@@ -9,6 +9,8 @@ is_debug: false
 
 framework:
   name: QwenGR00T
+  inject_signal_train: false
+  inject_signal_infer: false
   qwenvl:
     base_vlm: ./playground/Pretrained_models/Qwen2.5-VL-3B-Instruct
     attn_implementation: flash_attention_2
@@ -44,7 +46,6 @@ framework:
       positional_embeddings: null
 
   reduce_in_full_precision: true
-  use_signal_train: false
 
 
 datasets:
@@ -59,14 +60,14 @@ datasets:
     min_pixels: 3136
     model_max_length: 2048 
     model_type: qwen2.5vl
-    per_device_batch_size: 4
+    per_device_batch_size: 3
 
   vla_data:
     dataset_py: lerobot_datasets
     data_root_dir: playground/Datasets/LEROBOT_LIBERO_DATA
-    data_mix: libero_goal # libero_goal
+    data_mix: libero_all # libero_all
     action_type: delta_qpos
-    CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
+    CoT_prompt: "Your task is {instruction}."
     CoT_answer: bbox
     default_image_resolution: [3, 224, 224]
     per_device_batch_size: 16
@@ -80,12 +81,12 @@ datasets:
 
 trainer:
   epochs: 100
-  max_train_steps: 100000
+  max_train_steps: 80000
   num_warmup_steps: 5000
-  save_interval: 5000
-  eval_interval: 100
+  save_interval: 10000
+  eval_interval: 1000
   learning_rate:
-    base: 2.5e-05
+    base: 2.0e-05
     qwen_vl_interface: 1.0e-05
     action_model: 1.0e-04
   lr_scheduler_type: cosine_with_min_lr
@@ -98,7 +99,7 @@ trainer:
   max_grad_norm: 1.0
   warmup_ratio: 0.1
   weight_decay: 0.0
-  logging_frequency: 10
+  logging_frequency: 100
   gradient_clipping: 1.0
   gradient_accumulation_steps: 1
 

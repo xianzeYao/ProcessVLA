@@ -64,7 +64,7 @@ datasets:
     dataset_py: lerobot_datasets
     data_root_dir: playground/Datasets/LEROBOT_LIBERO_DATA
     data_mix: libero_all # libero_goal
-    action_type: delta_qpos
+    action_type: delta_qpos # delta_ee才对吧，虽然没用上。
     sequential_step_sampling: False
     CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
     CoT_answer: bbox
@@ -106,7 +106,7 @@ trainer:
     weight_decay: 1.0e-08
 
   # parameters to be determined
-  is_resume: false
+  is_resume: true
   resume_epoch: null
   resume_step: null
   enable_gradient_checkpointing: true

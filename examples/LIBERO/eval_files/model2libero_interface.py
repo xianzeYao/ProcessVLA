@@ -1,19 +1,20 @@
-from collections import deque
+from collections import deque  # 环形队列，用于图像历史
 from typing import Optional, Sequence
 import os
-import cv2 as cv
-import matplotlib.pyplot as plt
+import cv2 as cv  # 图像缩放
+import matplotlib.pyplot as plt  # 可视化
 import numpy as np
 
+# WebSocket 客户端，连到策略服务器
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 
-from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
+from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler  # 自适应动作集成
 from typing import Dict
 import numpy as np
 from pathlib import Path
 from PIL import Image
 
-from starVLA.model.tools import read_mode_config
+from starVLA.model.tools import read_mode_config  # 读取模型配置与归一化统计
 
 
 class ModelClient:
@@ -23,32 +24,33 @@ class ModelClient:
         unnorm_key: Optional[str] = None,
         policy_setup: str = "franka",
         horizon: int = 0,
-        action_ensemble = True,
-        action_ensemble_horizon: Optional[int] = 3, # different cross sim
+        action_ensemble=True,
+        action_ensemble_horizon: Optional[int] = 3,  # different cross sim
         image_size: list[int] = [224, 224],
         use_ddim: bool = True,
         num_ddim_steps: int = 10,
-        adaptive_ensemble_alpha = 0.1,
+        adaptive_ensemble_alpha=0.1,
         host="0.0.0.0",
         port=10095,
-        use_signal: Optional[bool] = None,
-        inject_signal: Optional[bool] = None,
-        signal_dump_root: Optional[str] = None,
+        inject_signal_infer: Optional[bool] = None,
     ) -> None:
-        
+
         # build client to connect server policy
+        # 建立到策略服务器的 WebSocket 客户端
         self.client = WebsocketClientPolicy(host, port)
         self.policy_setup = policy_setup
         self.unnorm_key = unnorm_key
 
-        print(f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key} ***")
+        print(
+            f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key} ***")
         self.use_ddim = use_ddim
         self.num_ddim_steps = num_ddim_steps
         self.image_size = image_size
-        self.horizon = horizon #0
+        self.horizon = horizon  # 0  # 图像历史长度（未使用时为 0）
         self.action_ensemble = action_ensemble
         self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
         self.action_ensemble_horizon = action_ensemble_horizon
+        # 粘滞动作/抓手重复的状态
         self.sticky_action_is_on = False
         self.gripper_action_repeat = 0
         self.sticky_gripper_action = 0.0
@@ -57,48 +59,48 @@ class ModelClient:
         self.task_description = None
         self.task_id = None
         self.episode_idx = None
-        self.image_history = deque(maxlen=self.horizon)
+        self.image_history = deque(maxlen=self.horizon)  # 图像历史队列
         if self.action_ensemble:
-            self.action_ensembler = AdaptiveEnsembler(self.action_ensemble_horizon, self.adaptive_ensemble_alpha)
+            self.action_ensembler = AdaptiveEnsembler(
+                self.action_ensemble_horizon, self.adaptive_ensemble_alpha)
         else:
             self.action_ensembler = None
         self.num_image_history = 0
 
-        self.action_norm_stats = self.get_action_stats(self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
-        self.action_chunk_size = self.get_action_chunk_size(policy_ckpt_path=policy_ckpt_path)
-        self.signal_dump_root = (
-            Path(signal_dump_root).expanduser().resolve()
-            if signal_dump_root
-            else None
+        self.action_norm_stats = self.get_action_stats(
+            self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
+        self.action_chunk_size = self.get_action_chunk_size(
+            policy_ckpt_path=policy_ckpt_path)
+
+        parts = Path(policy_ckpt_path).parts
+        save_hidden_dir = (
+            f"{parts[-3]}_{parts[-1]}" if len(parts) >= 3 else "_".join(parts)
         )
-        self.use_signal_infer = self.resolve_infer_flag(
-            override=use_signal,
-            default=self.get_infer_flag(
-                policy_ckpt_path=policy_ckpt_path,
-                key="use_signal_infer",
-                fallback_key="use_signal",
-            ),
+        self.save_hidden_dir = save_hidden_dir
+        default_signal_dump_root = (
+            Path.cwd() / "results" / "libero_signal_dumps"
+        ).resolve()
+        self.signal_dump_root = Path(
+            os.environ.get("PROCESSVLA_SIGNAL_DUMP_ROOT", str(default_signal_dump_root))
+        ).expanduser().resolve()
+        default_signal_infer = self.get_inject_signal_infer(
+            policy_ckpt_path=policy_ckpt_path
         )
         self.inject_signal_infer = self.resolve_infer_flag(
-            override=inject_signal,
-            default=self.get_infer_flag(
-                policy_ckpt_path=policy_ckpt_path,
-                key="inject_signal_infer",
-                fallback_key="inject_signal",
-            ),
+            override=inject_signal_infer,
+            default=default_signal_infer,
         )
-        
+        print(
+            "*** "
+            f"inject_signal_infer: {self.inject_signal_infer} "
+            "***"
+        )
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
         self.num_image_history = min(self.num_image_history + 1, self.horizon)
 
-    def reset(
-        self,
-        task_description: str,
-        task_id: int | None = None,
-        episode_idx: int | None = None,
-    ) -> None:
+    def reset(self, task_description: str, task_id: int | None = None, episode_idx: int | None = None) -> None:
         self.task_description = task_description
         self.task_id = task_id
         self.episode_idx = episode_idx
@@ -107,14 +109,14 @@ class ModelClient:
             self.action_ensembler.reset()
         self.num_image_history = 0
 
+        # 重置粘滞/抓手状态
         self.sticky_action_is_on = False
         self.gripper_action_repeat = 0
         self.sticky_gripper_action = 0.0
         self.previous_gripper_action = None
 
-
     def step(
-        self, 
+        self,
         example: dict,
         step: int = 0,
         **kwargs
@@ -124,16 +126,20 @@ class ModelClient:
         :param image: Input image in the format (H, W, 3), type uint8
         :param task_description: Task description text
         :return: (raw action, processed action)
+        执行一步推理：
+        :param image: 输入图像 (H, W, 3)，uint8
+        :param task_description: 任务描述文本
+        :return: (原始动作，处理后动作)
         """
 
-        task_description = example.get("lang", None) 
+        task_description = example.get("lang", None)
         images = example["image"]  # list of images for history
 
         if example is not None:
             if task_description != self.task_description:
                 self.reset(task_description)
-                
-        images = [self._resize_image(image) for image in images]
+
+        images = [self._resize_image(image) for image in images]  # 统一图像尺寸
         example["image"] = images
         vla_input = {
             "examples": [example],
@@ -141,77 +147,94 @@ class ModelClient:
             "use_ddim": self.use_ddim,
             "num_ddim_steps": self.num_ddim_steps,
         }
-        
 
         action_chunk_size = self.action_chunk_size
         if step % action_chunk_size == 0:
-            if self.signal_dump_root is not None:
-                task_slug = (self.task_description or "unknown_task").replace(" ", "_").replace("/", "_")
-                episode_tag = self.episode_idx if self.episode_idx is not None else 0
-                hiddenstates_file_path = (
-                    self.signal_dump_root
-                    / f"{task_slug}_episode_{episode_tag}"
-                    / f"step_{step}_last_hidden_states_meta.pt"
-                )
-                hiddenstates_file_path.parent.mkdir(parents=True, exist_ok=True)
-                vla_input["hidden_save_path"] = str(hiddenstates_file_path)
-            vla_input["use_signal"] = self.use_signal_infer
-            vla_input["inject_signal"] = self.inject_signal_infer
-            response = self.client.predict_action(vla_input)
+            task_slug = (self.task_description or "unknown_task").replace(
+                " ", "_").replace("/", "_")
+            episode_tag = self.episode_idx if self.episode_idx is not None else 0
+            hiddenstates_file_path = (
+                self.signal_dump_root
+                / self.save_hidden_dir
+                / "hidden_states"
+                / f"{task_slug}_episode_{episode_tag}"
+                / f"step_{step}_last_hidden_states_meta.pt"
+            )
+            os.makedirs(hiddenstates_file_path.parent, exist_ok=True)
+            print(f"Hidden states will be saved to: {hiddenstates_file_path}")
+            # Attach save path into payload so websocket can carry it to server.
+            vla_input["hidden_save_path"] = hiddenstates_file_path
+            vla_input["inject_signal_infer"] = self.inject_signal_infer
+            response = self.client.predict_action(
+                vla_input)  # 每个 chunk 入口调用一次模型
             try:
-                normalized_actions = response["data"]["normalized_actions"] # B, chunk, D        
+                # B, chunk, D
+                normalized_actions = response["data"]["normalized_actions"]
             except KeyError:
                 print(f"Response data: {response}")
-                raise KeyError(f"Key 'normalized_actions' not found in response data: {response['data'].keys()}")
-            
-            normalized_actions = normalized_actions[0]    
-            self.raw_actions = self.unnormalize_actions(normalized_actions=normalized_actions, action_norm_stats=self.action_norm_stats)
-        
-        raw_actions = self.raw_actions[step % action_chunk_size][None]    
+                raise KeyError(
+                    f"Key 'normalized_actions' not found in response data: {response['data'].keys()}")
+
+            normalized_actions = normalized_actions[0]
+            # 反归一化到物理控制量
+            self.raw_actions = self.unnormalize_actions(
+                normalized_actions=normalized_actions, action_norm_stats=self.action_norm_stats)
+
+        # 取当前步在 chunk 内的那一帧动作
+        raw_actions = self.raw_actions[step % action_chunk_size][None]
 
         raw_action = {
             "world_vector": np.array(raw_actions[0, :3]),
             "rotation_delta": np.array(raw_actions[0, 3:6]),
-            "open_gripper": np.array(raw_actions[0, 6:7]),  # range [0, 1]; 1 = open; 0 = close
+            # range [0, 1]; 1 = open; 0 = close
+            "open_gripper": np.array(raw_actions[0, 6:7]),
         }
 
         return {"raw_action": raw_action}
 
     @staticmethod
     def unnormalize_actions(normalized_actions: np.ndarray, action_norm_stats: Dict[str, np.ndarray]) -> np.ndarray:
-        mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["min"], dtype=bool))
-        action_high, action_low = np.array(action_norm_stats["max"]), np.array(action_norm_stats["min"])
+        mask = action_norm_stats.get("mask", np.ones_like(
+            action_norm_stats["min"], dtype=bool))
+        action_high, action_low = np.array(
+            action_norm_stats["max"]), np.array(action_norm_stats["min"])
         normalized_actions = np.clip(normalized_actions, -1, 1)
-        normalized_actions[:, 6] = np.where(normalized_actions[:, 6] < 0.5, 0, 1) 
+        normalized_actions[:, 6] = np.where(
+            normalized_actions[:, 6] < 0.5, 0, 1)  # 抓手阈值化
         actions = np.where(
             mask,
-            0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
+            0.5 * (normalized_actions + 1) *
+            (action_high - action_low) + action_low,
             normalized_actions,
         )
-        
+
         return actions
 
     @staticmethod
     def get_action_stats(unnorm_key: str, policy_ckpt_path) -> dict:
         """
         Duplicate stats accessor (retained for backward compatibility).
+        读取动作归一化统计（兼容旧接口）。
         """
         policy_ckpt_path = Path(policy_ckpt_path)
-        model_config, norm_stats = read_mode_config(policy_ckpt_path)  # read config and norm_stats
+        model_config, norm_stats = read_mode_config(
+            policy_ckpt_path)  # read config and norm_stats
 
         unnorm_key = ModelClient._check_unnorm_key(norm_stats, unnorm_key)
         return norm_stats[unnorm_key]["action"]
 
     @staticmethod
     def get_action_chunk_size(policy_ckpt_path):
-        model_config, _ = read_mode_config(policy_ckpt_path)  # read config and norm_stats
+        model_config, _ = read_mode_config(
+            policy_ckpt_path)  # read config and norm_stats
         # import ipdb; ipdb.set_trace()
         return model_config['framework']['action_model']['future_action_window_size'] + 1
 
     @staticmethod
     def parse_bool_flag(value) -> bool:
         if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+            return value.strip().lower() in {
+                "1", "true", "yes", "y", "on"}
         return bool(value)
 
     @staticmethod
@@ -219,18 +242,20 @@ class ModelClient:
         return default if override is None else bool(override)
 
     @staticmethod
-    def get_infer_flag(policy_ckpt_path, key: str, fallback_key: Optional[str] = None) -> bool:
-        model_config, _ = read_mode_config(policy_ckpt_path)
+    def get_inject_signal_infer(policy_ckpt_path) -> bool:
+        model_config, _ = read_mode_config(
+            policy_ckpt_path)  # read config and norm_stats
         framework_cfg = model_config.get("framework", {})
-        if key in framework_cfg:
-            return ModelClient.parse_bool_flag(framework_cfg.get(key))
-        if fallback_key is not None and fallback_key in framework_cfg:
-            return ModelClient.parse_bool_flag(framework_cfg.get(fallback_key))
-        return False
-
+        return ModelClient.parse_bool_flag(
+            framework_cfg.get(
+                "inject_signal_infer",
+                framework_cfg.get("use_signal_infer", False),
+            )
+        )
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
-        image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
+        image = cv.resize(image, tuple(self.image_size),
+                          interpolation=cv.INTER_AREA)
         return image
 
     def visualize_epoch(
@@ -250,13 +275,15 @@ class ModelClient:
         # plot actions
         pred_actions = np.array(
             [
-                np.concatenate([a["world_vector"], a["rotation_delta"], a["open_gripper"]], axis=-1)
+                np.concatenate(
+                    [a["world_vector"], a["rotation_delta"], a["open_gripper"]], axis=-1)
                 for a in predicted_raw_actions
             ]
         )
         for action_dim, action_label in enumerate(ACTION_DIM_LABELS):
             # actions have batch, horizon, dim, in this example we just take the first action for simplicity
-            axs[action_label].plot(pred_actions[:, action_dim], label="predicted action")
+            axs[action_label].plot(
+                pred_actions[:, action_dim], label="predicted action")
             axs[action_label].set_title(action_label)
             axs[action_label].set_xlabel("Time in one episode")
 
@@ -264,12 +291,13 @@ class ModelClient:
         axs["image"].set_xlabel("Time in one episode (subsampled)")
         plt.legend()
         plt.savefig(save_path)
-    
+
     @staticmethod
     def _check_unnorm_key(norm_stats, unnorm_key):
         """
         Duplicate helper (retained for backward compatibility).
         See primary _check_unnorm_key above.
+        辅助函数（兼容旧版），校验/补充 unnorm_key。
         """
         if unnorm_key is None:
             assert len(norm_stats) == 1, (

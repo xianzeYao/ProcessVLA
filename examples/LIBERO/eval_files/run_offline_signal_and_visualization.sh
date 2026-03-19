@@ -1,38 +1,175 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-cd "${ROOT_DIR}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
+cd "${REPO_ROOT}"
 
-PYTHON_BIN="${PYTHON_BIN:-python}"
-VIDEO_PATH="${VIDEO_PATH:-/path/to/rollout.mp4}"
-INSTRUCTION="${INSTRUCTION:-}"
-HIDDEN_DIR="${HIDDEN_DIR:-}"
-SIGNAL_NAMES="${SIGNAL_NAMES:-signal}"
-CURVE_PATHS="${CURVE_PATHS:-}"
+LIV_ROOT=${LIV_ROOT:-${WORKSPACE_ROOT}/LIV}
+LIV_CLIP_ROOT=${LIV_CLIP_ROOT:-${LIV_ROOT}/liv/models/clip}
 
-cmd=(
-  "${PYTHON_BIN}"
-  "examples/LIBERO/eval_files/offline_signal_benchmark.py"
-  "--video-path" "${VIDEO_PATH}"
-)
+export PYTHONPATH="${REPO_ROOT}:${LIV_ROOT}:${LIV_CLIP_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
-if [[ -n "${INSTRUCTION}" ]]; then
-  cmd+=("--instruction" "${INSTRUCTION}")
+STARVLA_PY=${STARVLA_PY:-python3}
+LIV_PY=${LIV_PY:-python3}
+VLAC_PY=${VLAC_PY:-python3}
+ROBODOPAMINE_PY=${ROBODOPAMINE_PY:-python3}
+ROBOMETER_PY=${ROBOMETER_PY:-python3}
+
+COMPUTE_SCRIPT=${COMPUTE_SCRIPT:-${REPO_ROOT}/examples/LIBERO/eval_files/compute_external_signal_curve.py}
+VIS_SCRIPT=${VIS_SCRIPT:-${REPO_ROOT}/examples/LIBERO/eval_files/visualize_signal_benchmark_with_video.py}
+
+ROOT=${ROOT:-${REPO_ROOT}/results/libero_goal}
+DEFAULT_REF_VIDEO=${DEFAULT_REF_VIDEO:-$ROOT/rollout_open_the_middle_drawer_of_the_cabinet_episode1_success.mp4}
+# Optional override. Leave empty to infer instruction from hidden_states metadata.
+INSTRUCTION=""
+VLAC_REF_NUM=${VLAC_REF_NUM:-6}
+VLAC_BATCH_NUM=${VLAC_BATCH_NUM:-5}
+VLAC_SKIP=${VLAC_SKIP:-5}
+VLAC_RICH=${VLAC_RICH:-0}
+VLAC_FRAME_SKIP=${VLAC_FRAME_SKIP:-0}
+VLAC_THINK=${VLAC_THINK:-0}
+
+run_one() {
+    local video_path="$1"
+    local ref_video_path="${2:-$DEFAULT_REF_VIDEO}"
+    local wrist_path=""
+    local overlay_path="${video_path%.mp4}_signals_overlay.mp4"
+    local instruction_args=()
+    local vlac_args=(
+        --reference-video-path "$ref_video_path"
+        --vlac-ref-num "$VLAC_REF_NUM"
+        --vlac-batch-num "$VLAC_BATCH_NUM"
+        --vlac-skip "$VLAC_SKIP"
+    )
+
+    if [[ "$video_path" =~ ^(.*/rollout_.+)_episode([0-9]+)_(success|failure)\.mp4$ ]]; then
+        wrist_path="${BASH_REMATCH[1]}_wrist_episode${BASH_REMATCH[2]}_${BASH_REMATCH[3]}.mp4"
+    fi
+    if [[ ! -f "$ref_video_path" ]]; then
+        echo "[ERROR] Reference video not found: $ref_video_path"
+        return 1
+    fi
+    if [[ -n "${INSTRUCTION}" ]]; then
+        instruction_args=(--instruction "$INSTRUCTION")
+    else
+        echo "[INFO] instruction not provided; infer from video/hidden_states metadata"
+    fi
+    if [[ "${VLAC_RICH}" == "1" || "${VLAC_RICH,,}" == "true" ]]; then
+        vlac_args+=(--vlac-rich)
+    fi
+    if [[ "${VLAC_FRAME_SKIP}" == "1" || "${VLAC_FRAME_SKIP,,}" == "true" ]]; then
+        vlac_args+=(--vlac-frame-skip)
+    fi
+    if [[ "${VLAC_THINK}" == "1" || "${VLAC_THINK,,}" == "true" ]]; then
+        vlac_args+=(--vlac-think)
+    fi
+
+    echo "[RUN] liv -> $video_path"
+    "$LIV_PY" "$COMPUTE_SCRIPT" \
+        --model liv \
+        --video-path "$video_path" \
+        "${instruction_args[@]}"
+
+    echo "[RUN] robometer -> $video_path"
+    "$ROBOMETER_PY" "$COMPUTE_SCRIPT" \
+        --model robometer \
+        --video-path "$video_path" \
+        "${instruction_args[@]}"
+
+    echo "[RUN] vlac -> $video_path"
+    "$VLAC_PY" "$COMPUTE_SCRIPT" \
+        --model vlac \
+        --video-path "$video_path" \
+        "${instruction_args[@]}" \
+        "${vlac_args[@]}"
+
+    echo "[RUN] robodopamine -> $video_path"
+    if [[ -n "$wrist_path" && -f "$wrist_path" ]]; then
+        "$ROBODOPAMINE_PY" "$COMPUTE_SCRIPT" \
+            --model robodopamine \
+            --video-path "$video_path" \
+            "${instruction_args[@]}" \
+            --wrist-video-path "$wrist_path"
+    else
+        "$ROBODOPAMINE_PY" "$COMPUTE_SCRIPT" \
+            --model robodopamine \
+            --video-path "$video_path" \
+            "${instruction_args[@]}"
+    fi
+
+    echo "[RUN] render -> $video_path"
+    "$STARVLA_PY" "$VIS_SCRIPT" \
+        --video-path "$video_path" \
+        "${instruction_args[@]}" \
+        --models liv robometer vlac robodopamine \
+        --plot-layout subplot
+
+    echo "[DONE] source video: $video_path"
+    echo "[DONE] overlay video: $overlay_path"
+}
+
+if [[ "${RUN_SIGNAL_DEMO:-0}" != "1" ]]; then
+    echo "[INFO] Template only. Set RUN_SIGNAL_DEMO=1 and ROOT=/path/to/libero_rollout_dir to run the demo batch."
+    exit 0
 fi
 
-if [[ -n "${HIDDEN_DIR}" ]]; then
-  cmd+=("--hidden-dir" "${HIDDEN_DIR}")
-fi
+# open_the_middle_drawer_of_the_cabinet
+run_one "$ROOT/rollout_open_the_middle_drawer_of_the_cabinet_episode0_failure.mp4" \
+    "$ROOT/rollout_open_the_middle_drawer_of_the_cabinet_episode1_success.mp4"
+run_one "$ROOT/rollout_open_the_middle_drawer_of_the_cabinet_episode0_success.mp4" \
+    "$ROOT/rollout_open_the_middle_drawer_of_the_cabinet_episode1_success.mp4"
 
-if [[ -n "${CURVE_PATHS}" ]]; then
-  # shellcheck disable=SC2206
-  curve_array=(${CURVE_PATHS})
-  cmd+=("--curve-paths" "${curve_array[@]}")
-else
-  # shellcheck disable=SC2206
-  signal_array=(${SIGNAL_NAMES})
-  cmd+=("--signal-names" "${signal_array[@]}")
-fi
+# open_the_top_drawer_and_put_the_bowl_inside
+run_one "$ROOT/rollout_open_the_top_drawer_and_put_the_bowl_inside_episode1_failure.mp4" \
+    "$ROOT/rollout_open_the_top_drawer_and_put_the_bowl_inside_episode2_success.mp4"
+run_one "$ROOT/rollout_open_the_top_drawer_and_put_the_bowl_inside_episode0_success.mp4" \
+    "$ROOT/rollout_open_the_top_drawer_and_put_the_bowl_inside_episode1_success.mp4"
 
-"${cmd[@]}"
+# push_the_plate_to_the_front_of_the_stove
+run_one "$ROOT/rollout_push_the_plate_to_the_front_of_the_stove_episode4_failure.mp4" \
+    "$ROOT/rollout_push_the_plate_to_the_front_of_the_stove_episode1_success.mp4"
+run_one "$ROOT/rollout_push_the_plate_to_the_front_of_the_stove_episode0_success.mp4" \
+    "$ROOT/rollout_push_the_plate_to_the_front_of_the_stove_episode1_success.mp4"
+
+# put_the_bowl_on_the_plate
+run_one "$ROOT/rollout_put_the_bowl_on_the_plate_episode1_failure.mp4" \
+    "$ROOT/rollout_put_the_bowl_on_the_plate_episode2_success.mp4"
+run_one "$ROOT/rollout_put_the_bowl_on_the_plate_episode0_success.mp4" \
+    "$ROOT/rollout_put_the_bowl_on_the_plate_episode2_success.mp4"
+
+# put_the_bowl_on_the_stove
+# No failure rollout was present in the provided file list for this task.
+run_one "$ROOT/rollout_put_the_bowl_on_the_stove_episode0_success.mp4" \
+    "$ROOT/rollout_put_the_bowl_on_the_stove_episode1_success.mp4"
+
+# put_the_bowl_on_top_of_the_cabinet
+run_one "$ROOT/rollout_put_the_bowl_on_top_of_the_cabinet_episode4_failure.mp4" \
+    "$ROOT/rollout_put_the_bowl_on_top_of_the_cabinet_episode1_success.mp4"
+run_one "$ROOT/rollout_put_the_bowl_on_top_of_the_cabinet_episode0_success.mp4" \
+    "$ROOT/rollout_put_the_bowl_on_top_of_the_cabinet_episode1_success.mp4"
+
+# put_the_cream_cheese_in_the_bowl
+run_one "$ROOT/rollout_put_the_cream_cheese_in_the_bowl_episode0_failure.mp4" \
+    "$ROOT/rollout_put_the_cream_cheese_in_the_bowl_episode1_success.mp4"
+run_one "$ROOT/rollout_put_the_cream_cheese_in_the_bowl_episode0_success.mp4" \
+    "$ROOT/rollout_put_the_cream_cheese_in_the_bowl_episode1_success.mp4"
+
+# put_the_wine_bottle_on_the_rack
+run_one "$ROOT/rollout_put_the_wine_bottle_on_the_rack_episode2_failure.mp4" \
+    "$ROOT/rollout_put_the_wine_bottle_on_the_rack_episode1_success.mp4"
+run_one "$ROOT/rollout_put_the_wine_bottle_on_the_rack_episode0_success.mp4" \
+    "$ROOT/rollout_put_the_wine_bottle_on_the_rack_episode1_success.mp4"
+
+# put_the_wine_bottle_on_top_of_the_cabinet
+run_one "$ROOT/rollout_put_the_wine_bottle_on_top_of_the_cabinet_episode0_failure.mp4" \
+    "$ROOT/rollout_put_the_wine_bottle_on_top_of_the_cabinet_episode2_success.mp4"
+run_one "$ROOT/rollout_put_the_wine_bottle_on_top_of_the_cabinet_episode1_success.mp4" \
+    "$ROOT/rollout_put_the_wine_bottle_on_top_of_the_cabinet_episode2_success.mp4"
+
+# turn_on_the_stove
+run_one "$ROOT/rollout_turn_on_the_stove_episode6_failure.mp4" \
+    "$ROOT/rollout_turn_on_the_stove_episode1_success.mp4"
+run_one "$ROOT/rollout_turn_on_the_stove_episode0_success.mp4" \
+    "$ROOT/rollout_turn_on_the_stove_episode1_success.mp4"
