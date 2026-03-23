@@ -2,16 +2,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT=${REPO_ROOT:-/home/yxz/Critic4VLA/ProcessVLA}
-WORKSPACE_ROOT=${WORKSPACE_ROOT:-/home/yxz/Critic4VLA}
+REPO_ROOT=${REPO_ROOT:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}
+WORKSPACE_ROOT=${WORKSPACE_ROOT:-$(cd "${REPO_ROOT}/.." && pwd)}
 cd "${REPO_ROOT}"
 
-LIV_ROOT=${LIV_ROOT:-/home/yxz/Critic4VLA/LIV}
+LIV_ROOT=${LIV_ROOT:-/your/path/to/LIV}
 LIV_CLIP_ROOT=${LIV_CLIP_ROOT:-${LIV_ROOT}/liv/models/clip}
 
 export PYTHONPATH="${REPO_ROOT}:${LIV_ROOT}:${LIV_CLIP_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
-STARVLA_PY=${STARVLA_PY:-/data/yxz/conda/envs/starVLA/bin/python}
+STARVLA_PY=${STARVLA_PY:-/your/path/to/starvla_python}
 read_signal_utils_value() {
     local key="$1"
     python3 - "$REPO_ROOT/starVLA/model/framework/signal_utils.py" "$key" <<'PY'
@@ -44,10 +44,10 @@ VLAC_PY=${VLAC_PY:-python3}
 ROBODOPAMINE_PY=${ROBODOPAMINE_PY:-python3}
 ROBOMETER_PY=${ROBOMETER_PY:-python3}
 
-COMPUTE_SCRIPT=${COMPUTE_SCRIPT:-/home/yxz/Critic4VLA/ProcessVLA/examples/LIBERO/eval_files/compute_external_signal_curve.py}
-VIS_SCRIPT=${VIS_SCRIPT:-/home/yxz/Critic4VLA/ProcessVLA/examples/LIBERO/eval_files/visualize_signal_benchmark_with_video.py}
+COMPUTE_SCRIPT=${COMPUTE_SCRIPT:-${REPO_ROOT}/examples/LIBERO/eval_files/compute_external_signal_curve.py}
+VIS_SCRIPT=${VIS_SCRIPT:-${REPO_ROOT}/examples/LIBERO/eval_files/visualize_signal_benchmark_with_video.py}
 
-ROOT=${ROOT:-/data/yxz/starvla4libero/libero4in1_qwen2.5gr00t_vlatrain_baseline_steps_40000_pytorch_model.pt/results/libero_goal}
+ROOT=${ROOT:-/your/path/to/libero_rollout_root}
 DEFAULT_REF_VIDEO=${DEFAULT_REF_VIDEO:-$ROOT/rollout_open_the_middle_drawer_of_the_cabinet_episode1_success.mp4}
 # Optional override. Leave empty to infer instruction from hidden_states metadata.
 INSTRUCTION=""

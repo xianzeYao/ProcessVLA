@@ -363,8 +363,8 @@ def test_offline_vlac(
 
 
 def main():
-    data_root_dir = "/data/yxz/dataset/libero_lerobot"
-    output_dir = "test_vlac4train"
+    data_root_dir = "/your/path/to/libero_lerobot"
+    output_dir = "/your/path/to/test_offline_vlac_outputs"
     data_mix = "libero_goal"
     trajectory_seed = 42
     reference_seed = 10
@@ -376,7 +376,7 @@ def main():
     vlac_rich = False
     vlac_frame_skip = False
     vlac_think = False
-    vlac_python = "/data/yxz/conda/envs/VLAC/bin/python"
+    vlac_python = "/your/path/to/vlac_python"
     done_flag = False
     done_threshold = 0.9
 

@@ -29,38 +29,38 @@ STEP_PATTERN = re.compile(r"step_(\d+)_last_hidden_states_meta\.pt$")
 
 # Fill these defaults for your local machine. Leave a Python entry empty to use the
 # current interpreter instead of a dedicated model-specific environment.
-DEFAULT_LIV_MODEL_PATH = "/data/yxz/models/VLAC"
-DEFAULT_LIV_PYTHON = "/data/yxz/conda/envs/VLAC/bin/python"
+DEFAULT_LIV_MODEL_PATH = "/your/path/to/liv_model"
+DEFAULT_LIV_PYTHON = "/your/path/to/liv_python"
 
 DEFAULT_ROBOMETER_MODEL_PATH = os.environ.get(
     "CRITIC4VLA_ROBOMETER_MODEL_PATH",
-    "/data/yxz/models/Robo_Meter",
+    "/your/path/to/robometer_model",
 )
 DEFAULT_ROBOMETER_QWEN_SNAPSHOT_PATH = os.environ.get(
     "CRITIC4VLA_ROBOMETER_QWEN_SNAPSHOT_PATH",
-    "",
+    "/your/path/to/robometer_qwen_snapshot",
 )
 DEFAULT_ROBOMETER_UNSLOTH_SNAPSHOT_PATH = os.environ.get(
     "CRITIC4VLA_ROBOMETER_UNSLOTH_SNAPSHOT_PATH",
-    "",
+    "/your/path/to/robometer_unsloth_snapshot",
 )
 DEFAULT_ROBOMETER_PYTHON = os.environ.get(
     "CRITIC4VLA_ROBOMETER_PYTHON",
-    "/data/yxz/conda/envs/starVLA/bin/python",
+    "/your/path/to/robometer_python",
 )
 
 DEFAULT_ROBODOPAMINE_MODEL_PATH = os.environ.get(
     "CRITIC4VLA_ROBODOPAMINE_MODEL_PATH",
-    "/data/yxz/models/Robo_Dopamine",
+    "/your/path/to/robodopamine_model",
 )
 DEFAULT_ROBODOPAMINE_PYTHON = os.environ.get(
     "CRITIC4VLA_ROBODOPAMINE_PYTHON",
-    "",
+    "/your/path/to/robodopamine_python",
 )
 
-DEFAULT_VLAC_MODEL_PATH = "/data/yxz/models/VLAC"
+DEFAULT_VLAC_MODEL_PATH = "/your/path/to/vlac_model"
 DEFAULT_VLAC_MODEL_TYPE = "internvl2"
-DEFAULT_VLAC_PYTHON = "/data/yxz/conda/envs/VLAC/bin/python"
+DEFAULT_VLAC_PYTHON = "/your/path/to/vlac_python"
 
 ROBOMETER_MAX_IMAGE_SIDE = 480
 ROBOMETER_MAX_IMAGE_PIXELS = 1024 * 1024

@@ -406,8 +406,8 @@ def build_offline_vlac_signal_cache(
 
 
 def main():
-    data_root_dir = "/data/yxz/dataset/libero_lerobot"
-    output_root = "test_vlac4train"
+    data_root_dir = "/your/path/to/libero_lerobot"
+    output_root = "/your/path/to/vlac_cache_output_root"
     data_mix = "libero_goal"
     signal_name = "vlac"
     signal_kind = "value"
@@ -420,7 +420,7 @@ def main():
     vlac_rich = False
     vlac_frame_skip = False
     vlac_think = False
-    vlac_python = "/data/yxz/conda/envs/VLAC/bin/python"
+    vlac_python = "/your/path/to/vlac_python"
     overwrite = False
     max_trajectories = None
 
