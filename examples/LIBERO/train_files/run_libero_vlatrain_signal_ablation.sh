@@ -2,7 +2,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROCESSVLA_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROCESSVLA_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 cd "${PROCESSVLA_ROOT}"
 
 MODE=${1:-baseline}
@@ -44,7 +44,7 @@ default_config_yaml=${PROCESSVLA_ROOT}/examples/LIBERO/train_files/starvla_cotra
 config_yaml=${CONFIG_YAML:-${default_config_yaml}}
 libero_data_root=${LIBERO_DATA_ROOT:-/data/yxz/dataset/libero_lerobot}
 data_mix=${DATA_MIX:-libero_goal}
-run_root_dir=${RUN_ROOT_DIR:-${PROCESSVLA_ROOT}/results/train_runs}
+run_root_dir=${RUN_ROOT_DIR:-/data/yxz/starVLA4train}
 wandb_entity=${WANDB_ENTITY:-yao-xian-ze}
 wandb_project=${WANDB_PROJECT:-starvla4train}
 run_id=${RUN_ID:-${data_mix}_qwen2.5gr00t_vlatrain_${MODE}}
