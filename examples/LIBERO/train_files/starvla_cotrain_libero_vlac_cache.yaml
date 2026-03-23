@@ -10,7 +10,7 @@ is_debug: false
 framework:
   name: QwenGR00T
   qwenvl:
-    base_vlm: ./playground/Pretrained_models/Qwen2.5-VL-3B-Instruct-Action
+    base_vlm: /data/yxz/models/starVLA/Qwen3-VL-4B-Instruct
     attn_implementation: flash_attention_2
     vl_hidden_dim: 2048
   dino:
@@ -49,7 +49,7 @@ framework:
 signal:
   train_source: vlac_cache
   infer_source: none
-  cache_root: test_vlac4train
+  cache_root: /home/yxz/Critic4VLA/ProcessVLA/vlac_cache_libero_goal
   cache_name: vlac
   cache_required: true
   align_mode: current

@@ -13,7 +13,7 @@ fi
 
 signal_train_source=none
 signal_infer_source=none
-signal_cache_root=${SIGNAL_CACHE_ROOT:-test_vlac4train}
+signal_cache_root=${SIGNAL_CACHE_ROOT:-/home/yxz/Critic4VLA/ProcessVLA/vlac_cache_libero_goal}
 signal_cache_name=${SIGNAL_CACHE_NAME:-vlac}
 signal_cache_required=true
 signal_align_mode=${SIGNAL_ALIGN_MODE:-current}
@@ -39,14 +39,14 @@ export NCCL_SOCKET_TIMEOUT_MS=360000
 # === Please modify the following paths according to your environment ===
 Framework_name=QwenGR00T
 freeze_module_list=${FREEZE_MODULE_LIST:-}
-base_vlm=${BASE_VLM:-/path/to/base_vlm}
+base_vlm=${BASE_VLM:-/data/yxz/models/starVLA/Qwen3-VL-4B-Instruct}
 default_config_yaml=${PROCESSVLA_ROOT}/examples/LIBERO/train_files/starvla_cotrain_libero_vlac_cache.yaml
 config_yaml=${CONFIG_YAML:-${default_config_yaml}}
-libero_data_root=${LIBERO_DATA_ROOT:-/path/to/libero_lerobot}
+libero_data_root=${LIBERO_DATA_ROOT:-/data/yxz/dataset/libero_lerobot}
 data_mix=${DATA_MIX:-libero_goal}
 run_root_dir=${RUN_ROOT_DIR:-${PROCESSVLA_ROOT}/results/train_runs}
-wandb_entity=${WANDB_ENTITY:-your_wandb_entity}
-wandb_project=${WANDB_PROJECT:-starVLA4Libero}
+wandb_entity=${WANDB_ENTITY:-yao-xian-ze}
+wandb_project=${WANDB_PROJECT:-starvla4train}
 run_id=${RUN_ID:-${data_mix}_qwen2.5gr00t_vlatrain_${MODE}}
 config_file=${CONFIG_FILE:-${PROCESSVLA_ROOT}/starVLA/config/deepseeds/deepspeed_zero2.yaml}
 train_script=${TRAIN_SCRIPT:-${PROCESSVLA_ROOT}/starVLA/training/train_starvla.py}
