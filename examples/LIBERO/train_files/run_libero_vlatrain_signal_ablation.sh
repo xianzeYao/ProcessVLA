@@ -6,17 +6,24 @@ PROCESSVLA_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROCESSVLA_ROOT}"
 
 MODE=${1:-baseline}
-if [[ "${MODE}" != "baseline" && "${MODE}" != "liv" ]]; then
-  echo "Usage: $0 [baseline|liv]"
+if [[ "${MODE}" != "baseline" && "${MODE}" != "liv" && "${MODE}" != "vlac_cache" ]]; then
+  echo "Usage: $0 [baseline|liv|vlac_cache]"
   exit 1
 fi
 
-inject_signal_train=false
-inject_signal_infer=false
+signal_train_source=none
+signal_infer_source=none
+signal_cache_root=${SIGNAL_CACHE_ROOT:-test_vlac4train}
+signal_cache_name=${SIGNAL_CACHE_NAME:-vlac}
+signal_cache_required=true
+signal_align_mode=${SIGNAL_ALIGN_MODE:-current}
 
 if [[ "${MODE}" == "liv" ]]; then
-  inject_signal_train=true
-  inject_signal_infer=true
+  signal_train_source=liv_online
+  signal_infer_source=liv_online
+elif [[ "${MODE}" == "vlac_cache" ]]; then
+  signal_train_source=vlac_cache
+  signal_cache_required=true
 fi
 
 # export NCCL_SOCKET_IFNAME=bond0
@@ -33,7 +40,8 @@ export NCCL_SOCKET_TIMEOUT_MS=360000
 Framework_name=QwenGR00T
 freeze_module_list=${FREEZE_MODULE_LIST:-}
 base_vlm=${BASE_VLM:-/path/to/base_vlm}
-config_yaml=${CONFIG_YAML:-${PROCESSVLA_ROOT}/starVLA/config/training/starvla_cotrain_libero_signal.yaml}
+default_config_yaml=${PROCESSVLA_ROOT}/examples/LIBERO/train_files/starvla_cotrain_libero_vlac_cache.yaml
+config_yaml=${CONFIG_YAML:-${default_config_yaml}}
 libero_data_root=${LIBERO_DATA_ROOT:-/path/to/libero_lerobot}
 data_mix=${DATA_MIX:-libero_goal}
 run_root_dir=${RUN_ROOT_DIR:-${PROCESSVLA_ROOT}/results/train_runs}
@@ -46,7 +54,8 @@ train_script=${TRAIN_SCRIPT:-${PROCESSVLA_ROOT}/starVLA/training/train_starvla.p
 # === End of environment variable configuration ===
 ###########################################################################################
 
-echo "mode=${MODE}, inject_signal_train=${inject_signal_train}, inject_signal_infer=${inject_signal_infer}"
+echo "mode=${MODE}, signal.train_source=${signal_train_source}, signal.infer_source=${signal_infer_source}"
+echo "signal.cache_root=${signal_cache_root}, signal.cache_name=${signal_cache_name}, signal.cache_required=${signal_cache_required}, signal.align_mode=${signal_align_mode}"
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p ${output_dir}
@@ -63,8 +72,12 @@ accelerate launch \
   --config_yaml "${config_yaml}" \
   --framework.name "${Framework_name}" \
   --framework.qwenvl.base_vlm "${base_vlm}" \
-  --framework.inject_signal_train "${inject_signal_train}" \
-  --framework.inject_signal_infer "${inject_signal_infer}" \
+  --signal.train_source "${signal_train_source}" \
+  --signal.infer_source "${signal_infer_source}" \
+  --signal.cache_root "${signal_cache_root}" \
+  --signal.cache_name "${signal_cache_name}" \
+  --signal.cache_required "${signal_cache_required}" \
+  --signal.align_mode "${signal_align_mode}" \
   --datasets.vla_data.data_root_dir "${libero_data_root}" \
   --datasets.vla_data.data_mix "${data_mix}" \
   --datasets.vla_data.per_device_batch_size 16 \

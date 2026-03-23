@@ -44,8 +44,15 @@ framework:
       positional_embeddings: null
 
   reduce_in_full_precision: true
-  inject_signal_train: true
-  inject_signal_infer: false
+
+
+signal:
+  train_source: vlac_cache
+  infer_source: none
+  cache_root: test_vlac4train
+  cache_name: vlac
+  cache_required: true
+  align_mode: current
 
 
 datasets:
@@ -75,10 +82,6 @@ datasets:
     load_all_data_for_training: true
     obs: ["image_0"]
     video_backend: torchvision_av
-    signal_cache_root: test_vlac4train
-    signal_name: vlac
-    signal_align_mode: current
-    signal_cache_required: true
 
 
 trainer:

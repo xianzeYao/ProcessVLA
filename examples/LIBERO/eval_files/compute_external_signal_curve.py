@@ -406,19 +406,14 @@ def main():
         )
         expanded = np.asarray(values, dtype=np.float32)
     elif args.model == "robometer":
-        robometer_frames, robometer_steps, frame_count = sample_robometer_video_official(
-            video_path,
-            fps=5.0,
-            max_frames=150,
-        )
-        values = compute_robometer_curve_signal_official(
-            video_frames=robometer_frames,
+        primary_frames, _fps = read_video(video_path)
+        values = signal_utils.compute_robometer_curve_signal(
+            video_frames=primary_frames,
             instruction=instruction,
-            model_path=signal_utils.DEFAULT_ROBOMETER_MODEL_PATH,
             device=torch.device(args.device),
         )
-        steps = robometer_steps
-        expanded = staircase_expand(steps, values, frame_count)
+        steps = np.arange(len(values), dtype=np.int32)
+        expanded = np.asarray(values, dtype=np.float32)
     elif args.model == "vlac":
         if args.reference_video_path is None:
             raise ValueError("--reference-video-path is required for vlac.")

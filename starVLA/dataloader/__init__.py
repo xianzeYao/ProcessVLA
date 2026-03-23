@@ -38,6 +38,24 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
     if dataset_py == "lerobot_datasets":
         from starVLA.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
         vla_dataset_cfg = cfg.datasets.vla_data
+        signal_cfg = cfg.signal
+
+        train_source = str(signal_cfg.train_source).lower()
+        if train_source == "vlac_cache":
+            vla_dataset_cfg.signal_cache_root = signal_cfg.cache_root
+            vla_dataset_cfg.signal_name = signal_cfg.cache_name
+            vla_dataset_cfg.signal_align_mode = signal_cfg.align_mode
+            vla_dataset_cfg.signal_cache_required = signal_cfg.cache_required
+        elif train_source in {"none", "liv_online"}:
+            vla_dataset_cfg.signal_cache_root = None
+            vla_dataset_cfg.signal_name = signal_cfg.cache_name
+            vla_dataset_cfg.signal_align_mode = signal_cfg.align_mode
+            vla_dataset_cfg.signal_cache_required = False
+        else:
+            raise NotImplementedError(
+                f"Unsupported signal.train_source={signal_cfg.train_source!r}. "
+                "Supported values are: none, vlac_cache, liv_online."
+            )
 
         vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
         

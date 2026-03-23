@@ -24,14 +24,21 @@ try:
 except NameError:
     pkg_path = None
 
-# Auto-import all framework submodules to trigger registration
-if pkg_path is not None:
+_REGISTRY_LOADED = False
+
+
+def _ensure_registry_loaded() -> None:
+    global _REGISTRY_LOADED
+    if _REGISTRY_LOADED or pkg_path is None:
+        return
+
     for _, module_name, _ in pkgutil.iter_modules(pkg_path):
         try:
             importlib.import_module(f"{__name__}.{module_name}")
         except Exception as e:
             logger.warning(
                 f"Skipping framework submodule `{module_name}` during auto-import: {e}")
+    _REGISTRY_LOADED = True
 
 
 def build_framework(cfg):
@@ -59,6 +66,7 @@ def build_framework(cfg):
         return NeuroVLA(cfg)
 
     # auto detect from registry
+    _ensure_registry_loaded()
     framework_id = cfg.framework.name
     if framework_id not in FRAMEWORK_REGISTRY._registry:
         raise NotImplementedError(

@@ -45,6 +45,13 @@ logger = initialize_overwatch(__name__)
 IGNORE_INDEX = -100
 
 
+def _get_signal_cfg(config):
+    signal_cfg = getattr(config, "signal", None)
+    if signal_cfg is None:
+        raise ValueError("Missing required top-level `signal` configuration section.")
+    return signal_cfg
+
+
 @FRAMEWORK_REGISTRY.register("QwenGR00T")  # 向框架注册表注册本类，便于按字符串加载
 class Qwen_GR00T(baseframework):
     """
@@ -164,29 +171,20 @@ class Qwen_GR00T(baseframework):
                 )
                 state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
 
-            inject_signal_train = kwargs.get(
-                "inject_signal_train",
-                self.config.framework.get(
-                    "inject_signal_train",
-                    self.config.framework.get("use_signal_train", False),
-                ),
-            )
+            signal_cfg = _get_signal_cfg(self.config)
+            train_source = str(signal_cfg.train_source).lower()
             signal_repeated = None
-            if inject_signal_train:
+            if train_source == "vlac_cache":
                 signal = torch.empty(
                     len(examples),
                     device=last_hidden.device,
                     dtype=last_hidden.dtype,
                 )
                 missing_indices = []
-                missing_images = []
-                missing_instructions = []
                 for idx, example in enumerate(examples):
                     cached_signal = example.get("signal", None)
                     if cached_signal is None:
                         missing_indices.append(idx)
-                        missing_images.append(batch_images[idx])
-                        missing_instructions.append(instructions[idx])
                         continue
                     signal[idx] = torch.as_tensor(
                         cached_signal,
@@ -195,16 +193,27 @@ class Qwen_GR00T(baseframework):
                     ).reshape(-1)[0]
 
                 if missing_indices:
-                    computed_signal = compute_liv_signal(
-                        batch_images=missing_images,
-                        instructions=missing_instructions,
-                        device=last_hidden.device,
-                        dtype=last_hidden.dtype,
+                    raise ValueError(
+                        "signal.train_source='vlac_cache' requires every training sample to provide "
+                        f"a cached `signal`, but {len(missing_indices)} sample(s) were missing it."
                     )
-                    for missing_offset, example_idx in enumerate(missing_indices):
-                        signal[example_idx] = computed_signal[missing_offset]
                 signal_repeated = signal.repeat(
                     repeated_diffusion_steps)
+            elif train_source == "liv_online":
+                signal = compute_liv_signal(
+                    batch_images=batch_images,
+                    instructions=instructions,
+                    device=last_hidden.device,
+                    dtype=last_hidden.dtype,
+                )
+                signal_repeated = signal.repeat(repeated_diffusion_steps)
+            elif train_source == "none":
+                signal_repeated = None
+            else:
+                raise NotImplementedError(
+                    f"Unsupported signal.train_source={signal_cfg.train_source!r}. "
+                    "Supported values are: none, vlac_cache, liv_online."
+                )
 
             # 交给动作头计算 MSE 形式的 flow-matching 损失
             action_loss = self.action_model(
@@ -273,20 +282,21 @@ class Qwen_GR00T(baseframework):
 
         base_last_hidden = last_hidden
         signal = None
-        inject_signal_infer = kwargs.get(
-            "inject_signal_infer",
-            self.config.framework.get(
-                "inject_signal_infer",
-                self.config.framework.get("use_signal_infer", False),
-            ),
-        )
-        inject_signal_infer = bool(inject_signal_infer)
-        if inject_signal_infer:
+        signal_cfg = _get_signal_cfg(self.config)
+        infer_source = str(signal_cfg.infer_source).lower()
+        if infer_source == "none":
+            signal = None
+        elif infer_source == "liv_online":
             signal = compute_liv_signal(
                 batch_images=batch_images,
                 instructions=instructions,
                 device=last_hidden.device,
                 dtype=last_hidden.dtype,
+            )
+        else:
+            raise NotImplementedError(
+                f"Unsupported signal.infer_source={signal_cfg.infer_source!r}. "
+                "Supported values are: none, liv_online."
             )
 
         # 推理时保存最后一层 hidden states 及其多模态元信息，便于离线切分图像/文本 token
@@ -304,7 +314,7 @@ class Qwen_GR00T(baseframework):
             save_payload["signal"] = signal.detach(
             ).cpu() if signal is not None else None
             save_payload["signal_flags"] = {
-                "inject_signal_infer": inject_signal_infer,
+                "infer_source": infer_source,
             }
         if hidden_save_path:
             save_path = Path(hidden_save_path)
@@ -319,7 +329,7 @@ class Qwen_GR00T(baseframework):
         # 动作头推理用 float32，执行多步采样
         with torch.autocast("cuda", dtype=torch.float32):
             pred_actions = self.action_model.predict_action(
-                last_hidden, state, signal if inject_signal_infer else None)  # (B, chunk_len, action_dim)
+                last_hidden, state, signal)  # (B, chunk_len, action_dim)
         # 输出 numpy，通常仍处于归一化空间
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}
