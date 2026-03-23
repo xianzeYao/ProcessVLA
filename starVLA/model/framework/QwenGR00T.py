@@ -16,7 +16,7 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images  # 训练
 from starVLA.model.modules.action_model.GR00T_ActionHeader import get_action_model, FlowmatchingActionHead
 from starVLA.model.modules.vlm import get_vlm_model  # 构建 VLM（Qwen-VL 等）接口的工厂
 from starVLA.model.framework.base_framework import baseframework  # 通用框架基类，封装训练时需要的接口
-from starVLA.model.framework.singal_utils import build_hidden_state_save_payload, compute_liv_signal
+from starVLA.model.framework.signal_utils import build_hidden_state_save_payload, compute_liv_signal
 # 将输入图像安全转成 PIL，保持信息完整
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.training.trainer_utils import initialize_overwatch  # 初始化日志记录器

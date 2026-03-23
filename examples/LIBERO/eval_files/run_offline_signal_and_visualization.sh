@@ -2,25 +2,52 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
+REPO_ROOT=${REPO_ROOT:-/home/yxz/Critic4VLA/ProcessVLA}
+WORKSPACE_ROOT=${WORKSPACE_ROOT:-/home/yxz/Critic4VLA}
 cd "${REPO_ROOT}"
 
-LIV_ROOT=${LIV_ROOT:-${WORKSPACE_ROOT}/LIV}
+LIV_ROOT=${LIV_ROOT:-/home/yxz/Critic4VLA/LIV}
 LIV_CLIP_ROOT=${LIV_CLIP_ROOT:-${LIV_ROOT}/liv/models/clip}
 
 export PYTHONPATH="${REPO_ROOT}:${LIV_ROOT}:${LIV_CLIP_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
-STARVLA_PY=${STARVLA_PY:-python3}
+STARVLA_PY=${STARVLA_PY:-/data/yxz/conda/envs/starVLA/bin/python}
+read_signal_utils_value() {
+    local key="$1"
+    python3 - "$REPO_ROOT/starVLA/model/framework/signal_utils.py" "$key" <<'PY'
+import ast
+import sys
+
+source_path = sys.argv[1]
+target_key = sys.argv[2]
+with open(source_path, "r", encoding="utf-8") as handle:
+    tree = ast.parse(handle.read(), filename=source_path)
+
+for node in tree.body:
+    if not isinstance(node, ast.Assign):
+        continue
+    for target in node.targets:
+        if isinstance(target, ast.Name) and target.id == target_key:
+            value = ast.literal_eval(node.value)
+            print("" if value is None else value)
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+LIV_PY=${LIV_PY:-$(read_signal_utils_value DEFAULT_LIV_PYTHON || true)}
+VLAC_PY=${VLAC_PY:-$(read_signal_utils_value DEFAULT_VLAC_PYTHON || true)}
+ROBODOPAMINE_PY=${ROBODOPAMINE_PY:-$(read_signal_utils_value DEFAULT_ROBODOPAMINE_PYTHON || true)}
+ROBOMETER_PY=${ROBOMETER_PY:-$(read_signal_utils_value DEFAULT_ROBOMETER_PYTHON || true)}
 LIV_PY=${LIV_PY:-python3}
 VLAC_PY=${VLAC_PY:-python3}
 ROBODOPAMINE_PY=${ROBODOPAMINE_PY:-python3}
 ROBOMETER_PY=${ROBOMETER_PY:-python3}
 
-COMPUTE_SCRIPT=${COMPUTE_SCRIPT:-${REPO_ROOT}/examples/LIBERO/eval_files/compute_external_signal_curve.py}
-VIS_SCRIPT=${VIS_SCRIPT:-${REPO_ROOT}/examples/LIBERO/eval_files/visualize_signal_benchmark_with_video.py}
+COMPUTE_SCRIPT=${COMPUTE_SCRIPT:-/home/yxz/Critic4VLA/ProcessVLA/examples/LIBERO/eval_files/compute_external_signal_curve.py}
+VIS_SCRIPT=${VIS_SCRIPT:-/home/yxz/Critic4VLA/ProcessVLA/examples/LIBERO/eval_files/visualize_signal_benchmark_with_video.py}
 
-ROOT=${ROOT:-${REPO_ROOT}/results/libero_goal}
+ROOT=${ROOT:-/data/yxz/starvla4libero/libero4in1_qwen2.5gr00t_vlatrain_baseline_steps_40000_pytorch_model.pt/results/libero_goal}
 DEFAULT_REF_VIDEO=${DEFAULT_REF_VIDEO:-$ROOT/rollout_open_the_middle_drawer_of_the_cabinet_episode1_success.mp4}
 # Optional override. Leave empty to infer instruction from hidden_states metadata.
 INSTRUCTION=""

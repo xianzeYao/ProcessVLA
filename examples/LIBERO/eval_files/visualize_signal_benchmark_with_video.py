@@ -1,4 +1,4 @@
-from starVLA.model.framework.singal_utils import (
+from starVLA.model.framework.signal_utils import (
     compute_liv_curve_signal,
 )
 import torch

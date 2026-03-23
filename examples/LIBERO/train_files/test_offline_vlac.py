@@ -1,6 +1,4 @@
 from __future__ import annotations
-from starVLA.model.framework.signal_utils import read_video_fps, run_vlac_web_trajectory_critic, select_primary_video_key
-from starVLA.dataloader.lerobot_datasets import get_vla_dataset
 
 import json
 import random
@@ -18,6 +16,9 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
+from starVLA.model.framework.signal_utils import read_video_fps, run_vlac_web_trajectory_critic, select_primary_video_key
+from starVLA.dataloader.lerobot_datasets import get_vla_dataset
+
 
 def resolve_device(device_arg: str | None) -> torch.device:
     if device_arg:
@@ -27,10 +28,23 @@ def resolve_device(device_arg: str | None) -> torch.device:
     return torch.device("cpu")
 
 
-def resolve_output_dir(*, output_dir: str | Path | None, vla_cfg) -> Path:
+def resolve_output_dir(
+    *,
+    output_dir: str | Path | None,
+    vla_cfg,
+    trajectory_seed: int,
+    reference_seed: int,
+) -> Path:
     if output_dir:
-        return Path(output_dir).expanduser().resolve()
-    return (WORKSPACE_ROOT / "results" / "test_offline_vlac" / str(vla_cfg.data_mix)).resolve()
+        base_dir = Path(output_dir).expanduser().resolve()
+    else:
+        base_dir = (WORKSPACE_ROOT / "results" / "test_offline_vlac").resolve()
+    run_dir = (
+        f"{vla_cfg.data_mix}"
+        f"_trajectory_seed_{int(trajectory_seed)}"
+        f"_reference_seed_{int(reference_seed)}"
+    )
+    return base_dir / run_dir
 
 
 def resolve_instruction(dataset, trajectory_id: int) -> str:
@@ -194,11 +208,26 @@ def save_metadata_json(
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
+def build_vla_cfg(
+    *,
+    data_root_dir: str | Path,
+    data_mix: str,
+    video_backend: str = "torchvision_av",
+):
+    return OmegaConf.create(
+        {
+            "data_root_dir": str(Path(data_root_dir).expanduser().resolve()),
+            "data_mix": str(data_mix),
+            "video_backend": str(video_backend),
+        }
+    )
+
+
 def test_offline_vlac(
     *,
-    config_yaml: str | Path,
+    data_root_dir: str | Path,
+    data_mix: str,
     output_dir: str | Path | None = None,
-    data_mix: str | None = None,
     trajectory_seed: int = 42,
     reference_seed: int = 42,
     device: str | None = None,
@@ -213,13 +242,16 @@ def test_offline_vlac(
     done_flag: bool = False,
     done_threshold: float = 0.9,
 ) -> dict:
-    cfg = OmegaConf.load(config_yaml)
-    if data_mix is not None:
-        cfg.datasets.vla_data.data_mix = data_mix
-
-    vla_cfg = cfg.datasets.vla_data
+    vla_cfg = build_vla_cfg(
+        data_root_dir=data_root_dir,
+        data_mix=data_mix,
+    )
     resolved_output_dir = resolve_output_dir(
-        output_dir=output_dir, vla_cfg=vla_cfg)
+        output_dir=output_dir,
+        vla_cfg=vla_cfg,
+        trajectory_seed=trajectory_seed,
+        reference_seed=reference_seed,
+    )
     resolved_output_dir.mkdir(parents=True, exist_ok=True)
     resolved_device = resolve_device(device)
 
@@ -232,6 +264,15 @@ def test_offline_vlac(
         task_to_records_by_dataset,
         reference_seed,
     )
+
+    print("[selection] target")
+    print(f"  dataset_name: {target_record['dataset_name']}")
+    print(f"  episode_id: {int(target_record['trajectory_id'])}")
+    print(f"  instruction: {target_record['instruction']}")
+    print("[selection] reference")
+    print(f"  dataset_name: {reference_record['dataset_name']}")
+    print(f"  episode_id: {int(reference_record['trajectory_id'])}")
+    print(f"  instruction: {reference_record['instruction']}")
 
     fps = read_video_fps(target_record["video_path"])
     need_done = bool(done_flag or signal_kind == "done")
@@ -322,12 +363,11 @@ def test_offline_vlac(
 
 
 def main():
-    config_yaml = WORKSPACE_ROOT / "starVLA" / "config" / \
-        "training" / "starvla_cotrain_libero_signal.yaml"
-    output_dir = None
+    data_root_dir = "/data/yxz/dataset/libero_lerobot"
+    output_dir = "test_vlac4train"
     data_mix = "libero_goal"
-    trajectory_seed = 1
-    reference_seed = 2
+    trajectory_seed = 42
+    reference_seed = 10
     device = "cuda:0"
     signal_kind = "value"
     vlac_ref_num = 6
@@ -336,12 +376,12 @@ def main():
     vlac_rich = False
     vlac_frame_skip = False
     vlac_think = False
-    vlac_python = None
+    vlac_python = "/data/yxz/conda/envs/VLAC/bin/python"
     done_flag = False
     done_threshold = 0.9
 
     test_offline_vlac(
-        config_yaml=config_yaml,
+        data_root_dir=data_root_dir,
         output_dir=output_dir,
         data_mix=data_mix,
         trajectory_seed=trajectory_seed,

@@ -1,14 +1,6 @@
 from __future__ import annotations
-from starVLA.model.framework.signal_utils import (
-    compute_vlac_curve_signal,
-    normalize_curve,
-    read_video_fps,
-    save_signal_curve_npz,
-    select_primary_video_key,
-    signal_cache_curve_path,
-)
-from starVLA.dataloader.lerobot_datasets import get_vla_dataset
 
+import json
 import random
 import sys
 from collections import defaultdict
@@ -23,6 +15,16 @@ from tqdm import tqdm
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
+
+from starVLA.model.framework.signal_utils import (
+    compute_vlac_curve_signal,
+    normalize_curve,
+    read_video_fps,
+    save_signal_curve_npz,
+    select_primary_video_key,
+    signal_cache_curve_path,
+)
+from starVLA.dataloader.lerobot_datasets import get_vla_dataset
 
 
 def resolve_device(device_arg: str | None) -> torch.device:
@@ -118,11 +120,94 @@ def resolve_reference_video_path(
     return Path(chosen["video_path"]).expanduser().resolve()
 
 
+def build_vla_cfg(
+    *,
+    data_root_dir: str | Path,
+    data_mix: str,
+    video_backend: str = "torchvision_av",
+    signal_cache_root: str | Path | None = None,
+):
+    return OmegaConf.create(
+        {
+            "data_root_dir": str(Path(data_root_dir).expanduser().resolve()),
+            "data_mix": str(data_mix),
+            "video_backend": str(video_backend),
+            "signal_cache_root": None if signal_cache_root is None else str(signal_cache_root),
+        }
+    )
+
+
+def save_signal_metadata_json(
+    output_path: str | Path,
+    *,
+    data_mix: str,
+    dataset_name: str,
+    trajectory_id: int,
+    trajectory_length: int,
+    instruction: str,
+    video_path: str | Path,
+    reference_video_path: str | Path | None,
+    curve_path: str | Path,
+    fps: float,
+    signal_name: str,
+    signal_kind: str,
+    reference_mode: str,
+    reference_seed: int,
+    vlac_ref_num: int,
+    vlac_batch_num: int,
+    vlac_skip: int,
+    vlac_rich: bool,
+    vlac_frame_skip: bool,
+    vlac_think: bool,
+    vlac_python: str | Path | None,
+    raw_curve_length: int,
+    target_curve_length: int,
+    density_ratio_raw_over_target: float,
+) -> None:
+    payload = {
+        "data_mix": str(data_mix),
+        "dataset_name": str(dataset_name),
+        "trajectory_id": int(trajectory_id),
+        "trajectory_length": int(trajectory_length),
+        "instruction": str(instruction),
+        "video_path": str(Path(video_path).expanduser().resolve()),
+        "reference_video_path": None if reference_video_path is None else str(Path(reference_video_path).expanduser().resolve()),
+        "curve_path": str(Path(curve_path).expanduser().resolve()),
+        "fps": float(fps),
+        "signal": {
+            "name": str(signal_name),
+            "kind": str(signal_kind),
+            "status": f"offline_vlac_{signal_kind}_{reference_mode}",
+        },
+        "reference": {
+            "mode": str(reference_mode),
+            "seed": int(reference_seed),
+        },
+        "vlac": {
+            "ref_num": int(vlac_ref_num),
+            "batch_num": int(vlac_batch_num),
+            "skip": int(vlac_skip),
+            "rich": bool(vlac_rich),
+            "frame_skip": bool(vlac_frame_skip),
+            "think": bool(vlac_think),
+            "python": None if vlac_python is None else str(vlac_python),
+        },
+        "curve_stats": {
+            "raw_curve_length": int(raw_curve_length),
+            "target_curve_length": int(target_curve_length),
+            "density_ratio_raw_over_target": float(density_ratio_raw_over_target),
+        },
+    }
+    output_path = Path(output_path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
 def build_offline_vlac_signal_cache(
     *,
-    config_yaml: str | Path,
+    data_root_dir: str | Path,
+    data_mix: str,
     output_root: str | Path | None = None,
-    data_mix: str | None = None,
     signal_name: str = "vlac",
     signal_kind: str = "value",
     device: str | None = None,
@@ -138,11 +223,10 @@ def build_offline_vlac_signal_cache(
     overwrite: bool = False,
     max_trajectories: int | None = None,
 ) -> dict:
-    cfg = OmegaConf.load(config_yaml)
-    if data_mix is not None:
-        cfg.datasets.vla_data.data_mix = data_mix
-
-    vla_cfg = cfg.datasets.vla_data
+    vla_cfg = build_vla_cfg(
+        data_root_dir=data_root_dir,
+        data_mix=data_mix,
+    )
     resolved_output_root = resolve_output_root(
         output_root=output_root,
         vla_cfg=vla_cfg,
@@ -160,6 +244,7 @@ def build_offline_vlac_signal_cache(
     target_curve_lengths = []
     density_ratios = []
 
+    print(f"[config] data_root_dir={vla_cfg.data_root_dir}")
     print(f"[config] data_mix={vla_cfg.data_mix}")
     print(f"[config] output_root={resolved_output_root}")
     print(f"[config] signal_name={signal_name}")
@@ -195,6 +280,7 @@ def build_offline_vlac_signal_cache(
                 trajectory_id=trajectory_id,
                 signal_name=signal_name,
             )
+            metadata_path = curve_path.with_suffix(".json")
             if curve_path.exists() and not overwrite:
                 total_skipped += 1
                 continue
@@ -250,6 +336,32 @@ def build_offline_vlac_signal_cache(
                         "density_ratio_raw_over_target": np.asarray([dense_ratio], dtype=np.float32),
                     },
                 )
+                save_signal_metadata_json(
+                    metadata_path,
+                    data_mix=str(vla_cfg.data_mix),
+                    dataset_name=single_dataset.dataset_name,
+                    trajectory_id=trajectory_id,
+                    trajectory_length=trajectory_length,
+                    instruction=instruction,
+                    video_path=video_path,
+                    reference_video_path=reference_video_path,
+                    curve_path=curve_path,
+                    fps=fps,
+                    signal_name=signal_name,
+                    signal_kind=signal_kind,
+                    reference_mode=reference_mode,
+                    reference_seed=reference_seed,
+                    vlac_ref_num=vlac_ref_num,
+                    vlac_batch_num=vlac_batch_num,
+                    vlac_skip=vlac_skip,
+                    vlac_rich=vlac_rich,
+                    vlac_frame_skip=vlac_frame_skip,
+                    vlac_think=vlac_think,
+                    vlac_python=vlac_python,
+                    raw_curve_length=raw_curve_length,
+                    target_curve_length=trajectory_length,
+                    density_ratio_raw_over_target=dense_ratio,
+                )
                 raw_curve_lengths.append(raw_curve_length)
                 target_curve_lengths.append(trajectory_length)
                 density_ratios.append(dense_ratio)
@@ -294,9 +406,8 @@ def build_offline_vlac_signal_cache(
 
 
 def main():
-    config_yaml = WORKSPACE_ROOT / "starVLA" / "config" / \
-        "training" / "starvla_cotrain_libero_signal.yaml"
-    output_root = None
+    data_root_dir = "/data/yxz/dataset/libero_lerobot"
+    output_root = "test_vlac4train"
     data_mix = "libero_goal"
     signal_name = "vlac"
     signal_kind = "value"
@@ -309,12 +420,12 @@ def main():
     vlac_rich = False
     vlac_frame_skip = False
     vlac_think = False
-    vlac_python = None
+    vlac_python = "/data/yxz/conda/envs/VLAC/bin/python"
     overwrite = False
     max_trajectories = None
 
     build_offline_vlac_signal_cache(
-        config_yaml=config_yaml,
+        data_root_dir=data_root_dir,
         output_root=output_root,
         data_mix=data_mix,
         signal_name=signal_name,

@@ -28,9 +28,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 STEP_PATTERN = re.compile(r"step_(\d+)_last_hidden_states_meta\.pt$")
 ROLLOUT_VIDEO_PATTERN = re.compile(r"^rollout_(.+)_episode(\d+)_")
 SUPPORTED_EXTERNAL_MODELS = ("liv", "robometer", "vlac", "robodopamine")
-DEFAULT_ROBOMETER_MODEL_PATH = Path(
-    os.environ.get("CRITIC4VLA_ROBOMETER_MODEL_PATH", "ROBOMETER_model_path")
-)
 
 
 def load_module_from_path(module_name: str, module_path: Path):
@@ -59,7 +56,7 @@ def ensure_repo_import_path(repo_name: str, src_subdir: Optional[str] = None) ->
 
 @lru_cache(maxsize=1)
 def load_signal_utils_module():
-    module_path = REPO_ROOT / "starVLA" / "model" / "framework" / "singal_utils.py"
+    module_path = REPO_ROOT / "starVLA" / "model" / "framework" / "signal_utils.py"
     return load_module_from_path("critic4vla_signal_utils_external", module_path)
 
 
@@ -246,8 +243,13 @@ def compute_robometer_curve_signal_official(
     video_frames: np.ndarray,
     instruction: str,
     *,
+    model_path: str | Path,
     device: torch.device,
 ) -> np.ndarray:
+    if not str(model_path).strip():
+        raise ValueError(
+            "Robometer model path is not configured. Edit DEFAULT_ROBOMETER_MODEL_PATH in signal_utils.py."
+        )
     ensure_repo_import_path("robometer")
     from robometer.models.rbm import RBM
 
@@ -261,7 +263,7 @@ def compute_robometer_curve_signal_official(
     module = load_module_from_path(
         "robometer_example_inference_local", script_path)
     rewards, _success_probs = module.compute_rewards_per_frame_local(
-        model_path=str(DEFAULT_ROBOMETER_MODEL_PATH),
+        model_path=str(Path(model_path).expanduser().resolve()),
         video_frames=video_frames,
         task=instruction,
         device=device,
@@ -412,6 +414,7 @@ def main():
         values = compute_robometer_curve_signal_official(
             video_frames=robometer_frames,
             instruction=instruction,
+            model_path=signal_utils.DEFAULT_ROBOMETER_MODEL_PATH,
             device=torch.device(args.device),
         )
         steps = robometer_steps
