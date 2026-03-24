@@ -1,5 +1,5 @@
 from collections import deque  # 环形队列，用于图像历史
-from typing import Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 import os
 import cv2 as cv  # 图像缩放
 import matplotlib.pyplot as plt  # 可视化
@@ -9,7 +9,6 @@ import numpy as np
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 
 from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler  # 自适应动作集成
-from typing import Dict
 import numpy as np
 from pathlib import Path
 from PIL import Image
@@ -32,7 +31,7 @@ class ModelClient:
         horizon: int = 0,
         action_ensemble=True,
         action_ensemble_horizon: Optional[int] = 3,  # different cross sim
-        image_size: list[int] = [224, 224],
+        image_size: Sequence[int] = (224, 224),
         use_ddim: bool = True,
         num_ddim_steps: int = 10,
         adaptive_ensemble_alpha=0.1,
@@ -230,7 +229,12 @@ class ModelClient:
         self.image_history.append(image)
         self.num_image_history = min(self.num_image_history + 1, self.horizon)
 
-    def reset(self, task_description: str, task_id: int | None = None, episode_idx: int | None = None) -> None:
+    def reset(
+        self,
+        task_description: str,
+        task_id: Optional[int] = None,
+        episode_idx: Optional[int] = None,
+    ) -> None:
         self.task_description = task_description
         self.task_id = task_id
         self.episode_idx = episode_idx
@@ -281,7 +285,7 @@ class ModelClient:
         example: dict,
         step: int = 0,
         **kwargs
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """
         Perform one step of inference
         :param image: Input image in the format (H, W, 3), type uint8
@@ -476,8 +480,8 @@ class ModelClient:
         self,
         *,
         task_description: str,
-        task_id: int | None,
-        episode_idx: int | None,
+        task_id: Optional[int],
+        episode_idx: Optional[int],
     ) -> str:
         if self.vlac_reference_mode == "explicit_video":
             if not self.vlac_reference_video_path:

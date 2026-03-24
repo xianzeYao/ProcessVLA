@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any, Dict, Union
 
 from PIL import Image
 
@@ -22,7 +23,7 @@ def _ensure_processvla_import_path() -> None:
         sys.path.insert(0, path_str)
 
 
-def _ensure_repo_import_path(repo_root: str | Path) -> None:
+def _ensure_repo_import_path(repo_root: Union[str, Path]) -> None:
     resolved_root = Path(repo_root).expanduser().resolve()
     if not resolved_root.exists():
         raise ImportError(f"VLAC repo root does not exist: {resolved_root}")
@@ -47,9 +48,9 @@ def _resolve_ffmpeg() -> str:
 
 
 def _transcode_video_for_vlac(
-    video_path: str | Path,
+    video_path: Union[str, Path],
     *,
-    temp_root: str | Path,
+    temp_root: Union[str, Path],
     stem_suffix: str,
 ) -> Path:
     source_path = Path(video_path).expanduser().resolve()
@@ -76,7 +77,11 @@ def _transcode_video_for_vlac(
     return output_path
 
 
-def _load_reference_frames(reference_video_path: str, cache: dict, temp_root: str | Path):
+def _load_reference_frames(
+    reference_video_path: str,
+    cache: Dict[str, Any],
+    temp_root: Union[str, Path],
+):
     resolved_path = str(Path(reference_video_path).expanduser().resolve())
     if resolved_path in cache:
         return cache[resolved_path]

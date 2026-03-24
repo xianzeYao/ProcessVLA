@@ -7,7 +7,7 @@ from pathlib import Path
 import random
 import subprocess
 import tempfile
-from typing import Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -63,7 +63,7 @@ def _iter_jsonl(file_path: Path):
             yield json.loads(line)
 
 
-def _resolve_reference_dataset_names(*, data_root_dir: str, data_mix: str) -> list[str]:
+def _resolve_reference_dataset_names(*, data_root_dir: str, data_mix: str) -> List[str]:
     root_dir = Path(data_root_dir).expanduser().resolve()
     normalized_mix = str(data_mix).strip()
     if normalized_mix in _REFERENCE_DATASET_MIXTURES:
@@ -78,7 +78,7 @@ def _resolve_reference_dataset_names(*, data_root_dir: str, data_mix: str) -> li
     )
 
 
-def _resolve_primary_video_subkey(modality_meta: dict) -> tuple[str, str]:
+def _resolve_primary_video_subkey(modality_meta: dict) -> Tuple[str, str]:
     video_meta = modality_meta.get("video", {}) or {}
     if not video_meta:
         raise ValueError("Reference dataset modality metadata contains no video entries.")
@@ -90,7 +90,7 @@ def _resolve_primary_video_subkey(modality_meta: dict) -> tuple[str, str]:
     return selected_subkey, original_key
 
 
-def _build_v2_reference_records(dataset_path: Path) -> dict[str, list[dict]]:
+def _build_v2_reference_records(dataset_path: Path) -> Dict[str, List[dict]]:
     info_meta_path = dataset_path / "meta/info.json"
     modality_meta_path = dataset_path / "meta/modality.json"
     tasks_path = dataset_path / "meta/tasks.jsonl"
@@ -149,7 +149,7 @@ class DatasetSeededVLACReferenceResolver:
         *,
         data_root_dir: str,
         data_mix: str,
-        dataset_name: str | None = None,
+        dataset_name: Optional[str] = None,
         reference_seed: int = 42,
         video_backend: str = "torchvision_av",
     ) -> None:
@@ -194,9 +194,9 @@ class DatasetSeededVLACReferenceResolver:
         self,
         *,
         instruction: str,
-        task_id: int | None = None,
-        episode_idx: int | None = None,
-        dataset_name: str | None = None,
+        task_id: Optional[int] = None,
+        episode_idx: Optional[int] = None,
+        dataset_name: Optional[str] = None,
     ) -> str:
         selected_dataset = self.dataset_name if dataset_name is None else str(dataset_name)
         if selected_dataset not in self.task_to_records_by_dataset:
@@ -407,7 +407,7 @@ class OnlineVLACSignalState:
         rich: bool = False,
         think: bool = False,
         device: str = "cuda",
-        subprocess_client: VLACOnlineSubprocessClient | None = None,
+        subprocess_client: Optional[VLACOnlineSubprocessClient] = None,
     ) -> None:
         self.instruction = str(instruction)
         self.reference_video_path = str(reference_video_path)
@@ -428,7 +428,7 @@ class OnlineVLACSignalState:
         else:
             self.reference_frames = None
 
-    def reset(self, instruction: str | None = None) -> None:
+    def reset(self, instruction: Optional[str] = None) -> None:
         if instruction is not None:
             self.instruction = str(instruction)
         self.frame_buffer.clear()

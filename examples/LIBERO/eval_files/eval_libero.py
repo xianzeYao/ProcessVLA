@@ -9,7 +9,7 @@ import pathlib
 from pathlib import Path
 import requests
 import time
-from typing import Optional
+from typing import Optional, Union
 
 import imageio
 import numpy as np
@@ -24,7 +24,7 @@ LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 
 
-def _binarize_gripper_open(open_val: np.ndarray | float) -> np.ndarray:
+def _binarize_gripper_open(open_val: Union[np.ndarray, float]) -> np.ndarray:
     arr = np.asarray(open_val, dtype=np.float32).reshape(-1)
     v = float(arr[0])
     bin_val = 1.0 - 2.0 * (v > 0.5)
