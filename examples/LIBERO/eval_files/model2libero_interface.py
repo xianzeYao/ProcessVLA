@@ -100,6 +100,10 @@ class ModelClient:
             f"{parts[-3]}_{parts[-1]}" if len(parts) >= 3 else "_".join(parts)
         )
         self.save_hidden_dir = save_hidden_dir
+        save_hidden_env = str(
+            os.environ.get("PROCESSVLA_SAVE_HIDDEN_STATES", "false")
+        ).strip().lower()
+        self.save_hidden_states = save_hidden_env in {"1", "true", "yes", "y", "on"}
         default_signal_dump_root = (
             Path.cwd() / "results" / "libero_signal_dumps"
         ).resolve()
@@ -317,20 +321,21 @@ class ModelClient:
 
         action_chunk_size = self.action_chunk_size
         if step % action_chunk_size == 0:
-            task_slug = (self.task_description or "unknown_task").replace(
-                " ", "_").replace("/", "_")
-            episode_tag = self.episode_idx if self.episode_idx is not None else 0
-            hiddenstates_file_path = (
-                self.signal_dump_root
-                / self.save_hidden_dir
-                / "hidden_states"
-                / f"{task_slug}_episode_{episode_tag}"
-                / f"step_{step}_last_hidden_states_meta.pt"
-            )
-            os.makedirs(hiddenstates_file_path.parent, exist_ok=True)
-            print(f"Hidden states will be saved to: {hiddenstates_file_path}")
-            # Attach save path into payload so websocket can carry it to server.
-            vla_input["hidden_save_path"] = hiddenstates_file_path
+            if self.save_hidden_states:
+                task_slug = (self.task_description or "unknown_task").replace(
+                    " ", "_").replace("/", "_")
+                episode_tag = self.episode_idx if self.episode_idx is not None else 0
+                hiddenstates_file_path = (
+                    self.signal_dump_root
+                    / self.save_hidden_dir
+                    / "hidden_states"
+                    / f"{task_slug}_episode_{episode_tag}"
+                    / f"step_{step}_last_hidden_states_meta.pt"
+                )
+                os.makedirs(hiddenstates_file_path.parent, exist_ok=True)
+                print(f"Hidden states will be saved to: {hiddenstates_file_path}")
+                # Attach save path into payload so websocket can carry it to server.
+                vla_input["hidden_save_path"] = str(hiddenstates_file_path)
             if self.signal_infer_source == "vlac_online":
                 vla_input["signal_override"] = float(
                     self.vlac_online_state.compute_current_signal()
