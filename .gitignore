@@ -225,6 +225,6 @@ examples/MultiRobot/*
 AGENTS.md
 
 # signal
-vlac*
+vlac_cache*
 slurm/*.out
 slurm/*.err
