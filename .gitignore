@@ -223,3 +223,7 @@ MUJOCO_LOG.TXT
 examples/MultiRobot/*
 
 AGENTS.md
+
+# signal
+vlac*
+slurm/*

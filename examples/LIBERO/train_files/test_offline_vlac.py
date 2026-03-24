@@ -16,7 +16,11 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
-from starVLA.model.framework.signal_utils import read_video_fps, run_vlac_web_trajectory_critic, select_primary_video_key
+from starVLA.model.framework.vlac_utils import (
+    read_video_fps,
+    run_vlac_web_trajectory_critic,
+    select_primary_video_key,
+)
 from starVLA.dataloader.lerobot_datasets import get_vla_dataset
 
 

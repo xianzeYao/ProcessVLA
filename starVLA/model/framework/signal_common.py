@@ -1538,7 +1538,7 @@ def compute_robometer_curve_signal(
     if not DEFAULT_ROBOMETER_MODEL_PATH:
         raise ValueError(
             "Robometer selected but no default model path is configured. "
-            "Edit DEFAULT_ROBOMETER_MODEL_PATH in signal_utils.py."
+            "Edit DEFAULT_ROBOMETER_MODEL_PATH in robometer_utils.py."
         )
 
     frames_array = np.asarray(video_frames, dtype=np.uint8)
@@ -1615,7 +1615,7 @@ def compute_robodopamine_curve_signal(
     if not DEFAULT_ROBODOPAMINE_MODEL_PATH:
         raise ValueError(
             "Robo-Dopamine selected but no default model path is configured. "
-            "Edit DEFAULT_ROBODOPAMINE_MODEL_PATH in signal_utils.py."
+            "Edit DEFAULT_ROBODOPAMINE_MODEL_PATH in robometer_utils.py."
         )
     if eval_mode not in {"incremental", "forward", "backward"}:
         raise ValueError(
@@ -1692,7 +1692,7 @@ def _load_vlac_runtime(device_name: str):
     if not DEFAULT_VLAC_MODEL_PATH:
         raise ValueError(
             "VLAC selected but no default model path is configured. "
-            "Edit DEFAULT_VLAC_MODEL_PATH in signal_utils.py."
+            "Edit DEFAULT_VLAC_MODEL_PATH in vlac_utils.py."
         )
 
     _ensure_repo_import_path("VLAC")

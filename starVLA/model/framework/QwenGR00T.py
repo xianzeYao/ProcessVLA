@@ -16,7 +16,8 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images  # 训练
 from starVLA.model.modules.action_model.GR00T_ActionHeader import get_action_model, FlowmatchingActionHead
 from starVLA.model.modules.vlm import get_vlm_model  # 构建 VLM（Qwen-VL 等）接口的工厂
 from starVLA.model.framework.base_framework import baseframework  # 通用框架基类，封装训练时需要的接口
-from starVLA.model.framework.signal_utils import build_hidden_state_save_payload, compute_liv_signal
+from starVLA.model.framework.liv_utils import compute_liv_signal
+from starVLA.model.framework.signal_common import build_hidden_state_save_payload
 # 将输入图像安全转成 PIL，保持信息完整
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.training.trainer_utils import initialize_overwatch  # 初始化日志记录器
@@ -50,6 +51,23 @@ def _get_signal_cfg(config):
     if signal_cfg is None:
         raise ValueError("Missing required top-level `signal` configuration section.")
     return signal_cfg
+
+
+def _resolve_infer_source(config, override=None) -> str:
+    signal_cfg = _get_signal_cfg(config)
+    infer_source = signal_cfg.infer_source if override is None else override
+    return str(infer_source).lower()
+
+
+def _signal_override_to_tensor(signal_override, *, device, dtype, batch_size: int) -> torch.Tensor:
+    signal = torch.as_tensor(signal_override, device=device, dtype=dtype).reshape(-1)
+    if signal.numel() == 1 and batch_size > 1:
+        signal = signal.expand(batch_size)
+    elif signal.numel() != batch_size:
+        raise ValueError(
+            f"signal_override size mismatch: got {signal.numel()}, expected {batch_size}."
+        )
+    return signal
 
 
 @FRAMEWORK_REGISTRY.register("QwenGR00T")  # 向框架注册表注册本类，便于按字符串加载
@@ -282,8 +300,10 @@ class Qwen_GR00T(baseframework):
 
         base_last_hidden = last_hidden
         signal = None
-        signal_cfg = _get_signal_cfg(self.config)
-        infer_source = str(signal_cfg.infer_source).lower()
+        infer_source = _resolve_infer_source(
+            self.config, kwargs.get("signal_infer_source", None)
+        )
+        signal_override = kwargs.get("signal_override", None)
         if infer_source == "none":
             signal = None
         elif infer_source == "liv_online":
@@ -293,10 +313,21 @@ class Qwen_GR00T(baseframework):
                 device=last_hidden.device,
                 dtype=last_hidden.dtype,
             )
+        elif infer_source == "vlac_online":
+            if signal_override is None:
+                raise ValueError(
+                    "signal.infer_source='vlac_online' requires a runtime `signal_override`."
+                )
+            signal = _signal_override_to_tensor(
+                signal_override,
+                device=last_hidden.device,
+                dtype=last_hidden.dtype,
+                batch_size=len(examples),
+            )
         else:
             raise NotImplementedError(
-                f"Unsupported signal.infer_source={signal_cfg.infer_source!r}. "
-                "Supported values are: none, liv_online."
+                f"Unsupported signal.infer_source={infer_source!r}. "
+                "Supported values are: none, liv_online, vlac_online."
             )
 
         # 推理时保存最后一层 hidden states 及其多模态元信息，便于离线切分图像/文本 token

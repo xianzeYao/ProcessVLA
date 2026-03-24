@@ -1,6 +1,4 @@
-from starVLA.model.framework.signal_utils import (
-    compute_liv_curve_signal,
-)
+from starVLA.model.framework.liv_utils import compute_liv_curve_signal
 import torch
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np

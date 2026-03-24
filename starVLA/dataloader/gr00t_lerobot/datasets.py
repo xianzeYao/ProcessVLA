@@ -49,7 +49,7 @@ from starVLA.dataloader.gr00t_lerobot.schema import (
     LeRobotStateActionMetadata,
 )
 from starVLA.dataloader.gr00t_lerobot.transform import ComposedModalityTransform
-from starVLA.model.framework.signal_utils import (
+from starVLA.model.framework.signal_common import (
     aggregate_signal_at_step,
     load_signal_curve_npz,
     signal_cache_curve_path,

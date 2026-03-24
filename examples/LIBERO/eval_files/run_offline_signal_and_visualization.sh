@@ -12,33 +12,31 @@ LIV_CLIP_ROOT=${LIV_CLIP_ROOT:-${LIV_ROOT}/liv/models/clip}
 export PYTHONPATH="${REPO_ROOT}:${LIV_ROOT}:${LIV_CLIP_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
 STARVLA_PY=${STARVLA_PY:-/your/path/to/starvla_python}
-read_signal_utils_value() {
-    local key="$1"
-    python3 - "$REPO_ROOT/starVLA/model/framework/signal_utils.py" "$key" <<'PY'
-import ast
+read_python_default() {
+    local module_path="$1"
+    local key="$2"
+    python3 - "$module_path" "$key" <<'PY'
+import importlib.util
 import sys
 
 source_path = sys.argv[1]
 target_key = sys.argv[2]
-with open(source_path, "r", encoding="utf-8") as handle:
-    tree = ast.parse(handle.read(), filename=source_path)
-
-for node in tree.body:
-    if not isinstance(node, ast.Assign):
-        continue
-    for target in node.targets:
-        if isinstance(target, ast.Name) and target.id == target_key:
-            value = ast.literal_eval(node.value)
-            print("" if value is None else value)
-            raise SystemExit(0)
-raise SystemExit(1)
+spec = importlib.util.spec_from_file_location("critic4vla_signal_defaults", source_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(1)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+value = getattr(module, target_key, None)
+if value is None:
+    raise SystemExit(1)
+print(value)
 PY
 }
 
-LIV_PY=${LIV_PY:-$(read_signal_utils_value DEFAULT_LIV_PYTHON || true)}
-VLAC_PY=${VLAC_PY:-$(read_signal_utils_value DEFAULT_VLAC_PYTHON || true)}
-ROBODOPAMINE_PY=${ROBODOPAMINE_PY:-$(read_signal_utils_value DEFAULT_ROBODOPAMINE_PYTHON || true)}
-ROBOMETER_PY=${ROBOMETER_PY:-$(read_signal_utils_value DEFAULT_ROBOMETER_PYTHON || true)}
+LIV_PY=${LIV_PY:-$(read_python_default "$REPO_ROOT/starVLA/model/framework/liv_utils.py" DEFAULT_LIV_PYTHON || true)}
+VLAC_PY=${VLAC_PY:-$(read_python_default "$REPO_ROOT/starVLA/model/framework/vlac_utils.py" DEFAULT_VLAC_PYTHON || true)}
+ROBODOPAMINE_PY=${ROBODOPAMINE_PY:-$(read_python_default "$REPO_ROOT/starVLA/model/framework/robometer_utils.py" DEFAULT_ROBODOPAMINE_PYTHON || true)}
+ROBOMETER_PY=${ROBOMETER_PY:-$(read_python_default "$REPO_ROOT/starVLA/model/framework/robometer_utils.py" DEFAULT_ROBOMETER_PYTHON || true)}
 LIV_PY=${LIV_PY:-python3}
 VLAC_PY=${VLAC_PY:-python3}
 ROBODOPAMINE_PY=${ROBODOPAMINE_PY:-python3}

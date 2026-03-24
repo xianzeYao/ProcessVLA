@@ -25,6 +25,8 @@ except ImportError:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 STEP_PATTERN = re.compile(r"step_(\d+)_last_hidden_states_meta\.pt$")
 ROLLOUT_VIDEO_PATTERN = re.compile(r"^rollout_(.+)_episode(\d+)_")
 SUPPORTED_EXTERNAL_MODELS = ("liv", "robometer", "vlac", "robodopamine")
@@ -55,9 +57,21 @@ def ensure_repo_import_path(repo_name: str, src_subdir: Optional[str] = None) ->
 
 
 @lru_cache(maxsize=1)
-def load_signal_utils_module():
-    module_path = REPO_ROOT / "starVLA" / "model" / "framework" / "signal_utils.py"
-    return load_module_from_path("critic4vla_signal_utils_external", module_path)
+def load_liv_utils_module():
+    module_path = REPO_ROOT / "starVLA" / "model" / "framework" / "liv_utils.py"
+    return load_module_from_path("critic4vla_liv_utils_external", module_path)
+
+
+@lru_cache(maxsize=1)
+def load_robometer_utils_module():
+    module_path = REPO_ROOT / "starVLA" / "model" / "framework" / "robometer_utils.py"
+    return load_module_from_path("critic4vla_robometer_utils_external", module_path)
+
+
+@lru_cache(maxsize=1)
+def load_vlac_utils_module():
+    module_path = REPO_ROOT / "starVLA" / "model" / "framework" / "vlac_utils.py"
+    return load_module_from_path("critic4vla_vlac_utils_external", module_path)
 
 
 def default_curve_path(video_path: Path, model_name: str) -> Path:
@@ -248,7 +262,7 @@ def compute_robometer_curve_signal_official(
 ) -> np.ndarray:
     if not str(model_path).strip():
         raise ValueError(
-            "Robometer model path is not configured. Edit DEFAULT_ROBOMETER_MODEL_PATH in signal_utils.py."
+            "Robometer model path is not configured. Edit DEFAULT_ROBOMETER_MODEL_PATH in robometer_utils.py."
         )
     ensure_repo_import_path("robometer")
     from robometer.models.rbm import RBM
@@ -391,13 +405,12 @@ def main():
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    signal_utils = load_signal_utils_module()
-
     print(f"[INFO] Computing offline curve: model={args.model}")
     if args.model == "liv":
+        liv_utils = load_liv_utils_module()
         primary_frames, _fps = read_video(video_path)
         steps = np.arange(len(primary_frames), dtype=np.int32)
-        values = signal_utils.compute_liv_curve_signal(
+        values = liv_utils.compute_liv_curve_signal(
             primary_frames=primary_frames,
             instruction=instruction,
             device=torch.device(args.device),
@@ -406,8 +419,9 @@ def main():
         )
         expanded = np.asarray(values, dtype=np.float32)
     elif args.model == "robometer":
+        robometer_utils = load_robometer_utils_module()
         primary_frames, _fps = read_video(video_path)
-        values = signal_utils.compute_robometer_curve_signal(
+        values = robometer_utils.compute_robometer_curve_signal(
             video_frames=primary_frames,
             instruction=instruction,
             device=torch.device(args.device),
@@ -415,10 +429,11 @@ def main():
         steps = np.arange(len(values), dtype=np.int32)
         expanded = np.asarray(values, dtype=np.float32)
     elif args.model == "vlac":
+        vlac_utils = load_vlac_utils_module()
         if args.reference_video_path is None:
             raise ValueError("--reference-video-path is required for vlac.")
         primary_frames, fps = read_video(video_path)
-        values = signal_utils.compute_vlac_curve_signal(
+        values = vlac_utils.compute_vlac_curve_signal(
             video_path=video_path,
             instruction=instruction,
             fps=fps,
@@ -436,7 +451,8 @@ def main():
         steps = np.arange(len(values), dtype=np.int32)
         expanded = np.asarray(values, dtype=np.float32)
     elif args.model == "robodopamine":
-        values = signal_utils.compute_robodopamine_curve_signal(
+        robometer_utils = load_robometer_utils_module()
+        values = robometer_utils.compute_robodopamine_curve_signal(
             video_path=video_path,
             instruction=instruction,
             wrist_video_path=(

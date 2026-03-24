@@ -29,7 +29,7 @@
 
 当前仓库里这几类 signal 的现实依赖关系是：
 
-- `liv`：直接依赖当前仓库里的 `starVLA.model.framework.signal_utils`
+- `liv`：直接依赖当前仓库里的 `starVLA.model.framework.liv_utils`
 - `robometer`：依赖本仓库同级的 `robometer`
 - `vlac`：依赖本仓库同级的 `VLAC`
 - `robodopamine`：依赖本仓库同级的 `Robo-Dopamine`

@@ -57,7 +57,25 @@ class Args:
     post_process_action: bool = True
 
     job_name: str = "test"
-    inject_signal_infer: Optional[bool] = None
+    infer_source: Optional[str] = None
+    vlac_reference_video_path: Optional[str] = None
+    vlac_reference_mode: Optional[str] = None
+    vlac_reference_dataset_name: Optional[str] = None
+    vlac_reference_seed: Optional[int] = None
+    vlac_reference_data_root_dir: Optional[str] = None
+    vlac_reference_data_mix: Optional[str] = None
+    vlac_signal_kind: Optional[str] = None
+    vlac_skip: Optional[int] = None
+    vlac_frame_skip: Optional[bool] = None
+    vlac_ref_num: Optional[int] = None
+    vlac_batch_num: Optional[int] = None
+    vlac_rich: Optional[bool] = None
+    vlac_think: Optional[bool] = None
+    vlac_device: Optional[str] = None
+    vlac_python: Optional[str] = None
+    vlac_model_path: Optional[str] = None
+    vlac_model_type: Optional[str] = None
+    vlac_repo_root: Optional[str] = None
 
 
 def eval_libero(args: Args) -> None:
@@ -95,7 +113,25 @@ def eval_libero(args: Args) -> None:
         host=args.host,
         port=args.port,
         image_size=args.resize_size,
-        inject_signal_infer=args.inject_signal_infer,
+        signal_infer_source=args.infer_source,
+        vlac_reference_video_path=args.vlac_reference_video_path,
+        vlac_reference_mode=args.vlac_reference_mode,
+        vlac_reference_dataset_name=args.vlac_reference_dataset_name,
+        vlac_reference_seed=args.vlac_reference_seed,
+        vlac_reference_data_root_dir=args.vlac_reference_data_root_dir,
+        vlac_reference_data_mix=args.vlac_reference_data_mix,
+        vlac_signal_kind=args.vlac_signal_kind,
+        vlac_skip=args.vlac_skip,
+        vlac_frame_skip=args.vlac_frame_skip,
+        vlac_ref_num=args.vlac_ref_num,
+        vlac_batch_num=args.vlac_batch_num,
+        vlac_rich=args.vlac_rich,
+        vlac_think=args.vlac_think,
+        vlac_device=args.vlac_device,
+        vlac_python=args.vlac_python,
+        vlac_model_path=args.vlac_model_path,
+        vlac_model_type=args.vlac_model_type,
+        vlac_repo_root=args.vlac_repo_root,
     )
 
     # Start evaluation
