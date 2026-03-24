@@ -44,6 +44,8 @@ class Args:
     task_suite_name: str = "libero_goal"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
+    task_id: Optional[int] = None  # If set, only evaluate this task id
+    episode_idx: Optional[int] = None  # If set, only evaluate this episode idx within the task
 
     #################################################################################################################
     # Utils
@@ -136,17 +138,24 @@ def eval_libero(args: Args) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+    task_ids = [args.task_id] if args.task_id is not None else list(range(num_tasks_in_suite))
+    for task_id in tqdm.tqdm(task_ids):
         # Get task
         task = task_suite.get_task(task_id)
         task_description = task.language
 
         # Get default LIBERO initial states
         initial_states = task_suite.get_task_init_states(task_id)
+        if args.episode_idx is not None and not (0 <= args.episode_idx < len(initial_states)):
+            raise ValueError(
+                f"episode_idx={args.episode_idx} out of range for task_id={task_id}; "
+                f"valid range is [0, {len(initial_states) - 1}]"
+            )
 
         # Start episodes
         task_episodes, task_successes = 0, 0
-        for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
+        episode_indices = [args.episode_idx] if args.episode_idx is not None else list(range(args.num_trials_per_task))
+        for episode_idx in tqdm.tqdm(episode_indices):
             logging.info(f"\nTask: {task_description}")
 
             env = None
