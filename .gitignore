@@ -226,3 +226,5 @@ AGENTS.md
 
 # signal
 vlac*
+slurm/*.out
+slurm/*.err
