@@ -244,6 +244,13 @@ def eval_libero(args: Args) -> None:
 
                     full_actions.append(delta_action)
 
+                    logging.info(
+                        "About to env.step: task_id=%s episode_idx=%s step=%s action=%s",
+                        task_id,
+                        episode_idx,
+                        step,
+                        np.array2string(delta_action, precision=4, separator=", "),
+                    )
                     obs, reward, done, info = env.step(delta_action.tolist())
                     if done:
                         task_successes += 1
