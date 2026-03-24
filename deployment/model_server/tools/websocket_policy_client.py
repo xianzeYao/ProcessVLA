@@ -43,15 +43,49 @@ class WebsocketClientPolicy:
             
             try:
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
-                conn = websockets.sync.client.connect(
-                    self._uri,
-                    compression=None,
-                    max_size=None,
-                    additional_headers=headers,
-                    open_timeout=150,
-                    ping_interval=20,
-                    ping_timeout=20,
-                )
+                connect_variants = [
+                    dict(
+                        compression=None,
+                        max_size=None,
+                        additional_headers=headers,
+                        open_timeout=150,
+                        ping_interval=20,
+                        ping_timeout=20,
+                    ),
+                    dict(
+                        compression=None,
+                        max_size=None,
+                        additional_headers=headers,
+                        open_timeout=150,
+                    ),
+                    dict(
+                        compression=None,
+                        max_size=None,
+                        extra_headers=headers,
+                        open_timeout=150,
+                    ),
+                    dict(
+                        compression=None,
+                        max_size=None,
+                        open_timeout=150,
+                    ),
+                ]
+                last_type_error = None
+                conn = None
+                for connect_kwargs in connect_variants:
+                    try:
+                        conn = websockets.sync.client.connect(
+                            self._uri,
+                            **connect_kwargs,
+                        )
+                        break
+                    except TypeError as exc:
+                        last_type_error = exc
+                        continue
+                if conn is None:
+                    raise last_type_error if last_type_error is not None else RuntimeError(
+                        "Failed to initialize websocket client connection."
+                    )
                 metadata = msgpack_numpy.unpackb(conn.recv())
                 return conn, metadata
             except ConnectionRefusedError:
@@ -72,6 +106,5 @@ class WebsocketClientPolicy:
         if isinstance(response, str):
             raise RuntimeError(f"Error in inference server:\n{response}")
         return msgpack_numpy.unpackb(response)
-
 
 
