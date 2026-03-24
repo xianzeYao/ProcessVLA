@@ -121,10 +121,23 @@ def _build_v2_reference_records(dataset_path: Path) -> Dict[str, List[dict]]:
     task_to_records = defaultdict(list)
     for episode_entry in _iter_jsonl(episodes_path):
         trajectory_id = int(episode_entry["episode_index"])
-        task_index = int(episode_entry["task_index"])
-        instruction = task_index_to_instruction.get(task_index, "").strip()
+        instruction = ""
+
+        tasks_field = episode_entry.get("tasks", None)
+        if isinstance(tasks_field, list) and len(tasks_field) > 0:
+            instruction = str(tasks_field[0]).strip()
+
+        task_index = episode_entry.get("task_index", None)
+        if not instruction and task_index is not None:
+            try:
+                instruction = task_index_to_instruction.get(int(task_index), "").strip()
+            except Exception:
+                instruction = ""
         if not instruction:
-            continue
+            raise ValueError(
+                f"Unable to resolve instruction for trajectory {trajectory_id} in dataset {dataset_path}. "
+                "Expected either `episodes.jsonl.tasks[0]` or a valid `task_index` mapping via `tasks.jsonl`."
+            )
         video_rel_path = video_path_pattern.format(
             episode_chunk=trajectory_id // chunk_size,
             episode_index=trajectory_id,
