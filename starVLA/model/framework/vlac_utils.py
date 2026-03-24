@@ -10,11 +10,8 @@ import tempfile
 from typing import Sequence
 
 import numpy as np
-from omegaconf import OmegaConf
 from PIL import Image
-import torch
 
-from starVLA.dataloader.lerobot_datasets import get_vla_dataset
 from starVLA.model.framework.signal_common import (
     DEFAULT_VLAC_MODEL_PATH,
     DEFAULT_VLAC_MODEL_TYPE,
@@ -43,32 +40,107 @@ def vlac_value_update(prev_value: float, critic: float) -> float:
     return prev_value + (100.0 - prev_value) * critic / 100.0
 
 
-def _resolve_instruction(dataset, trajectory_id: int) -> str:
-    dataset.curr_traj_data = dataset.get_trajectory_data(trajectory_id)
-    instructions = dataset.get_language(
-        trajectory_id, dataset.modality_keys["language"][0], 0
+_REFERENCE_DATASET_MIXTURES = {
+    "libero_goal": ["libero_goal_no_noops_1.0.0_lerobot"],
+    "libero_all": [
+        "libero_object_no_noops_1.0.0_lerobot",
+        "libero_goal_no_noops_1.0.0_lerobot",
+        "libero_spatial_no_noops_1.0.0_lerobot",
+        "libero_10_no_noops_1.0.0_lerobot",
+    ],
+    "libero_object": ["libero_object_no_noops_1.0.0_lerobot"],
+    "libero_spatial": ["libero_spatial_no_noops_1.0.0_lerobot"],
+    "libero_10": ["libero_10_no_noops_1.0.0_lerobot"],
+}
+
+
+def _iter_jsonl(file_path: Path):
+    with file_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            yield json.loads(line)
+
+
+def _resolve_reference_dataset_names(*, data_root_dir: str, data_mix: str) -> list[str]:
+    root_dir = Path(data_root_dir).expanduser().resolve()
+    normalized_mix = str(data_mix).strip()
+    if normalized_mix in _REFERENCE_DATASET_MIXTURES:
+        return list(_REFERENCE_DATASET_MIXTURES[normalized_mix])
+    direct_dataset_path = root_dir / normalized_mix
+    if direct_dataset_path.is_dir():
+        return [normalized_mix]
+    raise ValueError(
+        f"Unsupported reference data_mix={normalized_mix!r}. "
+        f"Known mixtures: {', '.join(sorted(_REFERENCE_DATASET_MIXTURES.keys()))}. "
+        f"Or provide a direct dataset folder name under data_root_dir."
     )
-    instruction = str(instructions[0]).strip() if instructions else ""
-    if not instruction:
+
+
+def _resolve_primary_video_subkey(modality_meta: dict) -> tuple[str, str]:
+    video_meta = modality_meta.get("video", {}) or {}
+    if not video_meta:
+        raise ValueError("Reference dataset modality metadata contains no video entries.")
+    prefixed_keys = [f"video.{subkey}" for subkey in video_meta.keys()]
+    selected_key = select_primary_video_key(prefixed_keys)
+    selected_subkey = selected_key.replace("video.", "", 1)
+    selected_meta = video_meta.get(selected_subkey, {}) or {}
+    original_key = str(selected_meta.get("original_key") or selected_subkey)
+    return selected_subkey, original_key
+
+
+def _build_v2_reference_records(dataset_path: Path) -> dict[str, list[dict]]:
+    info_meta_path = dataset_path / "meta/info.json"
+    modality_meta_path = dataset_path / "meta/modality.json"
+    tasks_path = dataset_path / "meta/tasks.jsonl"
+    episodes_path = dataset_path / "meta/episodes.jsonl"
+    required_files = [info_meta_path, modality_meta_path, tasks_path, episodes_path]
+    missing_files = [str(path) for path in required_files if not path.exists()]
+    if missing_files:
         raise ValueError(
-            f"Empty instruction for trajectory {trajectory_id} in dataset {dataset.dataset_name}"
+            f"Reference dataset at {dataset_path} is missing required metadata files: {missing_files}"
         )
-    return instruction
 
+    with info_meta_path.open("r", encoding="utf-8") as handle:
+        info_meta = json.load(handle)
+    with modality_meta_path.open("r", encoding="utf-8") as handle:
+        modality_meta = json.load(handle)
 
-def _build_reference_dataset_cfg(
-    *,
-    data_root_dir: str,
-    data_mix: str,
-    video_backend: str = "torchvision_av",
-):
-    return OmegaConf.create(
-        {
-            "data_root_dir": str(Path(data_root_dir).expanduser().resolve()),
-            "data_mix": str(data_mix),
-            "video_backend": str(video_backend),
-        }
-    )
+    _selected_subkey, original_video_key = _resolve_primary_video_subkey(modality_meta)
+    video_path_pattern = info_meta["video_path"]
+    chunk_size = int(info_meta["chunks_size"])
+
+    task_index_to_instruction = {}
+    for task_entry in _iter_jsonl(tasks_path):
+        task_index = int(task_entry["task_index"])
+        instruction = str(task_entry.get("task", "")).strip()
+        if instruction:
+            task_index_to_instruction[task_index] = instruction
+
+    task_to_records = defaultdict(list)
+    for episode_entry in _iter_jsonl(episodes_path):
+        trajectory_id = int(episode_entry["episode_index"])
+        task_index = int(episode_entry["task_index"])
+        instruction = task_index_to_instruction.get(task_index, "").strip()
+        if not instruction:
+            continue
+        video_rel_path = video_path_pattern.format(
+            episode_chunk=trajectory_id // chunk_size,
+            episode_index=trajectory_id,
+            video_key=original_video_key,
+        )
+        video_path = (dataset_path / video_rel_path).expanduser().resolve()
+        if not video_path.exists():
+            continue
+        task_to_records[instruction].append(
+            {
+                "trajectory_id": trajectory_id,
+                "instruction": instruction,
+                "video_path": video_path,
+            }
+        )
+    return task_to_records
 
 
 class DatasetSeededVLACReferenceResolver:
@@ -88,37 +160,17 @@ class DatasetSeededVLACReferenceResolver:
         self.video_backend = str(video_backend)
         self.task_to_records_by_dataset = {}
 
-        vla_cfg = _build_reference_dataset_cfg(
+        dataset_names = _resolve_reference_dataset_names(
             data_root_dir=self.data_root_dir,
             data_mix=self.data_mix,
-            video_backend=self.video_backend,
         )
-        dataset = get_vla_dataset(data_cfg=vla_cfg, mode="train")
-
-        for single_dataset in dataset.datasets:
-            if self.dataset_name is not None and single_dataset.dataset_name != self.dataset_name:
+        root_dir = Path(self.data_root_dir).expanduser().resolve()
+        for candidate_dataset_name in dataset_names:
+            if self.dataset_name is not None and candidate_dataset_name != self.dataset_name:
                 continue
-            video_key = select_primary_video_key(single_dataset.modality_keys["video"])
-            video_subkey = video_key.replace("video.", "")
-            task_to_records = defaultdict(list)
-            iterable = zip(
-                single_dataset.trajectory_ids.tolist(),
-                single_dataset.trajectory_lengths.tolist(),
-            )
-            for trajectory_id, _trajectory_length in iterable:
-                trajectory_id = int(trajectory_id)
-                instruction = _resolve_instruction(single_dataset, trajectory_id)
-                video_path = Path(
-                    single_dataset.get_video_path(trajectory_id, video_subkey)
-                ).expanduser().resolve()
-                task_to_records[instruction].append(
-                    {
-                        "trajectory_id": trajectory_id,
-                        "instruction": instruction,
-                        "video_path": video_path,
-                    }
-                )
-            self.task_to_records_by_dataset[single_dataset.dataset_name] = task_to_records
+            dataset_path = root_dir / candidate_dataset_name
+            task_to_records = _build_v2_reference_records(dataset_path)
+            self.task_to_records_by_dataset[candidate_dataset_name] = task_to_records
 
         if self.dataset_name is not None and self.dataset_name not in self.task_to_records_by_dataset:
             raise ValueError(
