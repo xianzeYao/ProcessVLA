@@ -151,6 +151,7 @@ def eval_libero(args: Args) -> None:
 
             env = None
             done = False
+            end_reason = "unknown"
             replay_images = []
             replay_wrist_images = []
             full_actions = []
@@ -253,11 +254,29 @@ def eval_libero(args: Args) -> None:
                     )
                     obs, reward, done, info = env.step(delta_action.tolist())
                     if done:
+                        end_reason = "done=True"
                         task_successes += 1
                         total_successes += 1
                         break
                     t += 1
                     step += 1
+                else:
+                    end_reason = f"max_steps_reached(t={t}, policy_step={step})"
+                if done:
+                    end_reason = f"done=True(t={t}, policy_step={step})"
+            except Exception as episode_exc:
+                end_reason = (
+                    f"exception(type={type(episode_exc).__name__}, "
+                    f"msg={episode_exc}, t={locals().get('t', 'na')}, "
+                    f"policy_step={locals().get('step', 'na')})"
+                )
+                logging.exception(
+                    "Episode crashed: task_id=%s episode_idx=%s reason=%s",
+                    task_id,
+                    episode_idx,
+                    end_reason,
+                )
+                raise
             finally:
                 if env is not None:
                     try:
@@ -290,6 +309,12 @@ def eval_libero(args: Args) -> None:
             # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
             # Log current results
             logging.info(f"Success: {done}")
+            logging.info(
+                "Episode end reason: task_id=%s episode_idx=%s reason=%s",
+                task_id,
+                episode_idx,
+                end_reason,
+            )
             logging.info(f"# episodes completed so far: {total_episodes}")
             logging.info(
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)"
