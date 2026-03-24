@@ -15,6 +15,8 @@ export STAR_VLA_Python=${STAR_VLA_Python:-python3}
 run_root_dir=${RUN_ROOT_DIR:-/path/to/train_run_root}
 task_suite_name=${TASK_SUITE_NAME:-libero_goal}
 num_trials_per_task=${NUM_TRIALS_PER_TASK:-5}
+libero_eval_task_id=${LIBERO_EVAL_TASK_ID:-}
+libero_eval_episode_idx=${LIBERO_EVAL_EPISODE_IDX:-}
 steps=(${STEPS:-2000})
 infer_source=${INFER_SOURCE:-}
 vlac_reference_video_path=${VLAC_REFERENCE_VIDEO_PATH:-}
@@ -91,6 +93,7 @@ for step in "${steps[@]}"; do
     echo "[INFO] =================================================="
     echo "[INFO] Evaluating checkpoint: ${your_ckpt}"
     echo "[INFO] Task suite: ${task_suite_name}, trials/task: ${num_trials_per_task}"
+    echo "[INFO] Task filter: ${libero_eval_task_id:-<all>}, episode filter: ${libero_eval_episode_idx:-<all>}"
     echo "[INFO] GPU binding: physical GPU ${gpu_id} (process-local CUDA/EGL device 0)"
     echo "[INFO] Server port: ${base_port}"
     echo "[INFO] Video output: ${video_out_path}"
@@ -112,6 +115,12 @@ for step in "${steps[@]}"; do
         --args.num-trials-per-task "${num_trials_per_task}"
         --args.video-out-path "${video_out_path}"
     )
+    if [[ -n "${libero_eval_task_id}" ]]; then
+        eval_args+=(--args.task-id "${libero_eval_task_id}")
+    fi
+    if [[ -n "${libero_eval_episode_idx}" ]]; then
+        eval_args+=(--args.episode-idx "${libero_eval_episode_idx}")
+    fi
     if [[ -n "${infer_source}" ]]; then
         eval_args+=(--args.infer-source "${infer_source}")
     fi
