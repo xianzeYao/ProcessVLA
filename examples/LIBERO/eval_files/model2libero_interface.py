@@ -197,19 +197,14 @@ class ModelClient:
         self.vlac_online_state = None
         self.vlac_reference_resolver = None
         self.vlac_subprocess_client = None
+        self.vlac_use_subprocess = False
         if self.signal_infer_source == "vlac_online":
             if self.vlac_python is not None or self.vlac_model_path is not None or self.vlac_repo_root is not None:
                 if not all([self.vlac_python, self.vlac_model_path, self.vlac_repo_root]):
                     raise ValueError(
                         "vlac_online subprocess mode requires vlac_python, vlac_model_path, and vlac_repo_root together."
                     )
-                self.vlac_subprocess_client = VLACOnlineSubprocessClient(
-                    vlac_python=self.vlac_python,
-                    model_path=self.vlac_model_path,
-                    model_type=self.vlac_model_type,
-                    repo_root=self.vlac_repo_root,
-                    device=self.vlac_device,
-                )
+                self.vlac_use_subprocess = True
             if self.vlac_reference_mode == "explicit_video":
                 if not self.vlac_reference_video_path:
                     raise ValueError(
@@ -253,6 +248,16 @@ class ModelClient:
         self.sticky_gripper_action = 0.0
         self.previous_gripper_action = None
         if self.signal_infer_source == "vlac_online":
+            if self.vlac_use_subprocess:
+                if self.vlac_subprocess_client is not None:
+                    self.vlac_subprocess_client.close()
+                self.vlac_subprocess_client = VLACOnlineSubprocessClient(
+                    vlac_python=self.vlac_python,
+                    model_path=self.vlac_model_path,
+                    model_type=self.vlac_model_type,
+                    repo_root=self.vlac_repo_root,
+                    device=self.vlac_device,
+                )
             selected_reference_video_path = self.resolve_vlac_reference_video_path(
                 task_description=task_description,
                 task_id=task_id,
@@ -337,9 +342,16 @@ class ModelClient:
                 # Attach save path into payload so websocket can carry it to server.
                 vla_input["hidden_save_path"] = str(hiddenstates_file_path)
             if self.signal_infer_source == "vlac_online":
-                vla_input["signal_override"] = float(
-                    self.vlac_online_state.compute_current_signal()
+                current_signal = float(self.vlac_online_state.compute_current_signal())
+                print(
+                    "*** "
+                    f"vlac_online step={step} "
+                    f"critic={self.vlac_online_state.last_critic:.6f} "
+                    f"signal={current_signal:.6f} "
+                    f"reference={self.vlac_online_state.reference_video_path}"
+                    " ***"
                 )
+                vla_input["signal_override"] = current_signal
             vla_input["signal_infer_source"] = self.signal_infer_source
             response = self.client.predict_action(
                 vla_input)  # 每个 chunk 入口调用一次模型

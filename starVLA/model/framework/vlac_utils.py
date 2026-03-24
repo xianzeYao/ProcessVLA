@@ -366,44 +366,51 @@ class VLACOnlineSubprocessClient:
     ) -> float:
         previous_frame_path = self._save_frame(previous_frame, "prev")
         current_frame_path = self._save_frame(current_frame, "curr")
-        request = {
-            "previous_frame_path": previous_frame_path,
-            "current_frame_path": current_frame_path,
-            "instruction": str(instruction),
-            "reference_video_path": str(Path(reference_video_path).expanduser().resolve()),
-            "ref_num": int(ref_num),
-            "batch_num": int(batch_num),
-            "rich": bool(rich),
-            "think": bool(think),
-        }
-        assert self.process is not None and self.process.stdin is not None and self.process.stdout is not None
-        self.process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
-        self.process.stdin.flush()
-        while True:
-            line = self.process.stdout.readline()
-            if line == "":
-                stderr_text = ""
-                if self.process.stderr is not None:
-                    try:
-                        stderr_text = self.process.stderr.read()
-                    except Exception:
-                        stderr_text = ""
-                raise RuntimeError(
-                    "VLAC online subprocess terminated unexpectedly. "
-                    f"stderr: {stderr_text}"
-                )
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                response = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if "error" in response:
-                raise RuntimeError(
-                    f"VLAC online subprocess error: {response['error']}"
-                )
-            return float(response["critic"])
+        try:
+            request = {
+                "previous_frame_path": previous_frame_path,
+                "current_frame_path": current_frame_path,
+                "instruction": str(instruction),
+                "reference_video_path": str(Path(reference_video_path).expanduser().resolve()),
+                "ref_num": int(ref_num),
+                "batch_num": int(batch_num),
+                "rich": bool(rich),
+                "think": bool(think),
+            }
+            assert self.process is not None and self.process.stdin is not None and self.process.stdout is not None
+            self.process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            self.process.stdin.flush()
+            while True:
+                line = self.process.stdout.readline()
+                if line == "":
+                    stderr_text = ""
+                    if self.process.stderr is not None:
+                        try:
+                            stderr_text = self.process.stderr.read()
+                        except Exception:
+                            stderr_text = ""
+                    raise RuntimeError(
+                        "VLAC online subprocess terminated unexpectedly. "
+                        f"stderr: {stderr_text}"
+                    )
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    response = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "error" in response:
+                    raise RuntimeError(
+                        f"VLAC online subprocess error: {response['error']}"
+                    )
+                return float(response["critic"])
+        finally:
+            for temp_path in (previous_frame_path, current_frame_path):
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 class OnlineVLACSignalState:
@@ -435,6 +442,8 @@ class OnlineVLACSignalState:
         self.subprocess_client = subprocess_client
         self.frame_buffer = deque(maxlen=self.skip + 1)
         self.prev_value = 0.0
+        self.last_critic = 0.0
+        self.last_signal = 0.0
         if self.subprocess_client is None:
             reference_frames_np, _ = read_video(self.reference_video_path)
             self.reference_frames = [_to_pil_rgb(frame) for frame in reference_frames_np]
@@ -446,6 +455,8 @@ class OnlineVLACSignalState:
             self.instruction = str(instruction)
         self.frame_buffer.clear()
         self.prev_value = 0.0
+        self.last_critic = 0.0
+        self.last_signal = 0.0
 
     def append_frame(self, frame) -> None:
         self.frame_buffer.append(_to_pil_rgb(frame))
@@ -481,12 +492,15 @@ class OnlineVLACSignalState:
             )
         if not self.frame_skip:
             critic = critic / float(self.skip)
+        self.last_critic = float(critic)
 
         if self.signal_kind == "critic":
-            return float(critic)
+            self.last_signal = float(critic)
+            return self.last_signal
         if self.signal_kind == "value":
             self.prev_value = vlac_value_update(self.prev_value, critic)
-            return float(self.prev_value / 100.0)
+            self.last_signal = float(self.prev_value / 100.0)
+            return self.last_signal
         raise ValueError(
             f"Unsupported vlac_online signal_kind={self.signal_kind!r}. Supported values are: critic, value."
         )
