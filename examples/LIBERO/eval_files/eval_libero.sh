@@ -42,6 +42,23 @@ vlac_python=${VLAC_PYTHON:-}
 vlac_model_path=${VLAC_MODEL_PATH:-}
 vlac_model_type=${VLAC_MODEL_TYPE:-}
 vlac_repo_root=${VLAC_REPO_ROOT:-}
+
+normalize_bool_arg() {
+    local raw="${1:-}"
+    if [[ -z "${raw}" ]]; then
+        return 0
+    fi
+    case "${raw}" in
+        true|True|TRUE|1|yes|YES) printf '%s' "True" ;;
+        false|False|FALSE|0|no|NO) printf '%s' "False" ;;
+        none|None|NONE|null|NULL) printf '%s' "None" ;;
+        *) printf '%s' "${raw}" ;;
+    esac
+}
+
+vlac_frame_skip="$(normalize_bool_arg "${vlac_frame_skip}")"
+vlac_rich="$(normalize_bool_arg "${vlac_rich}")"
+vlac_think="$(normalize_bool_arg "${vlac_think}")"
 folder_name=$(echo "$your_ckpt" | awk -F'/' '{print $(NF-2)"_"$NF}')
 eval_root=${EVAL_ROOT:-${REPO_ROOT}/results/libero_eval}
 video_out_path="${eval_root}/${folder_name}/results/${task_suite_name}/"

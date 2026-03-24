@@ -61,6 +61,9 @@ def build_framework(cfg):
     elif cfg.framework.name == "QwenFast":
         from starVLA.model.framework.QwenFast import Qwenvl_Fast
         return Qwenvl_Fast(cfg)
+    elif cfg.framework.name == "QwenGR00T":
+        from starVLA.model.framework.QwenGR00T import Qwen_GR00T
+        return Qwen_GR00T(cfg)
     elif cfg.framework.name == "NeuroVLA":
         from starVLA.model.framework.NeuroVLA import NeuroVLA
         return NeuroVLA(cfg)
