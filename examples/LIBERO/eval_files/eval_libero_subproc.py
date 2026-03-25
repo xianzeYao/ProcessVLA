@@ -31,6 +31,10 @@ def _build_eval_command(args: Args, task_id: int, episode_idx: int, result_path:
     for key, value in arg_dict.items():
         if value is None:
             continue
+        if key == "post_process_action":
+            if value is False:
+                cmd.append("--args.no-post-process-action")
+            continue
         cli_key = f"--args.{key.replace('_', '-')}"
         if isinstance(value, bool):
             cmd.extend([cli_key, "True" if value else "False"])
