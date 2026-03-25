@@ -13,7 +13,6 @@
 
 set -euo pipefail
 
-mkdir -p /home/n84416302/ProcessVLA/slurm
 cd /home/n84416302/ProcessVLA
 
 export LIBERO_HOME=/home/n84416302/LIBERO
