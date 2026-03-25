@@ -46,6 +46,7 @@ class Args:
     num_trials_per_task: int = 50  # Number of rollouts per task
     task_id: Optional[int] = None  # If set, only evaluate this task id
     episode_idx: Optional[int] = None  # If set, only evaluate this episode idx within the task
+    episode_result_path: Optional[str] = None  # Optional JSONL path to append per-episode results
 
     #################################################################################################################
     # Utils
@@ -328,6 +329,18 @@ def eval_libero(args: Args) -> None:
             logging.info(
                 f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)"
             )
+            if args.episode_result_path:
+                result_path = pathlib.Path(args.episode_result_path)
+                result_path.parent.mkdir(parents=True, exist_ok=True)
+                with result_path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "task_id": task_id,
+                        "episode_idx": episode_idx,
+                        "success": bool(done),
+                        "end_reason": end_reason,
+                        "total_episodes": total_episodes,
+                        "total_successes": total_successes,
+                    }) + "\n")
 
         # Log final results
         logging.info(

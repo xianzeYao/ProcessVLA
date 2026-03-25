@@ -17,6 +17,8 @@ task_suite_name=${TASK_SUITE_NAME:-libero_goal}
 num_trials_per_task=${NUM_TRIALS_PER_TASK:-5}
 libero_eval_task_id=${LIBERO_EVAL_TASK_ID:-}
 libero_eval_episode_idx=${LIBERO_EVAL_EPISODE_IDX:-}
+libero_eval_mode=${LIBERO_EVAL_MODE:-loop}
+libero_episode_timeout_seconds=${LIBERO_EPISODE_TIMEOUT_SECONDS:-1800}
 steps=(${STEPS:-2000})
 infer_source=${INFER_SOURCE:-}
 vlac_reference_video_path=${VLAC_REFERENCE_VIDEO_PATH:-}
@@ -94,6 +96,7 @@ for step in "${steps[@]}"; do
     echo "[INFO] Evaluating checkpoint: ${your_ckpt}"
     echo "[INFO] Task suite: ${task_suite_name}, trials/task: ${num_trials_per_task}"
     echo "[INFO] Task filter: ${libero_eval_task_id:-<all>}, episode filter: ${libero_eval_episode_idx:-<all>}"
+    echo "[INFO] Eval mode: ${libero_eval_mode}"
     echo "[INFO] GPU binding: physical GPU ${gpu_id} (process-local CUDA/EGL device 0)"
     echo "[INFO] Server port: ${base_port}"
     echo "[INFO] Video output: ${video_out_path}"
@@ -120,6 +123,10 @@ for step in "${steps[@]}"; do
     fi
     if [[ -n "${libero_eval_episode_idx}" ]]; then
         eval_args+=(--args.episode-idx "${libero_eval_episode_idx}")
+    fi
+    if [[ "${libero_eval_mode}" == "subprocess_episode" ]]; then
+        eval_args+=(--args.episode-timeout-seconds "${libero_episode_timeout_seconds}")
+        eval_args+=(--args.results-jsonl "${LOG_DIR}/episode_results.jsonl")
     fi
     if [[ -n "${infer_source}" ]]; then
         eval_args+=(--args.infer-source "${infer_source}")
@@ -192,7 +199,12 @@ for step in "${steps[@]}"; do
         exit 1
     fi
 
-    CUDA_VISIBLE_DEVICES="${gpu_id}" EGL_VISIBLE_DEVICES=0 "${LIBERO_Python}" ./examples/LIBERO/eval_files/eval_libero.py \
+    eval_script="./examples/LIBERO/eval_files/eval_libero.py"
+    if [[ "${libero_eval_mode}" == "subprocess_episode" ]]; then
+        eval_script="./examples/LIBERO/eval_files/eval_libero_subproc.py"
+    fi
+
+    CUDA_VISIBLE_DEVICES="${gpu_id}" EGL_VISIBLE_DEVICES=0 "${LIBERO_Python}" "${eval_script}" \
         "${eval_args[@]}" \
         2>&1 | tee "${LOG_DIR}/eval.log"
 

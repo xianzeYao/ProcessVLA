@@ -25,6 +25,8 @@ export RUN_ROOT_DIR=/home/n84416302/ProcessVLA/ckpts/qwen3vl_gr00t_libero_goal_4
 export TASK_SUITE_NAME=libero_goal
 export NUM_TRIALS_PER_TASK=5
 export STEPS="10000 30000"
+export LIBERO_EVAL_MODE=subprocess_episode
+export LIBERO_EPISODE_TIMEOUT_SECONDS=1800
 
 export INFER_SOURCE=vlac_online
 export VLAC_REFERENCE_MODE=dataset_same_task_seeded
