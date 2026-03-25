@@ -23,8 +23,8 @@ export STAR_VLA_Python=/home/n84416302/miniconda3/envs/starvla/bin/python
 
 export RUN_ROOT_DIR=/home/n84416302/ProcessVLA/ckpts/qwen3vl_gr00t_libero_goal_4gpu_20260323_183741
 export TASK_SUITE_NAME=libero_goal
-export NUM_TRIALS_PER_TASK=5
-export STEPS="10000 30000"
+export NUM_TRIALS_PER_TASK=50
+export STEPS="30000"
 export LIBERO_EVAL_MODE=subprocess_episode
 export LIBERO_EPISODE_TIMEOUT_SECONDS=1800
 
