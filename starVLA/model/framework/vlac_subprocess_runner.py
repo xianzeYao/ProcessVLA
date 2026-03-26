@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,10 +16,16 @@ def _workspace_root() -> Path:
 
 
 def _ensure_repo_import_path(repo_name: str) -> None:
-    repo_root = _workspace_root() / repo_name
+    env_key = f"CRITIC4VLA_{str(repo_name).upper()}_REPO_ROOT"
+    explicit_repo_root = os.environ.get(env_key, "").strip()
+    repo_root = (
+        Path(explicit_repo_root).expanduser().resolve()
+        if explicit_repo_root
+        else _workspace_root() / repo_name
+    )
     if not repo_root.exists():
         raise ImportError(
-            f"Local repo '{repo_name}' not found under {_workspace_root()}.")
+            f"Local repo '{repo_name}' not found at {repo_root}.")
     path_str = str(repo_root)
     if path_str not in sys.path:
         sys.path.insert(0, path_str)

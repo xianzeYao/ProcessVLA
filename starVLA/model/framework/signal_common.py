@@ -625,10 +625,16 @@ def _workspace_root() -> Path:
 
 
 def _ensure_repo_import_path(repo_name: str, src_subdir: Optional[str] = None) -> None:
-    repo_root = _workspace_root() / repo_name
+    env_key = f"CRITIC4VLA_{str(repo_name).upper()}_REPO_ROOT"
+    explicit_repo_root = os.environ.get(env_key, "").strip()
+    repo_root = (
+        Path(explicit_repo_root).expanduser().resolve()
+        if explicit_repo_root
+        else _workspace_root() / repo_name
+    )
     if not repo_root.exists():
         raise ImportError(
-            f"Local repo '{repo_name}' not found under {_workspace_root()}.")
+            f"Local repo '{repo_name}' not found at {repo_root}.")
     import_path = repo_root / src_subdir if src_subdir is not None else repo_root
     path_str = str(import_path)
     if path_str not in sys.path:
