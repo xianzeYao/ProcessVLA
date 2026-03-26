@@ -58,9 +58,18 @@ DEFAULT_ROBODOPAMINE_PYTHON = os.environ.get(
     "/your/path/to/robodopamine_python",
 )
 
-DEFAULT_VLAC_MODEL_PATH = "/your/path/to/vlac_model"
-DEFAULT_VLAC_MODEL_TYPE = "internvl2"
-DEFAULT_VLAC_PYTHON = "/your/path/to/vlac_python"
+DEFAULT_VLAC_MODEL_PATH = os.environ.get(
+    "CRITIC4VLA_VLAC_MODEL_PATH",
+    "/your/path/to/vlac_model",
+)
+DEFAULT_VLAC_MODEL_TYPE = os.environ.get(
+    "CRITIC4VLA_VLAC_MODEL_TYPE",
+    "internvl2",
+)
+DEFAULT_VLAC_PYTHON = os.environ.get(
+    "CRITIC4VLA_VLAC_PYTHON",
+    "/your/path/to/vlac_python",
+)
 
 ROBOMETER_MAX_IMAGE_SIDE = 480
 ROBOMETER_MAX_IMAGE_PIXELS = 1024 * 1024
