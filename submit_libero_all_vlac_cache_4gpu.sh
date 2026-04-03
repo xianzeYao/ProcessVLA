@@ -36,7 +36,7 @@ accelerate launch \
   --datasets.vlm_data.max_pixels 12845056 \
   --datasets.vlm_data.min_pixels 3136 \
   --trainer.max_train_steps 30000 \
-  --trainer.save_interval 10000 \
+  --trainer.save_interval 10000 \ 
   --trainer.eval_interval 1000 \
   --trainer.learning_rate.base 4.0e-05 \
   --trainer.logging_frequency 100 \
