@@ -50,6 +50,23 @@ def _load_image(image_path: Union[str, Path]) -> Image.Image:
     return Image.open(image_path).convert("RGB")
 
 
+def _load_image_tensor(image_path: Union[str, Path], *, transform) -> torch.Tensor:
+    image_path = Path(image_path)
+    if image_path.suffix.lower() == ".npy":
+        array = np.load(image_path)
+        if array.ndim != 3:
+            raise ValueError(f"Expected NPY image with shape [H, W, C], got {array.shape}")
+        if array.shape[-1] == 1:
+            array = np.repeat(array, 3, axis=-1)
+        if array.shape[-1] != 3:
+            raise ValueError(f"Expected 3-channel NPY image, got shape {array.shape}")
+        if array.dtype != np.uint8:
+            array = np.clip(array, 0, 255).astype(np.uint8)
+        tensor = torch.from_numpy(np.ascontiguousarray(array)).permute(2, 0, 1).contiguous()
+        return tensor.to(dtype=torch.float32).div(255.0)
+    return transform(_load_image(image_path))
+
+
 def _describe_tensor(tensor: torch.Tensor) -> dict:
     detached = tensor.detach()
     return {
@@ -105,7 +122,7 @@ def main() -> None:
 
             loaded_images = [_load_image(image_path) for image_path in image_paths]
             image_tensor = torch.stack(
-                [transform(image) for image in loaded_images],
+                [_load_image_tensor(image_path, transform=transform) for image_path in image_paths],
                 dim=0,
             ).to(device)
             text_tokens = clip.tokenize([str(instruction) for instruction in instructions]).to(device)
