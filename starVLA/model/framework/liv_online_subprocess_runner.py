@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Union
 
 import torch
+import torchvision
+import torchvision.transforms as T
 from PIL import Image
 
 
-def _ensure_liv_import_paths(repo_root: Union[str, Path]) -> None:
+def _ensure_liv_import_paths(repo_root: Union[str, Path]) -> Path:
     resolved_root = Path(repo_root).expanduser().resolve()
     if not resolved_root.exists():
         raise ImportError(f"LIV repo root does not exist: {resolved_root}")
@@ -20,6 +22,7 @@ def _ensure_liv_import_paths(repo_root: Union[str, Path]) -> None:
         sys.path.insert(0, root_str)
     if clip_str not in sys.path:
         sys.path.insert(0, clip_str)
+    return resolved_root
 
 
 def _parse_args():
@@ -33,27 +36,30 @@ def _load_image(image_path: Union[str, Path]) -> Image.Image:
     return Image.open(image_path).convert("RGB")
 
 
-def _pil_to_float_tensor(image: Image.Image, *, device: torch.device) -> torch.Tensor:
-    image = image.convert("RGB")
-    channels = len(image.getbands())
-    tensor = torch.ByteTensor(torch.ByteStorage.from_buffer(image.tobytes()))
-    tensor = tensor.view(image.size[1], image.size[0], channels)
-    tensor = tensor.permute(2, 0, 1).contiguous()
-    return tensor.to(device=device, dtype=torch.float32).div(255.0)
+def _runtime_info(*, repo_root: Path, device: str) -> dict:
+    return {
+        "python_executable": sys.executable,
+        "python_version": sys.version.split()[0],
+        "torch_version": getattr(torch, "__version__", "unknown"),
+        "torchvision_version": getattr(torchvision, "__version__", "unknown"),
+        "repo_root": str(repo_root),
+        "device": device,
+    }
 
 
 def main() -> None:
     args = _parse_args()
-    _ensure_liv_import_paths(args.repo_root)
+    resolved_root = _ensure_liv_import_paths(args.repo_root)
 
     import clip
     from liv import load_liv
 
-    device = torch.device(args.device)
+    device = args.device
     liv_model = load_liv()
-    if isinstance(liv_model, torch.nn.DataParallel):
-        liv_model = liv_model.module
-    liv_model = liv_model.to(device).eval()
+    liv_model = liv_model.eval()
+    transform = T.Compose([T.ToTensor()])
+    runtime = _runtime_info(repo_root=resolved_root, device=device)
+    print(json.dumps({"ready": True, "runtime": runtime}), flush=True)
 
     for raw_line in sys.stdin:
         line = raw_line.strip()
@@ -70,16 +76,18 @@ def main() -> None:
                 raise ValueError(
                     f"LIV subprocess batch size mismatch: {len(image_paths)} image_paths vs {len(instructions)} instructions."
                 )
-            images = [_load_image(image_path) for image_path in image_paths]
+
             image_tensor = torch.stack(
-                [_pil_to_float_tensor(image, device=device) for image in images],
+                [transform(_load_image(image_path)) for image_path in image_paths],
                 dim=0,
-            )
-            text_tokens = clip.tokenize([str(instruction) for instruction in instructions]).to(device=device)
+            ).to(device)
+            text_tokens = clip.tokenize([str(instruction) for instruction in instructions]).to(device)
             with torch.no_grad():
                 img_embedding = liv_model(input=image_tensor, modality="vision")
                 text_embedding = liv_model(input=text_tokens, modality="text")
-                signal = liv_model.sim(img_embedding, text_embedding)
+                sim_model = liv_model.module if isinstance(liv_model, torch.nn.DataParallel) else liv_model
+                signal = sim_model.sim(img_embedding, text_embedding)
+
             signal_tensor = torch.as_tensor(signal, dtype=torch.float32).reshape(-1)
             if signal_tensor.numel() == 1 and len(instructions) > 1:
                 signal_tensor = signal_tensor.expand(len(instructions))
@@ -88,10 +96,24 @@ def main() -> None:
                     f"LIV subprocess output size mismatch: got {signal_tensor.numel()}, expected {len(instructions)}."
                 )
             signal_values = [float(item) for item in signal_tensor.detach().cpu().tolist()]
-            print(json.dumps({"signals": signal_values}), flush=True)
+            print(json.dumps({"signals": signal_values, "runtime": runtime}), flush=True)
         except Exception as exc:
-            print(json.dumps({"error": str(exc)}), flush=True)
+            print(json.dumps({"error": str(exc), "runtime": runtime}), flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "error": str(exc),
+                    "runtime": {
+                        "python_executable": sys.executable,
+                        "python_version": sys.version.split()[0],
+                    },
+                }
+            ),
+            flush=True,
+        )

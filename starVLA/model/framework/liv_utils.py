@@ -65,6 +65,38 @@ class LIVOnlineSubprocessClient:
         self.process = process
         if self.process.stdin is None or self.process.stdout is None:
             raise RuntimeError("Failed to initialize LIV online subprocess pipes.")
+        self.runtime_info = self._read_startup_runtime()
+
+    def _read_startup_runtime(self) -> dict:
+        assert self.process is not None and self.process.stdout is not None
+        while True:
+            line = self.process.stdout.readline()
+            if line == "":
+                stderr_text = ""
+                if self.process.stderr is not None:
+                    try:
+                        stderr_text = self.process.stderr.read()
+                    except Exception:
+                        stderr_text = ""
+                raise RuntimeError(
+                    "LIV online subprocess failed during startup. "
+                    f"python={self.liv_python} repo_root={self.repo_root} stderr: {stderr_text}"
+                )
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            runtime = response.get("runtime", {})
+            if response.get("ready"):
+                return runtime
+            if "error" in response:
+                raise RuntimeError(
+                    "LIV online subprocess startup error: "
+                    f"{response['error']} runtime={runtime}"
+                )
 
     def close(self) -> None:
         if getattr(self, "process", None) is not None:
@@ -143,8 +175,9 @@ class LIVOnlineSubprocessClient:
                 except json.JSONDecodeError:
                     continue
                 if "error" in response:
+                    runtime = response.get("runtime", self.runtime_info)
                     raise RuntimeError(
-                        f"LIV online subprocess error: {response['error']}"
+                        f"LIV online subprocess error: {response['error']} runtime={runtime}"
                     )
                 return [float(item) for item in response["signals"]]
         finally:
