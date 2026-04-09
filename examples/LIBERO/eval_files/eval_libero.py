@@ -79,6 +79,9 @@ class Args:
     vlac_model_path: Optional[str] = None
     vlac_model_type: Optional[str] = None
     vlac_repo_root: Optional[str] = None
+    liv_python: Optional[str] = None
+    liv_repo_root: Optional[str] = None
+    liv_device: Optional[str] = None
 
 
 def eval_libero(args: Args) -> None:
@@ -135,6 +138,9 @@ def eval_libero(args: Args) -> None:
         vlac_model_path=args.vlac_model_path,
         vlac_model_type=args.vlac_model_type,
         vlac_repo_root=args.vlac_repo_root,
+        liv_python=args.liv_python,
+        liv_repo_root=args.liv_repo_root,
+        liv_device=args.liv_device,
     )
 
     # Start evaluation

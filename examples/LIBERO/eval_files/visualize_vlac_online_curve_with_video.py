@@ -189,6 +189,14 @@ def infer_rollout_status(video_path: Path) -> Optional[str]:
     return None
 
 
+def resolve_rollout_status(success_flag: Optional[bool], main_video_path: Path) -> str:
+    if success_flag is True:
+        return "success"
+    if success_flag is False:
+        return "failure"
+    return infer_rollout_status(main_video_path) or "unknown"
+
+
 def locate_rollout_videos(
     *,
     log_path: Path,
@@ -380,6 +388,7 @@ def render_camera_panel(
     title: str,
     instruction: Optional[str] = None,
     *,
+    status_label: Optional[str] = None,
     footer_height: Optional[int] = None,
 ) -> np.ndarray:
     image = Image.fromarray(video_frame)
@@ -401,6 +410,19 @@ def render_camera_panel(
     draw.rectangle((0, footer_y, width, height + footer_height), fill=(248, 246, 241))
     draw.line((0, footer_y, width, footer_y), fill=(223, 223, 223), width=1)
     draw.text((padding_x, footer_y + padding_y), title, fill=(56, 56, 56), font=label_font)
+
+    if status_label:
+        badge_text = status_label.upper()
+        badge_fill = (44, 120, 72) if status_label.lower() == "success" else (166, 52, 52)
+        badge_left, badge_top, badge_right, badge_bottom = draw.textbbox((0, 0), badge_text, font=label_font)
+        badge_width = badge_right - badge_left + 18
+        badge_height = badge_bottom - badge_top + 8
+        badge_x1 = width - padding_x - badge_width
+        badge_y1 = footer_y + padding_y - 1
+        badge_x2 = badge_x1 + badge_width
+        badge_y2 = badge_y1 + badge_height
+        draw.rounded_rectangle((badge_x1, badge_y1, badge_x2, badge_y2), radius=8, fill=badge_fill)
+        draw.text((badge_x1 + 9, badge_y1 + 4), badge_text, fill=(255, 255, 255), font=label_font)
 
     if instruction:
         label_bottom = draw.textbbox((padding_x, footer_y + padding_y), title, font=label_font)[3]
@@ -425,12 +447,14 @@ def render_camera_stack_panel(
     primary_frame: np.ndarray,
     instruction: str,
     auxiliary_frames: Sequence[Tuple[str, np.ndarray]],
+    rollout_status: str,
 ) -> np.ndarray:
     panels = [
         render_camera_panel(
             primary_frame,
             title="Rollout Main View",
             instruction=instruction,
+            status_label=rollout_status,
         )
     ]
     for label, frame in auxiliary_frames:
@@ -543,12 +567,10 @@ def render_plot_frame(
     *,
     frame_idx: int,
     frame_count: int,
-    steps: np.ndarray,
-    critics: np.ndarray,
-    signals: np.ndarray,
     signal_staircase: np.ndarray,
     panel_width: int,
     panel_height: int,
+    rollout_status: str,
 ) -> np.ndarray:
     _, plt, FormatStrFormatter = ensure_matplotlib_runtime()
     dpi = 100
@@ -558,7 +580,7 @@ def render_plot_frame(
     ax.set_facecolor("#fffdf8")
     x = np.arange(frame_count, dtype=np.int32)
 
-    ylim_low, ylim_high = resolve_ylim(signal_staircase, critics)
+    ylim_low, ylim_high = resolve_ylim(signal_staircase)
 
     ax.step(
         x,
@@ -568,23 +590,8 @@ def render_plot_frame(
         linewidth=2.4,
         label="VLAC signal",
     )
-    ax.scatter(steps, signals, color="#1f6f8b", s=16, zorder=3)
-    ax.plot(
-        steps,
-        critics,
-        color="#d97706",
-        linewidth=1.6,
-        marker="o",
-        markersize=4.0,
-        alpha=0.92,
-        label="Chunk critic",
-    )
 
     current_signal = float(signal_staircase[min(frame_idx, frame_count - 1)])
-    critic_step_idx = np.searchsorted(steps, frame_idx, side="right") - 1
-    current_critic = None
-    if 0 <= critic_step_idx < len(critics):
-        current_critic = float(critics[critic_step_idx])
 
     ax.axvline(frame_idx, color="#222222", linestyle="--", linewidth=1.1)
     ax.set_xlim(0, max(frame_count - 1, 1))
@@ -599,9 +606,11 @@ def render_plot_frame(
         spine.set_color("#3a3a3a")
         spine.set_linewidth(1.0)
     ax.legend(loc="lower right", fontsize=7, framealpha=0.92)
-    text_lines = [f"step={frame_idx}", f"signal={current_signal:.6f}"]
-    if current_critic is not None:
-        text_lines.append(f"critic={current_critic:.6f}")
+    text_lines = [
+        f"step={frame_idx}",
+        f"signal={current_signal:.6f}",
+        f"rollout={rollout_status}",
+    ]
     ax.text(
         0.02,
         0.98,
@@ -652,9 +661,9 @@ def main():
 
     frame_count = len(primary_frames)
     steps = np.asarray([entry["step"] for entry in entries], dtype=np.int32)
-    critics = np.asarray([entry["critic"] for entry in entries], dtype=np.float32)
     signals = np.asarray([entry["signal"] for entry in entries], dtype=np.float32)
     signal_staircase = staircase_expand(steps, signals, frame_count)
+    rollout_status = resolve_rollout_status(success_flag, main_video_path)
 
     if output_path := args.output_path:
         overlay_path = Path(output_path).expanduser().resolve()
@@ -683,6 +692,7 @@ def main():
         primary_frames[0],
         instruction,
         [(label, frames[0]) for label, frames in auxiliary_labels_frames],
+        rollout_status,
     )
     plot_height = sample_right_panel.shape[0]
 
@@ -694,17 +704,16 @@ def main():
                 plot_frame = render_plot_frame(
                     frame_idx=frame_idx,
                     frame_count=frame_count,
-                    steps=steps,
-                    critics=critics,
-                    signals=signals,
                     signal_staircase=signal_staircase,
                     panel_width=plot_width,
                     panel_height=plot_height,
+                    rollout_status=rollout_status,
                 )
                 right_panel = render_camera_stack_panel(
                     frame,
                     instruction,
                     [(label, frames[frame_idx]) for label, frames in auxiliary_labels_frames],
+                    rollout_status,
                 )
                 combined = compose_output_frame(plot_frame, right_panel)
                 write_video_frame_av(container, stream, combined)
@@ -721,17 +730,16 @@ def main():
                 plot_frame = render_plot_frame(
                     frame_idx=frame_idx,
                     frame_count=frame_count,
-                    steps=steps,
-                    critics=critics,
-                    signals=signals,
                     signal_staircase=signal_staircase,
                     panel_width=plot_width,
                     panel_height=plot_height,
+                    rollout_status=rollout_status,
                 )
                 right_panel = render_camera_stack_panel(
                     frame,
                     instruction,
                     [(label, frames[frame_idx]) for label, frames in auxiliary_labels_frames],
+                    rollout_status,
                 )
                 combined = compose_output_frame(plot_frame, right_panel)
                 writer.append_data(combined)
@@ -742,6 +750,7 @@ def main():
     print("[OK] VLAC online visualization complete")
     print(f"  Log: {log_path}")
     print(f"  Instruction: {instruction}")
+    print(f"  Rollout status: {rollout_status}")
     print(f"  Main video: {main_video_path}")
     print(f"  Wrist video: {wrist_video_path if wrist_video_path is not None else 'N/A'}")
     print(f"  Frames: {frame_count}")

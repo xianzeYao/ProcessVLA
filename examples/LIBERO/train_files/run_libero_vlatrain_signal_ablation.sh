@@ -17,6 +17,9 @@ signal_cache_root=${SIGNAL_CACHE_ROOT:-/your/path/to/vlac_cache_root}
 signal_cache_name=${SIGNAL_CACHE_NAME:-vlac}
 signal_cache_required=true
 signal_align_mode=${SIGNAL_ALIGN_MODE:-current}
+liv_python=${LIV_PYTHON:-/your/path/to/liv_python}
+liv_repo_root=${LIV_REPO_ROOT:-/your/path/to/LIV}
+liv_device=${LIV_DEVICE:-cuda}
 
 if [[ "${MODE}" == "liv" ]]; then
   signal_train_source=liv_online
@@ -56,6 +59,7 @@ train_script=${TRAIN_SCRIPT:-${PROCESSVLA_ROOT}/starVLA/training/train_starvla.p
 
 echo "mode=${MODE}, signal.train_source=${signal_train_source}, signal.infer_source=${signal_infer_source}"
 echo "signal.cache_root=${signal_cache_root}, signal.cache_name=${signal_cache_name}, signal.cache_required=${signal_cache_required}, signal.align_mode=${signal_align_mode}"
+echo "signal.liv_online.python=${liv_python}, signal.liv_online.repo_root=${liv_repo_root}, signal.liv_online.device=${liv_device}"
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p ${output_dir}
@@ -78,6 +82,9 @@ accelerate launch \
   --signal.cache_name "${signal_cache_name}" \
   --signal.cache_required "${signal_cache_required}" \
   --signal.align_mode "${signal_align_mode}" \
+  --signal.liv_online.python "${liv_python}" \
+  --signal.liv_online.repo_root "${liv_repo_root}" \
+  --signal.liv_online.device "${liv_device}" \
   --datasets.vla_data.data_root_dir "${libero_data_root}" \
   --datasets.vla_data.data_mix "${data_mix}" \
   --datasets.vla_data.per_device_batch_size 16 \

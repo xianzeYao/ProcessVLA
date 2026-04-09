@@ -39,6 +39,9 @@ vlac_python=${VLAC_PYTHON:-}
 vlac_model_path=${VLAC_MODEL_PATH:-}
 vlac_model_type=${VLAC_MODEL_TYPE:-}
 vlac_repo_root=${VLAC_REPO_ROOT:-}
+liv_python=${LIV_PYTHON:-${LIV_Python:-}}
+liv_repo_root=${LIV_REPO_ROOT:-${CRITIC4VLA_LIV_REPO_ROOT:-}}
+liv_device=${LIV_DEVICE:-}
 
 normalize_bool_arg() {
     local raw="${1:-}"
@@ -109,6 +112,9 @@ for step in "${steps[@]}"; do
     echo "[INFO] vlac_python=${vlac_python:-<yaml/direct-import>}"
     echo "[INFO] vlac_model_path=${vlac_model_path:-<yaml/direct-import>}"
     echo "[INFO] vlac_repo_root=${vlac_repo_root:-<yaml/direct-import>}"
+    echo "[INFO] liv_python=${liv_python:-<yaml/direct-import>}"
+    echo "[INFO] liv_repo_root=${liv_repo_root:-<yaml/direct-import>}"
+    echo "[INFO] liv_device=${liv_device:-<yaml/direct-import>}"
 
     eval_args=(
         --args.pretrained-path "${your_ckpt}"
@@ -184,6 +190,15 @@ for step in "${steps[@]}"; do
     fi
     if [[ -n "${vlac_repo_root}" ]]; then
         eval_args+=(--args.vlac-repo-root "${vlac_repo_root}")
+    fi
+    if [[ -n "${liv_python}" ]]; then
+        eval_args+=(--args.liv-python "${liv_python}")
+    fi
+    if [[ -n "${liv_repo_root}" ]]; then
+        eval_args+=(--args.liv-repo-root "${liv_repo_root}")
+    fi
+    if [[ -n "${liv_device}" ]]; then
+        eval_args+=(--args.liv-device "${liv_device}")
     fi
 
     CUDA_VISIBLE_DEVICES="${gpu_id}" EGL_VISIBLE_DEVICES=0 "${STAR_VLA_Python}" deployment/model_server/server_policy.py \

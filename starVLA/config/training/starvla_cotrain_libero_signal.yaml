@@ -79,6 +79,19 @@ datasets:
     signal_cache_required: false
 
 
+signal:
+  train_source: none
+  infer_source: none
+  cache_root: /your/path/to/vlac_cache_root
+  cache_name: vlac
+  cache_required: false
+  align_mode: current
+  liv_online:
+    python: /your/path/to/liv_python
+    repo_root: /your/path/to/LIV
+    device: cuda
+
+
 trainer:
   epochs: 100
   max_train_steps: 80000

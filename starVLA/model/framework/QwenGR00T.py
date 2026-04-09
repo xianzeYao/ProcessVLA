@@ -16,7 +16,11 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images  # 训练
 from starVLA.model.modules.action_model.GR00T_ActionHeader import get_action_model, FlowmatchingActionHead
 from starVLA.model.modules.vlm import get_vlm_model  # 构建 VLM（Qwen-VL 等）接口的工厂
 from starVLA.model.framework.base_framework import baseframework  # 通用框架基类，封装训练时需要的接口
-from starVLA.model.framework.liv_utils import compute_liv_signal
+from starVLA.model.framework.liv_utils import (
+    DEFAULT_LIV_PYTHON,
+    LIVOnlineSubprocessClient,
+    compute_liv_signal,
+)
 from starVLA.model.framework.signal_common import build_hidden_state_save_payload
 # 将输入图像安全转成 PIL，保持信息完整
 from deployment.model_server.tools.image_tools import to_pil_preserve
@@ -29,6 +33,7 @@ from typing import List, Optional, Tuple  # 类型注解
 from tqdm import tqdm  # 进度条工具
 from typing import List  # 类型别名（保留原样）
 import sys  # 操作 Python 路径
+import os
 from pathlib import Path  # 文件路径处理
 import time  # 简单时间戳，用于生成唯一保存名
 
@@ -68,6 +73,38 @@ def _signal_override_to_tensor(signal_override, *, device, dtype, batch_size: in
             f"signal_override size mismatch: got {signal.numel()}, expected {batch_size}."
         )
     return signal
+
+
+def _normalize_optional_string(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_runtime_path(value) -> str | None:
+    text = _normalize_optional_string(value)
+    if text is None:
+        return None
+    placeholder_markers = (
+        "/your/path/to/",
+        "/path/to/",
+        "your/path/to/",
+    )
+    if any(marker in text for marker in placeholder_markers):
+        return None
+    return text
+
+
+def _safe_cfg_get(cfg, key, default=None):
+    if cfg is None:
+        return default
+    if hasattr(cfg, "get"):
+        try:
+            return cfg.get(key, default)
+        except Exception:
+            pass
+    return getattr(cfg, key, default)
 
 
 @FRAMEWORK_REGISTRY.register("QwenGR00T")  # 向框架注册表注册本类，便于按字符串加载
@@ -124,6 +161,88 @@ class Qwen_GR00T(baseframework):
         self.past_action_window_size = config.framework.action_model.past_action_window_size  # 过去动作窗口长度
         self.chunk_len = self.past_action_window_size + 1 + \
             self.future_action_window_size  # 总窗口=过去+当前+未来
+        self._liv_subprocess_client = None
+        self._liv_subprocess_cfg = self._resolve_liv_subprocess_cfg()
+
+    def _resolve_liv_subprocess_cfg(self) -> dict:
+        signal_cfg = _get_signal_cfg(self.config)
+        liv_cfg = _safe_cfg_get(signal_cfg, "liv_online", None)
+        liv_python = _normalize_runtime_path(
+            _safe_cfg_get(liv_cfg, "python", None)
+            or os.environ.get("LIV_PYTHON")
+            or os.environ.get("CRITIC4VLA_LIV_PYTHON")
+            or DEFAULT_LIV_PYTHON
+        )
+        liv_repo_root = _normalize_runtime_path(
+            _safe_cfg_get(liv_cfg, "repo_root", None)
+            or os.environ.get("LIV_REPO_ROOT")
+            or os.environ.get("CRITIC4VLA_LIV_REPO_ROOT")
+        )
+        liv_device = _normalize_optional_string(
+            _safe_cfg_get(liv_cfg, "device", None)
+            or os.environ.get("LIV_DEVICE")
+            or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        use_subprocess = bool(liv_python and liv_repo_root)
+        return {
+            "use_subprocess": use_subprocess,
+            "python": liv_python,
+            "repo_root": liv_repo_root,
+            "device": liv_device,
+        }
+
+    def _get_liv_subprocess_client(self) -> Optional[LIVOnlineSubprocessClient]:
+        if not self._liv_subprocess_cfg.get("use_subprocess", False):
+            return None
+        if self._liv_subprocess_client is None:
+            self._liv_subprocess_client = LIVOnlineSubprocessClient(
+                liv_python=self._liv_subprocess_cfg["python"],
+                repo_root=self._liv_subprocess_cfg["repo_root"],
+                device=self._liv_subprocess_cfg["device"],
+            )
+        return self._liv_subprocess_client
+
+    def _compute_liv_signal(
+        self,
+        *,
+        batch_images,
+        instructions: List[str],
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        liv_subprocess_client = self._get_liv_subprocess_client()
+        if liv_subprocess_client is None:
+            return compute_liv_signal(
+                batch_images=batch_images,
+                instructions=instructions,
+                device=device,
+                dtype=dtype,
+            )
+
+        primary_images = []
+        for sample_images in batch_images:
+            if isinstance(sample_images, (list, tuple)):
+                if len(sample_images) == 0:
+                    raise ValueError("Expected at least one image in sample_images.")
+                primary_images.append(sample_images[0])
+            else:
+                primary_images.append(sample_images)
+        signal_values = liv_subprocess_client.compute_signals(
+            images=primary_images,
+            instructions=instructions,
+        )
+        return torch.as_tensor(signal_values, device=device, dtype=dtype).reshape(-1)
+
+    def close(self) -> None:
+        if self._liv_subprocess_client is not None:
+            self._liv_subprocess_client.close()
+            self._liv_subprocess_client = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def forward(
         self,
@@ -218,7 +337,7 @@ class Qwen_GR00T(baseframework):
                 signal_repeated = signal.repeat(
                     repeated_diffusion_steps)
             elif train_source == "liv_online":
-                signal = compute_liv_signal(
+                signal = self._compute_liv_signal(
                     batch_images=batch_images,
                     instructions=instructions,
                     device=last_hidden.device,
@@ -307,12 +426,20 @@ class Qwen_GR00T(baseframework):
         if infer_source == "none":
             signal = None
         elif infer_source == "liv_online":
-            signal = compute_liv_signal(
-                batch_images=batch_images,
-                instructions=instructions,
-                device=last_hidden.device,
-                dtype=last_hidden.dtype,
-            )
+            if signal_override is not None:
+                signal = _signal_override_to_tensor(
+                    signal_override,
+                    device=last_hidden.device,
+                    dtype=last_hidden.dtype,
+                    batch_size=len(examples),
+                )
+            else:
+                signal = self._compute_liv_signal(
+                    batch_images=batch_images,
+                    instructions=instructions,
+                    device=last_hidden.device,
+                    dtype=last_hidden.dtype,
+                )
         elif infer_source == "vlac_online":
             if signal_override is None:
                 raise ValueError(

@@ -53,6 +53,10 @@ signal:
   cache_name: vlac
   cache_required: true
   align_mode: current
+  liv_online:
+    python: /your/path/to/liv_python
+    repo_root: /your/path/to/LIV
+    device: cuda
 
 
 datasets:

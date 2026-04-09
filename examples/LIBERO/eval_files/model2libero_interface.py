@@ -14,6 +14,7 @@ from pathlib import Path
 from PIL import Image
 import torch
 
+from starVLA.model.framework.liv_utils import LIVOnlineSubprocessClient
 from starVLA.model.tools import read_mode_config  # 读取模型配置与归一化统计
 from starVLA.model.framework.vlac_utils import (
     DatasetSeededVLACReferenceResolver,
@@ -56,6 +57,9 @@ class ModelClient:
         vlac_model_path: Optional[str] = None,
         vlac_model_type: Optional[str] = None,
         vlac_repo_root: Optional[str] = None,
+        liv_python: Optional[str] = None,
+        liv_repo_root: Optional[str] = None,
+        liv_device: Optional[str] = None,
     ) -> None:
 
         # build client to connect server policy
@@ -114,6 +118,7 @@ class ModelClient:
         signal_cfg = dict(model_config.get("signal", {}) or {})
         vla_cfg = dict(model_config.get("datasets", {}).get("vla_data", {}) or {})
         vlac_cfg = dict(signal_cfg.get("vlac_online", {}) or {})
+        liv_cfg = dict(signal_cfg.get("liv_online", {}) or {})
         default_signal_infer_source = self.normalize_infer_source(
             signal_cfg.get("infer_source", "none")
         )
@@ -194,10 +199,30 @@ class ModelClient:
             vlac_repo_root,
             vlac_cfg.get("repo_root", None),
         )
+        self.liv_python = self.resolve_optional_str(
+            liv_python,
+            liv_cfg.get("python", None),
+        )
+        self.liv_repo_root = self.resolve_optional_str(
+            liv_repo_root,
+            liv_cfg.get("repo_root", None),
+        )
+        self.liv_device = str(liv_device) if liv_device is not None else str(
+            liv_cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        )
+        self.liv_subprocess_client = None
+        self.liv_use_subprocess = False
         self.vlac_online_state = None
         self.vlac_reference_resolver = None
         self.vlac_subprocess_client = None
         self.vlac_use_subprocess = False
+        if self.signal_infer_source == "liv_online":
+            if self.liv_python is not None or self.liv_repo_root is not None:
+                if not all([self.liv_python, self.liv_repo_root]):
+                    raise ValueError(
+                        "liv_online subprocess mode requires liv_python and liv_repo_root together."
+                    )
+                self.liv_use_subprocess = True
         if self.signal_infer_source == "vlac_online":
             if self.vlac_python is not None or self.vlac_model_path is not None or self.vlac_repo_root is not None:
                 if not all([self.vlac_python, self.vlac_model_path, self.vlac_repo_root]):
@@ -224,6 +249,20 @@ class ModelClient:
                     "Supported values are: explicit_video, dataset_same_task_seeded."
                 )
 
+    def close(self) -> None:
+        if self.vlac_subprocess_client is not None:
+            self.vlac_subprocess_client.close()
+            self.vlac_subprocess_client = None
+        if self.liv_subprocess_client is not None:
+            self.liv_subprocess_client.close()
+            self.liv_subprocess_client = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
         self.num_image_history = min(self.num_image_history + 1, self.horizon)
@@ -247,6 +286,13 @@ class ModelClient:
         self.gripper_action_repeat = 0
         self.sticky_gripper_action = 0.0
         self.previous_gripper_action = None
+        if self.signal_infer_source == "liv_online" and self.liv_use_subprocess:
+            if self.liv_subprocess_client is None:
+                self.liv_subprocess_client = LIVOnlineSubprocessClient(
+                    liv_python=self.liv_python,
+                    repo_root=self.liv_repo_root,
+                    device=self.liv_device,
+                )
         if self.signal_infer_source == "vlac_online":
             if self.vlac_use_subprocess:
                 if self.vlac_subprocess_client is not None:
@@ -341,6 +387,21 @@ class ModelClient:
                 print(f"Hidden states will be saved to: {hiddenstates_file_path}")
                 # Attach save path into payload so websocket can carry it to server.
                 vla_input["hidden_save_path"] = str(hiddenstates_file_path)
+            if self.signal_infer_source == "liv_online" and self.liv_use_subprocess:
+                current_signal = float(
+                    self.liv_subprocess_client.compute_signal(
+                        image=images[0],
+                        instruction=task_description,
+                    )
+                )
+                print(
+                    "*** "
+                    f"liv_online step={step} "
+                    f"signal={current_signal:.6f} "
+                    "source=subprocess"
+                    " ***"
+                )
+                vla_input["signal_override"] = current_signal
             if self.signal_infer_source == "vlac_online":
                 current_signal = float(self.vlac_online_state.compute_current_signal())
                 print(
