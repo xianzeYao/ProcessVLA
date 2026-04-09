@@ -8,7 +8,6 @@ from typing import Union
 
 import torch
 from PIL import Image
-import torchvision.transforms as trans
 
 
 def _ensure_liv_import_paths(repo_root: Union[str, Path]) -> None:
@@ -34,6 +33,15 @@ def _load_image(image_path: Union[str, Path]) -> Image.Image:
     return Image.open(image_path).convert("RGB")
 
 
+def _pil_to_float_tensor(image: Image.Image, *, device: torch.device) -> torch.Tensor:
+    image = image.convert("RGB")
+    channels = len(image.getbands())
+    tensor = torch.ByteTensor(torch.ByteStorage.from_buffer(image.tobytes()))
+    tensor = tensor.view(image.size[1], image.size[0], channels)
+    tensor = tensor.permute(2, 0, 1).contiguous()
+    return tensor.to(device=device, dtype=torch.float32).div(255.0)
+
+
 def main() -> None:
     args = _parse_args()
     _ensure_liv_import_paths(args.repo_root)
@@ -46,7 +54,6 @@ def main() -> None:
     if isinstance(liv_model, torch.nn.DataParallel):
         liv_model = liv_model.module
     liv_model = liv_model.to(device).eval()
-    transform = trans.Compose([trans.ToTensor()])
 
     for raw_line in sys.stdin:
         line = raw_line.strip()
@@ -65,9 +72,9 @@ def main() -> None:
                 )
             images = [_load_image(image_path) for image_path in image_paths]
             image_tensor = torch.stack(
-                [transform(image) for image in images],
+                [_pil_to_float_tensor(image, device=device) for image in images],
                 dim=0,
-            ).to(device=device, non_blocking=True)
+            )
             text_tokens = clip.tokenize([str(instruction) for instruction in instructions]).to(device=device)
             with torch.no_grad():
                 img_embedding = liv_model(input=image_tensor, modality="vision")
