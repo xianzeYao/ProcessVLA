@@ -24,6 +24,10 @@ def _to_pil_rgb(image) -> Image.Image:
         return image.convert("RGB")
     array = np.asarray(image)
     if array.dtype != np.uint8:
+        if np.issubdtype(array.dtype, np.floating):
+            finite_values = array[np.isfinite(array)]
+            if finite_values.size > 0 and finite_values.min() >= 0.0 and finite_values.max() <= 1.0:
+                array = array * 255.0
         array = np.clip(array, 0, 255).astype(np.uint8)
     return Image.fromarray(array).convert("RGB")
 
