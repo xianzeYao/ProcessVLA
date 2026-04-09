@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 from typing import Union
 
@@ -34,6 +35,18 @@ def _parse_args():
 
 def _load_image(image_path: Union[str, Path]) -> Image.Image:
     return Image.open(image_path).convert("RGB")
+
+
+def _describe_tensor(tensor: torch.Tensor) -> dict:
+    detached = tensor.detach()
+    return {
+        "shape": list(detached.shape),
+        "dtype": str(detached.dtype),
+        "device": str(detached.device),
+        "min": float(detached.min().item()),
+        "max": float(detached.max().item()),
+        "mean": float(detached.mean().item()),
+    }
 
 
 def _runtime_info(*, repo_root: Path, device: str) -> dict:
@@ -77,8 +90,9 @@ def main() -> None:
                     f"LIV subprocess batch size mismatch: {len(image_paths)} image_paths vs {len(instructions)} instructions."
                 )
 
+            loaded_images = [_load_image(image_path) for image_path in image_paths]
             image_tensor = torch.stack(
-                [transform(_load_image(image_path)) for image_path in image_paths],
+                [transform(image) for image in loaded_images],
                 dim=0,
             ).to(device)
             text_tokens = clip.tokenize([str(instruction) for instruction in instructions]).to(device)
@@ -98,7 +112,16 @@ def main() -> None:
             signal_values = [float(item) for item in signal_tensor.detach().cpu().tolist()]
             print(json.dumps({"signals": signal_values, "runtime": runtime}), flush=True)
         except Exception as exc:
-            print(json.dumps({"error": str(exc), "runtime": runtime}), flush=True)
+            debug = {
+                "image_paths": image_paths if "image_paths" in locals() else None,
+                "instructions": instructions if "instructions" in locals() else None,
+                "pil_sizes": [list(image.size) for image in loaded_images] if "loaded_images" in locals() else None,
+                "pil_modes": [image.mode for image in loaded_images] if "loaded_images" in locals() else None,
+                "image_tensor": _describe_tensor(image_tensor) if "image_tensor" in locals() else None,
+                "text_tokens_shape": list(text_tokens.shape) if "text_tokens" in locals() else None,
+                "traceback": traceback.format_exc(),
+            }
+            print(json.dumps({"error": str(exc), "runtime": runtime, "debug": debug}), flush=True)
 
 
 if __name__ == "__main__":
@@ -112,6 +135,9 @@ if __name__ == "__main__":
                     "runtime": {
                         "python_executable": sys.executable,
                         "python_version": sys.version.split()[0],
+                    },
+                    "debug": {
+                        "traceback": traceback.format_exc(),
                     },
                 }
             ),

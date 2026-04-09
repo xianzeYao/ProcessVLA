@@ -176,8 +176,10 @@ class LIVOnlineSubprocessClient:
                     continue
                 if "error" in response:
                     runtime = response.get("runtime", self.runtime_info)
+                    debug = response.get("debug")
+                    debug_suffix = f" debug={debug}" if debug is not None else ""
                     raise RuntimeError(
-                        f"LIV online subprocess error: {response['error']} runtime={runtime}"
+                        f"LIV online subprocess error: {response['error']} runtime={runtime}{debug_suffix}"
                     )
                 return [float(item) for item in response["signals"]]
         finally:
