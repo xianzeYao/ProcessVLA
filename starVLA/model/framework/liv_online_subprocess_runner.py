@@ -7,6 +7,7 @@ import traceback
 from pathlib import Path
 from typing import Union
 
+import numpy as np
 import torch
 import torchvision
 import torchvision.transforms as T
@@ -34,6 +35,18 @@ def _parse_args():
 
 
 def _load_image(image_path: Union[str, Path]) -> Image.Image:
+    image_path = Path(image_path)
+    if image_path.suffix.lower() == ".npy":
+        array = np.load(image_path)
+        if array.ndim != 3:
+            raise ValueError(f"Expected NPY image with shape [H, W, C], got {array.shape}")
+        if array.shape[-1] == 1:
+            array = np.repeat(array, 3, axis=-1)
+        if array.shape[-1] != 3:
+            raise ValueError(f"Expected 3-channel NPY image, got shape {array.shape}")
+        if array.dtype != np.uint8:
+            array = np.clip(array, 0, 255).astype(np.uint8)
+        return Image.fromarray(array, mode="RGB")
     return Image.open(image_path).convert("RGB")
 
 

@@ -32,6 +32,26 @@ def _to_pil_rgb(image) -> Image.Image:
     return Image.fromarray(array).convert("RGB")
 
 
+def _to_numpy_hwc_uint8(image) -> np.ndarray:
+    if isinstance(image, Image.Image):
+        array = np.asarray(image.convert("RGB"))
+    else:
+        array = np.asarray(image)
+    if array.ndim != 3:
+        raise ValueError(f"Expected image with shape [H, W, C], got {array.shape}")
+    if array.shape[-1] == 1:
+        array = np.repeat(array, 3, axis=-1)
+    if array.shape[-1] != 3:
+        raise ValueError(f"Expected image with 3 channels, got shape {array.shape}")
+    if array.dtype != np.uint8:
+        if np.issubdtype(array.dtype, np.floating):
+            finite_values = array[np.isfinite(array)]
+            if finite_values.size > 0 and finite_values.min() >= 0.0 and finite_values.max() <= 1.0:
+                array = array * 255.0
+        array = np.clip(array, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(array)
+
+
 def _describe_image_like(image) -> dict:
     if isinstance(image, Image.Image):
         array = np.asarray(image)
@@ -156,8 +176,8 @@ class LIVOnlineSubprocessClient:
 
     def _save_frame(self, frame, stem: str) -> str:
         self._frame_index += 1
-        output_path = Path(self.temp_dir.name) / f"{self._frame_index:06d}_{stem}.png"
-        _to_pil_rgb(frame).save(output_path)
+        output_path = Path(self.temp_dir.name) / f"{self._frame_index:06d}_{stem}.npy"
+        np.save(output_path, _to_numpy_hwc_uint8(frame))
         return str(output_path)
 
     def compute_signals(
