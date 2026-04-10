@@ -21,6 +21,7 @@ libero_eval_mode=${LIBERO_EVAL_MODE:-loop}
 libero_episode_timeout_seconds=${LIBERO_EPISODE_TIMEOUT_SECONDS:-1800}
 steps=(${STEPS:-2000})
 infer_source=${INFER_SOURCE:-}
+eval_variant_tag=${EVAL_VARIANT_TAG:-${infer_source:-}}
 vlac_reference_video_path=${VLAC_REFERENCE_VIDEO_PATH:-}
 vlac_reference_mode=${VLAC_REFERENCE_MODE:-}
 vlac_reference_dataset_name=${VLAC_REFERENCE_DATASET_NAME:-}
@@ -90,6 +91,10 @@ for step in "${steps[@]}"; do
     fi
 
     folder_name=$(echo "${your_ckpt}" | awk -F'/' '{print $(NF-2)"_"$NF}')
+    if [[ -n "${eval_variant_tag}" ]]; then
+        sanitized_eval_variant_tag=$(printf '%s' "${eval_variant_tag}" | tr '[:space:]/' '__')
+        folder_name="${folder_name}__${sanitized_eval_variant_tag}"
+    fi
     eval_root=${EVAL_ROOT:-${REPO_ROOT}/results/libero_eval}
     video_out_path="${eval_root}/${folder_name}/results/${task_suite_name}/"
     LOG_DIR="${eval_root}/${folder_name}/logs/${task_suite_name}/"
@@ -105,6 +110,7 @@ for step in "${steps[@]}"; do
     echo "[INFO] Video output: ${video_out_path}"
     echo "[INFO] Log output: ${LOG_DIR}"
     echo "[INFO] signal.infer_source=${infer_source:-<yaml>}"
+    echo "[INFO] eval_variant_tag=${eval_variant_tag:-<none>}"
     echo "[INFO] vlac_reference_mode=${vlac_reference_mode:-<yaml>}"
     echo "[INFO] vlac_reference_video_path=${vlac_reference_video_path:-<yaml/unset>}"
     echo "[INFO] vlac_reference_dataset_name=${vlac_reference_dataset_name:-<yaml>}"

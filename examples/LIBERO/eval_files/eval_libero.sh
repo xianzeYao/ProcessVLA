@@ -24,6 +24,7 @@ your_ckpt=${CKPT_PATH:-/path/to/checkpoint.pt}
 task_suite_name=${TASK_SUITE_NAME:-libero_goal}
 num_trials_per_task=${NUM_TRIALS_PER_TASK:-50}
 infer_source=${INFER_SOURCE:-}
+eval_variant_tag=${EVAL_VARIANT_TAG:-${infer_source:-}}
 vlac_reference_video_path=${VLAC_REFERENCE_VIDEO_PATH:-}
 vlac_reference_mode=${VLAC_REFERENCE_MODE:-}
 vlac_reference_dataset_name=${VLAC_REFERENCE_DATASET_NAME:-}
@@ -63,6 +64,10 @@ vlac_frame_skip="$(normalize_bool_arg "${vlac_frame_skip}")"
 vlac_rich="$(normalize_bool_arg "${vlac_rich}")"
 vlac_think="$(normalize_bool_arg "${vlac_think}")"
 folder_name=$(echo "$your_ckpt" | awk -F'/' '{print $(NF-2)"_"$NF}')
+if [[ -n "${eval_variant_tag}" ]]; then
+    sanitized_eval_variant_tag=$(printf '%s' "${eval_variant_tag}" | tr '[:space:]/' '__')
+    folder_name="${folder_name}__${sanitized_eval_variant_tag}"
+fi
 eval_root=${EVAL_ROOT:-${REPO_ROOT}/results/libero_eval}
 video_out_path="${eval_root}/${folder_name}/results/${task_suite_name}/"
 LOG_DIR="${eval_root}/${folder_name}/logs/${task_suite_name}/"
