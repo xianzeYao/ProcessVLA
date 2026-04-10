@@ -9,9 +9,13 @@ from typing import Union
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision
-import torchvision.transforms as T
 from PIL import Image
+
+
+_CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+_CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
 
 def _ensure_liv_import_paths(repo_root: Union[str, Path]) -> Path:
@@ -50,7 +54,7 @@ def _load_image(image_path: Union[str, Path]) -> Image.Image:
     return Image.open(image_path).convert("RGB")
 
 
-def _load_image_tensor(image_path: Union[str, Path], *, transform) -> torch.Tensor:
+def _load_image_tensor(image_path: Union[str, Path]) -> torch.Tensor:
     image_path = Path(image_path)
     if image_path.suffix.lower() == ".npy":
         array = np.load(image_path)
@@ -64,7 +68,39 @@ def _load_image_tensor(image_path: Union[str, Path], *, transform) -> torch.Tens
             array = np.clip(array, 0, 255).astype(np.uint8)
         tensor = torch.from_numpy(np.ascontiguousarray(array)).permute(2, 0, 1).contiguous()
         return tensor.to(dtype=torch.float32).div(255.0)
-    return transform(_load_image(image_path))
+    pil_image = _load_image(image_path)
+    array = np.asarray(pil_image, dtype=np.uint8)
+    tensor = torch.from_numpy(np.ascontiguousarray(array)).permute(2, 0, 1).contiguous()
+    return tensor.to(dtype=torch.float32).div(255.0)
+
+
+def _preprocess_for_clip(
+    image_tensor: torch.Tensor,
+    *,
+    image_resolution: int,
+    model_dtype: torch.dtype,
+) -> torch.Tensor:
+    if image_tensor.ndim != 4:
+        raise ValueError(f"Expected image tensor shape [B, C, H, W], got {tuple(image_tensor.shape)}")
+    _, channels, height, width = image_tensor.shape
+    if channels != 3:
+        raise ValueError(f"Expected 3 image channels, got {channels}")
+    if min(height, width) <= 0:
+        raise ValueError(f"Invalid image spatial shape: H={height}, W={width}")
+
+    crop_size = min(height, width)
+    top = (height - crop_size) // 2
+    left = (width - crop_size) // 2
+    image_tensor = image_tensor[:, :, top : top + crop_size, left : left + crop_size]
+    image_tensor = F.interpolate(
+        image_tensor,
+        size=(image_resolution, image_resolution),
+        mode="bicubic",
+        align_corners=False,
+    )
+    mean = torch.tensor(_CLIP_MEAN, device=image_tensor.device, dtype=image_tensor.dtype).view(1, 3, 1, 1)
+    std = torch.tensor(_CLIP_STD, device=image_tensor.device, dtype=image_tensor.dtype).view(1, 3, 1, 1)
+    return ((image_tensor - mean) / std).to(dtype=model_dtype)
 
 
 def _describe_tensor(tensor: torch.Tensor) -> dict:
@@ -100,7 +136,10 @@ def main() -> None:
     device = args.device
     liv_model = load_liv()
     liv_model = liv_model.eval()
-    transform = T.Compose([T.ToTensor()])
+    sim_model = liv_model.module if isinstance(liv_model, torch.nn.DataParallel) else liv_model
+    clip_model = sim_model.model
+    image_resolution = int(clip_model.visual.input_resolution)
+    model_dtype = clip_model.dtype
     runtime = _runtime_info(repo_root=resolved_root, device=device)
     print(json.dumps({"ready": True, "runtime": runtime}), flush=True)
 
@@ -122,14 +161,18 @@ def main() -> None:
 
             loaded_images = [_load_image(image_path) for image_path in image_paths]
             image_tensor = torch.stack(
-                [_load_image_tensor(image_path, transform=transform) for image_path in image_paths],
+                [_load_image_tensor(image_path) for image_path in image_paths],
                 dim=0,
             ).to(device)
+            image_tensor = _preprocess_for_clip(
+                image_tensor,
+                image_resolution=image_resolution,
+                model_dtype=model_dtype,
+            )
             text_tokens = clip.tokenize([str(instruction) for instruction in instructions]).to(device)
             with torch.no_grad():
-                img_embedding = liv_model(input=image_tensor, modality="vision")
-                text_embedding = liv_model(input=text_tokens, modality="text")
-                sim_model = liv_model.module if isinstance(liv_model, torch.nn.DataParallel) else liv_model
+                img_embedding = clip_model.encode_image(image_tensor)
+                text_embedding = clip_model.encode_text(text_tokens)
                 signal = sim_model.sim(img_embedding, text_embedding)
 
             signal_tensor = torch.as_tensor(signal, dtype=torch.float32).reshape(-1)
