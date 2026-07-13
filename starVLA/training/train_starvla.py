@@ -182,6 +182,10 @@ class VLATrainer(TrainerUtils):
                     project=self.config.wandb_project,
                     entity=self.config.wandb_entity,
                     group="vla-train",
+                    config=OmegaConf.to_container(
+                        self.config.unwrap() if isinstance(self.config, AccessTrackedConfig) else self.config,
+                        resolve=True,
+                    ),
                 )
                 self._wandb_enabled = True
             except Exception as exc:
@@ -358,8 +362,20 @@ class VLATrainer(TrainerUtils):
             if self.completed_steps % self.config.trainer.eval_interval == 0:
                 step_metrics = self.eval_action_model(step_metrics)
 
-            step_metrics["timing/data"] = t_end_data - t_start_data
-            step_metrics["timing/model"] = t_end_model - t_start_model
+            data_time = t_end_data - t_start_data
+            model_time = t_end_model - t_start_model
+            total_step_time = data_time + model_time
+            step_metrics["timing/data"] = data_time
+            step_metrics["timing/model"] = model_time
+            step_metrics["timing/step"] = total_step_time
+            step_metrics["throughput/steps_per_sec"] = 1.0 / total_step_time if total_step_time > 0 else 0.0
+            step_metrics["throughput/samples_per_sec"] = self.total_batch_size / total_step_time if total_step_time > 0 else 0.0
+            step_metrics["train/global_batch_size"] = self.total_batch_size
+            step_metrics["train/per_device_batch_size"] = self.config.datasets.vla_data.per_device_batch_size
+            step_metrics["train/num_processes"] = self.accelerator.num_processes
+            step_metrics["train/gradient_accumulation_steps"] = self.accelerator.gradient_accumulation_steps
+            step_metrics["train/seen_samples"] = self.completed_steps * self.total_batch_size
+            step_metrics.update(self._get_gpu_memory_metrics())
             self._log_metrics(step_metrics)
 
             if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
@@ -399,6 +415,22 @@ class VLATrainer(TrainerUtils):
             logger.info(f"  Gradient accumulation steps = {self.accelerator.gradient_accumulation_steps}")
             logger.info(f"  Total batch size = {self.total_batch_size}")
 
+    def _get_gpu_memory_metrics(self):
+        """Return local GPU memory metrics in GiB for W&B logging."""
+        if not torch.cuda.is_available():
+            return {}
+
+        device = self.accelerator.device
+        if device.type != "cuda":
+            return {}
+
+        idx = device.index if device.index is not None else torch.cuda.current_device()
+        return {
+            "system/gpu_memory_allocated_gb": torch.cuda.memory_allocated(idx) / (1024**3),
+            "system/gpu_memory_reserved_gb": torch.cuda.memory_reserved(idx) / (1024**3),
+            "system/gpu_memory_max_allocated_gb": torch.cuda.max_memory_allocated(idx) / (1024**3),
+        }
+
     def _train_step(self, batch_vla, batch_vlm=None):
         """Execute single training step."""
         with self.accelerator.accumulate(self.model):
@@ -411,8 +443,9 @@ class VLATrainer(TrainerUtils):
 
             self.accelerator.backward(total_loss)
 
+            grad_norm = None
             if self.config.trainer.gradient_clipping is not None:
-                self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
+                grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
 
             self.optimizer.step()
             # Only step the LR scheduler when gradients are actually synced
@@ -423,9 +456,12 @@ class VLATrainer(TrainerUtils):
             if self.accelerator.sync_gradients:
                 self.lr_scheduler.step()
 
-        return {
+        metrics = {
             "action_dit_loss": action_loss.item(),
         }
+        if grad_norm is not None:
+            metrics["train/grad_norm"] = grad_norm.item() if hasattr(grad_norm, "item") else float(grad_norm)
+        return metrics
 
     def _finalize_training(self):
         """Training end processing."""
