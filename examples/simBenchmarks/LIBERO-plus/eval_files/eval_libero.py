@@ -311,7 +311,7 @@ def eval_libero(args: Args) -> None:
 def _get_libero_env(task, resolution, seed):
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
     env = OffScreenRenderEnv(
-        bddl_file_name=task_bddl_file,
+        bddl_file_name=str(task_bddl_file),
         camera_heights=resolution,
         camera_widths=resolution,
     )

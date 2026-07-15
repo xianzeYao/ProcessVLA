@@ -253,6 +253,9 @@ def eval_libero(args: Args) -> None:
         logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
         logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
 
+        # Release MuJoCo / EGL resources before creating the next task environment.
+        env.close()
+
     success_rate = total_successes / total_episodes if total_episodes else 0.0
     result = {
         "suite": args.task_suite_name,

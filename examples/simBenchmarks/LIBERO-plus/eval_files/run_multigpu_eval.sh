@@ -21,11 +21,11 @@ CHECKPOINT_UTILS="${REPO_ROOT}/examples/simBenchmarks/eval_common/checkpoint_uti
 
 MODEL_DIR="${MODEL_DIR:-/root/data/yxz/outputs/qwen35_gr00t_libero_baseline}"
 CKPT_NAME="${CKPT_NAME:-}"
-LIBERO_HOME="${LIBERO_HOME:-/root/data/yxz/benchmarks/LIBERO-plus}"
+export LIBERO_HOME="${LIBERO_HOME:-/root/data/yxz/benchmarks/LIBERO-plus}"
 POLICY_PYTHON="${POLICY_PYTHON:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python}"
 SIM_PYTHON="${SIM_PYTHON:-/root/data/yxz/miniforge3/envs/libero_plus/bin/python}"
 OUTPUT_DIR="${OUTPUT_DIR:-${MODEL_DIR}_eval/libero_plus}"
-GPUS="${GPUS:-0,1,2,3}"
+GPUS="${GPUS:-0,1,2,3,4,5,6,7}"
 TASK_SUITE_NAME="${TASK_SUITE_NAME:-all}"
 BASE_PORT="${BASE_PORT:-9883}"
 NUM_TRIALS_PER_TASK="${NUM_TRIALS_PER_TASK:-1}"
@@ -68,8 +68,9 @@ if [[ ! -f "${LIBERO_CONFIG_PATH}/config.yaml" ]]; then
     printf 'assets: %s\n' "${LIBERO_HOME}/libero/libero/assets"
   } > "${LIBERO_CONFIG_PATH}/config.yaml"
 fi
-export MUJOCO_GL="${MUJOCO_GL:-osmesa}"
-export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-osmesa}"
+export MUJOCO_GL="${MUJOCO_GL:-egl}"
+export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
+export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD="${TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD:-1}"
 SIM_ENV_LIB="$(cd "$(dirname "${SIM_PYTHON}")/../lib" 2>/dev/null && pwd || true)"
 if [[ -n "${SIM_ENV_LIB}" && -d "${SIM_ENV_LIB}" ]]; then
   export LD_LIBRARY_PATH="${SIM_ENV_LIB}:${LD_LIBRARY_PATH:-}"
