@@ -34,6 +34,32 @@ _ACTION_TOKEN_MAX = (
 import torch.nn as nn
 
 
+_QWEN35_FLASH_POSITION_IDS_PATCHED = False
+
+
+def _patch_qwen35_flash_position_ids() -> None:
+    """Avoid treating Qwen3.5 multi-dimensional RoPE ids as packed sequences."""
+    global _QWEN35_FLASH_POSITION_IDS_PATCHED
+    if _QWEN35_FLASH_POSITION_IDS_PATCHED:
+        return
+
+    import transformers.modeling_flash_attention_utils as flash_attention_utils
+
+    def _is_packed_sequence(position_ids, batch_size):
+        if position_ids is None:
+            return False
+        if position_ids.dim() > 2:
+            return False
+
+        increasing_position_sequences = (
+            torch.arange(position_ids.shape[1], device=position_ids.device) + position_ids.min()
+        )
+        return batch_size == 1 and (increasing_position_sequences - position_ids).abs().sum().bool()
+
+    flash_attention_utils._is_packed_sequence = _is_packed_sequence
+    _QWEN35_FLASH_POSITION_IDS_PATCHED = True
+
+
 class _QWen3_5_VL_Interface(nn.Module):
     """
     This exists because of the diversity of VLMs, so we encapsulate the changes here.
@@ -58,6 +84,8 @@ class _QWen3_5_VL_Interface(nn.Module):
         model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3.5-VL-4B-Instruct")
         attn_implementation = qwenvl_config.get("attn_implementation", "sdpa")
 
+        if attn_implementation in {"flash_attention_2", "flash_attention_3"}:
+            _patch_qwen35_flash_position_ids()
 
         model = Qwen3_5ForConditionalGeneration.from_pretrained(
             model_id,
