@@ -92,6 +92,23 @@ Finally, each result will also save a video for visualization, as shown below:
 
 ![Example](example.gif)
 
+### True multi-GPU evaluation
+
+To evaluate all four standard suites with one policy server and one simulator
+worker per GPU, run:
+
+```bash
+bash examples/simBenchmarks/LIBERO/eval_files/run_multigpu_eval.sh
+```
+
+The default model directory is
+`/root/data/yxz/outputs/qwen35_gr00t_libero_baseline`, and the default checkpoint
+is the latest numbered checkpoint (`steps_60000_pytorch_model.pt`). Use
+`CKPT_NAME=final_model/pytorch_model.pt` to override it. Run `DRY_RUN=1` first
+for the GPU/port plan. Results are written beside the model directory under
+`qwen35_gr00t_libero_baseline_eval/libero_multigpu/`; set `SAVE_VIDEO=1` when
+videos are needed.
+
 ---
 
 

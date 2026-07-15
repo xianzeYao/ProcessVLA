@@ -84,5 +84,25 @@ Also ensure the environment variables at the top of `eval_libero.sh` are correct
 
 ---
 
-⚠️ **Note:** Since LIBERO-plus has 10,030 tasks, completing all the evaluations will take an extremely long time. It is recommended to run multiple model instances in parallel for the evaluations. We provide code and scripts for parallel testing on cluster `./parallel_eval/run_nebula_libero_plus`. Please modify them to fit your own cluster.
+### True multi-GPU evaluation (recommended)
+
+For local multi-GPU evaluation, use `run_multigpu_eval.sh`. It plans disjoint
+half-open task ranges from `task_classification.json`; each range gets exactly
+one policy server, one simulator worker, one GPU, and one unique port. The
+script waits for all workers and then validates/merges the slice JSON files.
+
+```bash
+MODEL_DIR=/root/data/yxz/outputs/qwen35_gr00t_libero_baseline \
+GPUS=0,1,2,3,4,5,6,7 \
+TASK_SUITE_NAME=all \
+bash examples/simBenchmarks/LIBERO-plus/eval_files/run_multigpu_eval.sh
+```
+
+Use `DRY_RUN=1` first to print the GPU/port/task mapping. The default is the latest numbered checkpoint (`steps_60000_pytorch_model.pt`); set `CKPT_NAME=final_model/pytorch_model.pt` to override it. Results are written
+under `OUTPUT_DIR/<run_id>/logs`; the final validated report is
+`overall_results.json`. Set `SAVE_VIDEO=1` only when videos are needed.
+
+The older `parallel_eval/run_nebula_libero_plus` scripts remain available for
+cluster schedulers, but they launch independent jobs rather than sharing this
+local one-server-per-GPU mapping.
 

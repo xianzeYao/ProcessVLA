@@ -12,6 +12,24 @@ from typing_extensions import override
 
 from . import msgpack_numpy
 
+
+def _connect_with_header_compat(connect_fn, uri: str, headers=None, **kwargs):
+    """Call a websockets connector across old/new header keyword APIs."""
+    variants = [
+        {**kwargs, "additional_headers": headers},
+        {**kwargs, "extra_headers": headers},
+        dict(kwargs),
+    ]
+    last_type_error = None
+    for connect_kwargs in variants:
+        try:
+            return connect_fn(uri, **connect_kwargs)
+        except TypeError as exc:
+            last_type_error = exc
+    if last_type_error is not None:
+        raise last_type_error
+    raise RuntimeError("Unable to create websocket connection")
+
 # =============================================================================
 # TRAIN / TEST CONSISTENCY REMINDER (shown at every eval entry point)
 # -----------------------------------------------------------------------------
@@ -75,11 +93,12 @@ class WebsocketClientPolicy:
 
             try:
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
-                conn = websockets.sync.client.connect(
+                conn = _connect_with_header_compat(
+                    websockets.sync.client.connect,
                     self._uri,
+                    headers=headers,
                     compression=None,
                     max_size=None,
-                    additional_headers=headers,
                     open_timeout=150,
                     ping_interval=None,
                     ping_timeout=60,

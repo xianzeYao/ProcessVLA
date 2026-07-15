@@ -53,7 +53,7 @@ datasets:
     per_device_batch_size: 4
   vla_data:
     dataset_py: lerobot_datasets
-    data_root_dir: /root/data/yxz/datasets/libero
+    data_root_dir: /root/data/yxz/datasets/libero_replay
     data_mix: libero_all
     action_type: delta_qpos
     sequential_step_sampling: false
