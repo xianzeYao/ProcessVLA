@@ -48,6 +48,7 @@ class Args:
     video_out_path: str = "experiments/libero/logs"
     log_path: str = "experiments/libero/logs"
     save_video: bool = False
+    video_views: str = "all"  # Options: agentview, all
     episode_result_path: Optional[str] = None
 
     seed: int = 7
@@ -81,6 +82,8 @@ def _append_jsonl(path: pathlib.Path, payload: dict) -> None:
 
 def eval_libero(args: Args) -> None:
     logging.info("Arguments: %s", json.dumps(dataclasses.asdict(args), indent=2))
+    if args.video_views not in {"agentview", "all"}:
+        raise ValueError(f"Unknown video_views={args.video_views!r}; expected 'agentview' or 'all'.")
     np.random.seed(args.seed)
 
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -95,13 +98,14 @@ def eval_libero(args: Args) -> None:
         num_tasks_in_suite,
     )
     logging.info(
-        "Task suite=%s range=[%d,%d) tasks=%d trials_per_task=%d save_video=%s",
+        "Task suite=%s range=[%d,%d) tasks=%d trials_per_task=%d save_video=%s video_views=%s",
         args.task_suite_name,
         start_idx,
         end_idx,
         num_tasks_in_suite,
         args.num_trials_per_task,
         args.save_video,
+        args.video_views,
     )
 
     if args.save_video:
@@ -171,8 +175,10 @@ def eval_libero(args: Args) -> None:
 
                         img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                         wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
-                        replay_images.append(img)
-                        replay_wrist_images.append(wrist_img)
+                        if args.save_video:
+                            replay_images.append(img)
+                            if args.video_views == "all":
+                                replay_wrist_images.append(wrist_img)
 
                         example_dict = {
                             "image": [img, wrist_img],
@@ -249,9 +255,10 @@ def eval_libero(args: Args) -> None:
                         f"rollout_{task_segment}_wrist_task{task_id}_episode{episode_idx}_{suffix}.mp4"
                     )
                     imageio.mimwrite(primary_path, replay_images, fps=10)
-                    imageio.mimwrite(wrist_path, replay_wrist_images, fps=10)
                     episode_row["video_path"] = str(primary_path)
-                    episode_row["wrist_video_path"] = str(wrist_path)
+                    if args.video_views == "all" and replay_wrist_images:
+                        imageio.mimwrite(wrist_path, replay_wrist_images, fps=10)
+                        episode_row["wrist_video_path"] = str(wrist_path)
 
                 # Keep the slice summary compact; the per-episode JSONL retains
                 # the full action trace for detailed debugging/replay.

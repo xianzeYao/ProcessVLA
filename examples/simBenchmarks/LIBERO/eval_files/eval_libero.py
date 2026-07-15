@@ -47,6 +47,7 @@ class Args:
     #################################################################################################################
     video_out_path: str = "experiments/libero/logs"  # Path to save videos
     save_video: bool = True
+    video_views: str = "all"  # Options: agentview, all
     log_path: str = "experiments/libero/logs"
     result_path: str | None = None
 
@@ -64,6 +65,8 @@ class Args:
 
 def eval_libero(args: Args) -> None:
     logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
+    if args.video_views not in {"agentview", "all"}:
+        raise ValueError(f"Unknown video_views={args.video_views!r}; expected 'agentview' or 'all'.")
 
     # Set random seed
     np.random.seed(args.seed)
@@ -130,6 +133,7 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
+            replay_wrist_images = []
             full_actions = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
@@ -153,6 +157,8 @@ def eval_libero(args: Args) -> None:
                 # Save preprocessed image only when video output is requested.
                 if args.save_video:
                     replay_images.append(img)
+                    if args.video_views == "all":
+                        replay_wrist_images.append(wrist_img)
 
                 state = np.concatenate(
                     (
@@ -223,11 +229,16 @@ def eval_libero(args: Args) -> None:
             if args.save_video and replay_images:
                 suffix = "success" if done else "failure"
                 task_segment = task_description.replace(" ", "_")
-                imageio.mimwrite(
-                    pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
-                    [np.asarray(x) for x in replay_images],
-                    fps=10,
+                primary_path = (
+                    pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4"
                 )
+                imageio.mimwrite(primary_path, [np.asarray(x) for x in replay_images], fps=10)
+                if args.video_views == "all" and replay_wrist_images:
+                    wrist_path = (
+                        pathlib.Path(args.video_out_path)
+                        / f"rollout_{task_segment}_wrist_episode{episode_idx}_{suffix}.mp4"
+                    )
+                    imageio.mimwrite(wrist_path, [np.asarray(x) for x in replay_wrist_images], fps=10)
 
             full_actions = np.stack(full_actions)
             # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)

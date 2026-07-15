@@ -30,6 +30,7 @@ TASK_SUITE_NAME="${TASK_SUITE_NAME:-all}"
 BASE_PORT="${BASE_PORT:-9883}"
 NUM_TRIALS_PER_TASK="${NUM_TRIALS_PER_TASK:-1}"
 SAVE_VIDEO="${SAVE_VIDEO:-0}"
+VIDEO_VIEWS="${VIDEO_VIEWS:-all}"
 USE_BF16="${USE_BF16:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -82,6 +83,7 @@ mkdir -p "${LOG_DIR}" "${VIDEO_DIR}"
 
 echo "[multigpu] checkpoint=${CKPT}"
 echo "[multigpu] gpus=${GPUS} suites=${SUITE_LIST[*]} base_port=${BASE_PORT}"
+echo "[multigpu] trials_per_task=${NUM_TRIALS_PER_TASK} save_video=${SAVE_VIDEO} video_views=${VIDEO_VIEWS}"
 echo "[multigpu] output=${RUN_DIR}"
 
 SUITES_CSV="$(IFS=,; echo "${SUITE_LIST[*]}")"
@@ -155,7 +157,8 @@ for index in "${!JOB_LINES[@]}"; do
   worker_cmd=("${SIM_PYTHON}" "${EVAL_SCRIPT}" --args.pretrained-path "${CKPT}"
     --args.host 127.0.0.1 --args.port "${port}" --args.task-suite-name "${suite}"
     --args.num-trials-per-task "${NUM_TRIALS_PER_TASK}" --args.start-idx "${start_idx}" --args.end-idx "${end_idx}"
-    --args.video-out-path "${video_dir}" --args.log-path "${LOG_DIR}" --args.episode-result-path "${episode_jsonl}")
+    --args.video-out-path "${video_dir}" --args.video-views "${VIDEO_VIEWS}"
+    --args.log-path "${LOG_DIR}" --args.episode-result-path "${episode_jsonl}")
   if [[ "${SAVE_VIDEO}" == "1" ]]; then worker_cmd+=(--args.save-video); else worker_cmd+=(--args.no-save-video); fi
   echo "[multigpu] worker ${label} port=${port}"
   CUDA_VISIBLE_DEVICES="${gpu}" "${worker_cmd[@]}" >"${worker_log}" 2>&1 &

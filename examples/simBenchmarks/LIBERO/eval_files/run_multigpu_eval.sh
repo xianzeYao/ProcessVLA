@@ -10,7 +10,7 @@ set -Eeuo pipefail
 #
 # Overrides:
 #   MODEL_DIR=/path/to/run CKPT_NAME=final_model/pytorch_model.pt
-#   GPUS=4,5,6,7 NUM_TRIALS_PER_TASK=50 SAVE_VIDEO=1 DRY_RUN=1
+#   GPUS=4,5,6,7 NUM_TRIALS_PER_TASK=50 SAVE_VIDEO=1 VIDEO_VIEWS=all DRY_RUN=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../../" && pwd)"
@@ -29,6 +29,7 @@ TASK_SUITE_NAME="${TASK_SUITE_NAME:-all}"
 BASE_PORT="${BASE_PORT:-6694}"
 NUM_TRIALS_PER_TASK="${NUM_TRIALS_PER_TASK:-50}"
 SAVE_VIDEO="${SAVE_VIDEO:-0}"
+VIDEO_VIEWS="${VIDEO_VIEWS:-all}"
 USE_BF16="${USE_BF16:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 MUJOCO_GL_VALUE="${MUJOCO_GL_VALUE:-egl}"
@@ -86,7 +87,7 @@ mkdir -p "${LOG_DIR}" "${VIDEO_DIR}" "${RESULT_DIR}"
 
 echo "[libero] checkpoint=${CKPT}"
 echo "[libero] suites=${SUITE_LIST[*]} gpus=${GPUS} base_port=${BASE_PORT}"
-echo "[libero] trials_per_task=${NUM_TRIALS_PER_TASK} save_video=${SAVE_VIDEO}"
+echo "[libero] trials_per_task=${NUM_TRIALS_PER_TASK} save_video=${SAVE_VIDEO} video_views=${VIDEO_VIEWS}"
 echo "[libero] output=${RUN_DIR}"
 if [[ "${DRY_RUN}" == "1" ]]; then
   for index in "${!SUITE_LIST[@]}"; do
@@ -151,7 +152,7 @@ for index in "${!SUITE_LIST[@]}"; do
   worker_cmd=("${LIBERO_PYTHON}" "${EVAL_SCRIPT}" --args.pretrained-path "${CKPT}"
     --args.host 127.0.0.1 --args.port "${port}" --args.task-suite-name "${suite}"
     --args.num-trials-per-task "${NUM_TRIALS_PER_TASK}" --args.video-out-path "${video_dir}"
-    --args.log-path "${LOG_DIR}" --args.result-path "${result_path}")
+    --args.video-views "${VIDEO_VIEWS}" --args.log-path "${LOG_DIR}" --args.result-path "${result_path}")
   if [[ "${SAVE_VIDEO}" == "1" ]]; then worker_cmd+=(--args.save-video); else worker_cmd+=(--args.no-save-video); fi
   echo "[libero] worker ${label} port=${port}"
   CUDA_VISIBLE_DEVICES="${gpu}" "${worker_cmd[@]}" >"${worker_log}" 2>&1 &
