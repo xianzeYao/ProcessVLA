@@ -1,66 +1,65 @@
-# GPU Reservation Guard Implementation Plan
+# GPU 训练占用脚本实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **给执行代理：** 按任务逐项执行，使用复选框跟踪进度。实现必须遵守全局约束。
 
-**Goal:** Build a safe local GPU reservation wrapper that uses any four available A800 GPUs, targets 70,000 MiB and at least 85% utilization, and restores the reservation after a wrapped command exits.
+**目标：** 构建一个安全的本地 GPU 占用工具，使用任意四张可用 A800，每卡目标 70,000 MiB、利用率目标至少 85%，并在包装的训练命令退出后重新占用。
 
-**Architecture:** A Bash controller owns selection, locking, state, lifecycle, and the `hold/release/run/status` interface. A separate Python/PyTorch worker is launched once per selected GPU and performs bounded memory allocation plus FP16 GEMM. The controller rechecks candidates before starting workers and cleans up only recorded child PIDs.
+**架构：** Bash 控制器 `train.sh` 负责 GPU 筛选、锁、状态、进程生命周期和 `hold/release/run/status` 接口；每张 GPU 启动一个独立的 Python/PyTorch worker。控制器在启动前二次检查候选卡，并且只清理状态文件中记录的自有 PID。
 
-**Tech Stack:** Bash, `nvidia-smi`, Python 3, PyTorch from the `CoT` environment.
+**技术栈：** Bash、`nvidia-smi`、Python 3、`CoT` 环境中的 PyTorch。
 
-## Global Constraints
+## 全局约束
 
-- Reserve exactly 4 GPUs, selected from any indices visible to `nvidia-smi`.
-- Target `70,000 MiB` per GPU and require `1,500 MiB` free headroom before selection.
-- Target utilization is `85%`; 100% is not required.
-- Never kill arbitrary processes; only terminate PIDs recorded by this utility.
-- Do not partially reserve a set; on startup failure clean up all workers and retry.
-- Default Python command is `python` when the caller has activated `CoT`; `PYTHON_BIN` can point to the CoT interpreter explicitly.
+- 必须正好占用 4 张 GPU，索引可以是可见 GPU 中的任意 4 张。
+- 每卡目标为 `70,000 MiB`，选择时至少保留 `1,500 MiB` 空闲余量。
+- 利用率目标为 `85%`，不强行追求 100%。
+- 绝不杀任意进程，只能终止本工具记录且验证仍属于本工具的 PID。
+- 不能部分占用；启动失败时清理本轮所有 worker 后重试。
+- 默认使用调用者已激活的 `CoT` 环境；也可以通过 `PYTHON_BIN` 指定 Python。
+- 低输出不等于隐藏：不规避 `nvidia-smi`、管理员或集群监控，不伪装进程名。
 
 ---
 
-### Task 1: Add the worker contract and tests
+### 任务 1：添加单卡 worker 与单元测试
 
-**Files:**
-- Create: `/home/yxz/CoT/gpu_script/gpu_worker.py`
-- Create: `/home/yxz/CoT/gpu_script/tests/test_gpu_worker.py`
+**文件：**
+- 新建：`/home/yxz/CoT/gpu_script/train_worker.py`
+- 新建：`/home/yxz/CoT/gpu_script/tests/test_train_worker.py`
 
-**Interfaces:**
-- CLI: `gpu_worker.py --gpu-index INDEX --target-memory-mib N --safety-mib N --heartbeat PATH --matrix-size N`.
-- Exit code 0 on SIGTERM/SIGINT cleanup; nonzero on CUDA allocation failure or invalid arguments.
-- No global process termination and no writes outside the supplied heartbeat path.
+**接口：**
+- 命令行：`train_worker.py --gpu-index INDEX --target-memory-mib N --safety-mib N --heartbeat PATH --matrix-size N`。
+- 收到 SIGTERM/SIGINT 时正常退出；CUDA 显存分配失败或参数非法时返回非零。
+- 不执行全局进程终止，只写入传入的 heartbeat 路径。
 
-- [ ] **Step 1: Write tests for pure worker helpers.** Test that the allocation budget is `max(0, target - safety)`, invalid nonpositive sizes are rejected, and the heartbeat parent directory is created.
-- [ ] **Step 2: Run the worker unit tests.** Run `PYTHONPATH=/home/yxz/CoT/gpu_script python -m pytest /home/yxz/CoT/gpu_script/tests/test_gpu_worker.py -q`. Expected: the tests initially fail because the module does not exist.
-- [ ] **Step 3: Implement the worker.** Add typed argument parsing, `compute_allocation_bytes`, chunked `torch.empty(..., dtype=torch.uint8)` allocation up to the bounded budget, and a loop using two FP16 square matrices and `torch.matmul`. Use `torch.cuda.set_device(args.gpu_index)` and `torch.cuda.synchronize()` after each iteration. Install SIGTERM/SIGINT handlers that set a stop event and release tensors. Write a heartbeat timestamp only once after initialization; the controller will use PID liveness for cleanup.
-- [ ] **Step 4: Run tests and compile.** Run `PYTHONPATH=/home/yxz/CoT/gpu_script python -m pytest /home/yxz/CoT/gpu_script/tests/test_gpu_worker.py -q` and `python -m py_compile /home/yxz/CoT/gpu_script/gpu_worker.py`. Expected: unit tests pass and compilation exits 0 when run inside `CoT`.
+- [ ] 写纯函数测试：分配预算等于 `max(0, target - safety)`；非正尺寸被拒绝；heartbeat 的父目录会创建。
+- [ ] 运行 `PYTHONPATH=/home/yxz/CoT/gpu_script python -m pytest /home/yxz/CoT/gpu_script/tests/test_train_worker.py -q`，预期初始失败，因为模块尚不存在。
+- [ ] 实现参数解析、`compute_allocation_bytes`、分块 `torch.empty(..., dtype=torch.uint8)` 显存申请，以及使用两个 FP16 方阵循环执行 `torch.matmul`。设置 CUDA 设备并在矩阵乘后同步；信号处理器设置停止事件并释放张量。
+- [ ] 在 `CoT` 环境执行单元测试与 `python -m py_compile /home/yxz/CoT/gpu_script/train_worker.py`，预期测试通过、编译返回 0。
 
-### Task 2: Add GPU discovery and lifecycle controller
+### 任务 2：添加 `train.sh` 控制器
 
-**Files:**
-- Create: `/home/yxz/CoT/gpu_script/gpu_guard.sh`
-- Create: `/home/yxz/CoT/gpu_script/README.md`
+**文件：**
+- 新建：`/home/yxz/CoT/gpu_script/train.sh`
+- 新建：`/home/yxz/CoT/gpu_script/README.md`
 
-**Interfaces:**
-- `./gpu_guard.sh hold`: wait until exactly four safe candidates exist, start workers, and block.
-- `./gpu_guard.sh release`: terminate only workers in the state file.
-- `./gpu_guard.sh status`: show state, selected indices, and owned PIDs.
-- `./gpu_guard.sh run -- COMMAND [ARGS...]`: release, run the command, reacquire in the background/foreground hold path after exit, and return the command's original status.
+**接口：**
+- `./train.sh hold`：等待四张安全候选卡，启动 worker 并阻塞。
+- `./train.sh release`：只终止状态文件中属于本工具的 worker。
+- `./train.sh status`：显示状态、GPU 索引、自有 PID 与存活情况。
+- `./train.sh run -- COMMAND [ARGS...]`：释放占用、执行命令、命令退出后重新进入占用流程，并返回命令原始退出码。
 
-- [ ] **Step 1: Add a shell-level smoke-test checklist to README.** Document `conda activate CoT`, `PYTHON_BIN`, conservative defaults, `GPU_COUNT=4`, `TARGET_MEMORY_MIB=70000`, `MIN_FREE_MEMORY_MIB=71500`, `MIN_UTILIZATION_PERCENT=85`, and the fact that only idle GPUs are selected.
-- [ ] **Step 2: Implement lock and state helpers.** Use `mkdir "$STATE_DIR/lock"` as an atomic lock, store selected indices and worker PIDs in a state file with mode 600, and use `kill -0` plus `/proc/$pid/cmdline` checks before cleanup. Treat missing or stale state as released.
-- [ ] **Step 3: Implement discovery.** Query `nvidia-smi --query-gpu=index,memory.free,utilization.gpu --format=csv,noheader,nounits`, query compute PIDs per GPU, reject GPUs with any compute PID, require `memory.free >= MIN_FREE_MEMORY_MIB`, and sort by index. Select the first four candidates and re-query all four immediately before launch.
-- [ ] **Step 4: Implement worker start and cleanup.** Start one worker per selected GPU with `CUDA_VISIBLE_DEVICES` set to that physical index, redirect each worker's log to `logs/gpu-INDEX.log`, record PIDs, wait briefly, and abort/release if any child exits. Cleanup sends TERM only to recorded matching workers, waits up to 10 seconds, then sends KILL only to still-matching recorded workers.
-- [ ] **Step 5: Implement commands and traps.** `hold` loops with `POLL_SECONDS=5`; `release` is idempotent; `status` prints state and process liveness; `run` releases, runs the exact user command, captures `$?`, and invokes the hold loop again after exit while preserving the original status. Ctrl-C must stop the wrapped command and still execute cleanup.
-- [ ] **Step 6: Run shell checks.** Run `bash -n /home/yxz/CoT/gpu_script/gpu_guard.sh` and `./gpu_guard.sh status`. Expected: syntax passes and status reports `released` or a valid owned reservation without changing unrelated GPU processes.
+- [ ] 在 README 中说明 `conda activate CoT`、`PYTHON_BIN`、保守默认值、`GPU_COUNT=4`、`TARGET_MEMORY_MIB=70000`、`MIN_FREE_MEMORY_MIB=71500`、`MIN_UTILIZATION_PERCENT=85`，以及只选空闲 GPU 的规则。
+- [ ] 使用 `mkdir "$STATE_DIR/lock"` 原子加锁；状态文件权限为 600；通过 `kill -0` 和 `/proc/$pid/cmdline` 检查 PID；过期状态视为已释放。
+- [ ] 查询 `nvidia-smi --query-gpu=index,memory.free,utilization.gpu --format=csv,noheader,nounits`，逐卡查询计算 PID；有计算 PID、空闲显存不足或利用率超过阈值的卡都拒绝。选出四张后立即重新查询四张并再次检查。
+- [ ] 每张卡启动一个 worker，日志写入 `logs/gpu-INDEX.log`，记录 PID；短暂等待后检查所有 worker 仍存活。失败时清理整批 worker 并回到轮询。
+- [ ] 清理时只向记录且匹配 `train_worker.py` 的 PID 发送 TERM，最多等待 10 秒；仍存活时才向同一批匹配 PID 发送 KILL。
+- [ ] 实现 `hold` 的 5 秒轮询、幂等 `release`、`status` 和带 trap 的 `run`。Ctrl-C 时仍执行清理。
+- [ ] 执行 `bash -n /home/yxz/CoT/gpu_script/train.sh` 与 `./train.sh status`，预期语法通过且不改动其他 GPU 进程。
 
-### Task 3: Verify against the live eight-GPU host
+### 任务 3：在当前 8 卡机器上验证
 
-**Files:**
-- Modify: `/home/yxz/CoT/gpu_script/README.md` only if observed behavior requires a documented adjustment.
-
-- [ ] **Step 1: Run dry discovery.** Use `DRY_RUN=1 ./gpu_guard.sh status` or the controller's discovery mode to print candidates without allocating memory. Expected: no worker starts and no other process is terminated.
-- [ ] **Step 2: Run a reduced smoke reservation.** Set `TARGET_MEMORY_MIB=1000 MIN_FREE_MEMORY_MIB=3000` and run `./gpu_guard.sh hold`, then interrupt it. Expected: four workers start only if four cards pass the idle checks, and `release` removes only those workers.
-- [ ] **Step 3: Run lifecycle smoke test.** Run `TARGET_MEMORY_MIB=1000 MIN_FREE_MEMORY_MIB=3000 ./gpu_guard.sh run -- bash -c 'sleep 2'`. Expected: the reservation is released before `sleep`, the command exits 0, and the controller enters the post-command reservation loop.
-- [ ] **Step 4: Validate default configuration without starting it.** Run `./gpu_guard.sh print-config`. Expected: it prints exactly four GPUs, 70,000 MiB target, 1,500 MiB margin, and 85% utilization target.
-- [ ] **Step 5: Hand off usage.** Start with `conda activate CoT`, then use `./gpu_guard.sh run -- <training command>`. If a four-card set is unavailable, the controller waits instead of overloading or partially claiming cards.
+- [ ] 运行只读 GPU 发现，确认不启动 worker、不分配显存、不终止其他进程。
+- [ ] 用 `TARGET_MEMORY_MIB=1000 MIN_FREE_MEMORY_MIB=3000 ./train.sh hold` 做短暂冒烟测试，随后 Ctrl-C；预期只启动满足空闲条件的四卡，并只删除自己的 worker。
+- [ ] 运行 `TARGET_MEMORY_MIB=1000 MIN_FREE_MEMORY_MIB=3000 ./train.sh run -- bash -c 'sleep 2'`；预期命令前释放占用，命令返回 0，随后重新进入占用等待。
+- [ ] 运行 `./train.sh print-config`，确认输出为 4 张卡、70,000 MiB、1,500 MiB 余量和 85% 利用率目标。
+- [ ] 先执行 `conda activate CoT`，再使用 `./train.sh run -- <训练命令>`；四卡不可同时安全使用时只等待，不过载、不部分占用。

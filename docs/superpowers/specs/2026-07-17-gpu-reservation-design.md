@@ -1,58 +1,59 @@
-# GPU Reservation Guard Design
+# GPU 训练占用脚本设计
 
-## Goal
+## 目标
 
-Provide an opt-in local utility under `/home/yxz/CoT/gpu_script` that reserves any four currently available A800 GPUs with a bounded PyTorch stress process, releases only its own processes for a training command, and automatically re-acquires four GPUs when that command exits.
+在 `/home/yxz/CoT/gpu_script` 下提供一个独立的 `train.sh` 工具：等待任意四张当前可用的 A800 GPU，使用有上限的 PyTorch 保活进程占用每卡约 70,000 MiB，并把利用率目标设为至少 85%；运行训练命令时释放占用，训练退出后自动重新申请四张卡。
 
-## Scope and safety boundary
+## 范围与安全边界
 
-- The utility only selects GPUs that have no reported compute processes, satisfy a minimum free-memory threshold, and are revalidated immediately before allocation.
-- It never kills arbitrary PIDs, uses `killall`, or changes another process's CUDA state.
-- It owns all child workers through a state file and process-group cleanup. Cleanup is idempotent and runs on normal exit, Ctrl-C, and shell termination traps where possible.
-- It uses a conservative memory target of 70,000 MiB per GPU, a 1,500 MiB selection margin, and a utilization target of 85% rather than attempting to force 100%.
-- If four GPUs are not simultaneously safe, it waits and does not partially reserve a set.
+- 只选择没有计算进程、剩余显存满足阈值且在启动前再次通过检查的 GPU。
+- 不使用 `killall`，不杀任意 PID，也不修改其他进程的 CUDA 状态。
+- 只清理由本工具记录并启动的 worker PID。
+- 每卡目标为 70,000 MiB，选择时额外保留 1,500 MiB 余量；利用率目标为 85%，不追求 100%。
+- 找不到四张同时满足条件的 GPU 时等待，不部分占用。
+- “低输出”仅表示终端不刷屏；不隐藏进程、不伪装进程、不规避 `nvidia-smi`、管理员或集群监控。
 
-## User interface
+## 使用接口
 
 ```bash
 cd /home/yxz/CoT/gpu_script
-./gpu_guard.sh hold
-./gpu_guard.sh status
-./gpu_guard.sh release
-./gpu_guard.sh run -- accelerate launch ...
+./train.sh hold
+./train.sh status
+./train.sh release
+./train.sh run -- accelerate launch ...
 ```
 
-`hold` blocks while waiting for a set of four GPUs and keeps the workers alive until interrupted. `release` stops only workers recorded by this utility. `run -- COMMAND ...` releases an existing hold, runs the command, and reacquires a reservation after the command exits or is interrupted. Configuration is available through environment variables, including `GPU_COUNT`, `TARGET_MEMORY_MIB`, `MIN_FREE_MEMORY_MIB`, `MIN_UTILIZATION_PERCENT`, `POLL_SECONDS`, and `PYTHON_BIN`.
+`hold` 会等待四张卡并持续占用，直到手动中断；`release` 只释放本工具自己的 worker；`run -- COMMAND ...` 会先释放占用，执行命令，命令退出或被 Ctrl-C 中断后自动重新等待四张卡。默认使用已激活的 `CoT` 环境，也允许用 `PYTHON_BIN` 显式指定解释器。
 
-## Architecture
+## 架构
 
-`gpu_guard.sh` is the lifecycle and selection layer. It queries `nvidia-smi` for all GPU indices, free memory, and compute PIDs; filters candidates; atomically records the candidate list; then starts one worker per selected GPU. It verifies that each worker remains alive and reports the selected `CUDA_VISIBLE_DEVICES` set. The shell wrapper owns a lock directory and state file to prevent two reservations from racing.
+`train.sh` 负责 GPU 发现、筛选、锁、状态、进程生命周期和 `hold/release/run/status` 接口。它通过 `nvidia-smi` 获取所有 GPU 的显存与计算进程，选择候选卡，在启动前二次检查，然后每卡启动一个 worker。锁目录和状态文件用于避免同一目录下多个实例抢占同一批卡。
 
-`gpu_worker.py` is a single-GPU process. It allocates a bounded byte buffer in chunks, leaving a configured safety margin, then repeatedly performs FP16 matrix multiplications. A watchdog-like heartbeat is written to the worker's state only through process liveness; no external process is touched. OOM during allocation causes that worker to exit cleanly so the shell layer can release the partial reservation and retry.
+`train_worker.py` 是单卡 PyTorch 进程。它在安全上限内分块申请显存，然后持续执行 FP16 矩阵乘法。收到 SIGTERM 或 SIGINT 时退出并释放自己的张量。worker 只由 `train.sh` 管理，不触碰其他进程。
 
-## Lifecycle
+## 生命周期
 
 ```text
-hold/run -> poll candidates -> revalidate -> start 4 workers
-       ^                                  |
-       |                                  v
-       +----------- command exit <---- release own workers
+hold/run -> 轮询候选卡 -> 二次检查 -> 启动 4 个 worker
+       ^                                      |
+       |                                      v
+       +----------- 训练命令结束 <------ 释放自己的 worker
 ```
 
-For `run`, workers are stopped before the user's command starts. A shell `trap` always attempts cleanup and, for `run`, starts a new `hold` after the command's exit status has been captured. The wrapper does not automatically take GPUs that become occupied by another process.
+对于 `run`，训练命令启动前会先释放保活 worker；命令结束后由 shell trap 重新进入等待/占用流程，并保留训练命令原始退出码。期间如果其他任务占用了 GPU，本工具不会强行抢夺，而是继续等待。
 
-## Failure handling
+## 异常处理
 
-- Missing `nvidia-smi`, missing Python, or missing PyTorch produces an actionable error before a reservation is claimed.
-- A partial worker-start failure stops all workers from the current reservation and returns to polling.
-- Stale state files are ignored after verifying recorded PIDs are no longer alive.
-- A command exit status is preserved after the post-command reacquisition has been started.
-- The worker target is bounded and configurable; allocation is based on available memory minus the safety margin, never on total memory alone.
+- `nvidia-smi`、Python 或 PyTorch 不可用时，提前给出明确错误。
+- 任意 worker 启动失败时，停止本次已经启动的全部自有 worker，再重新等待。
+- 遇到过期状态文件时，确认对应 PID 不存在后清理状态。
+- 训练命令退出码在重新占用动作后仍然保留。
+- 显存分配使用目标值减安全余量，不按总显存盲目申请，避免 OOM。
 
-## Validation
+## 验证
 
-- Shell syntax check and Python bytecode compilation.
-- Dry-run GPU discovery against the current eight A800s without allocating memory.
-- One short hold/release smoke test with a reduced memory target in a test-only environment.
-- Manual `run -- true` lifecycle test to verify release, command execution, and re-acquisition behavior.
-- Verify that status reports only utility-owned PIDs and that a second invocation refuses to start.
+- Bash 语法检查与 Python 字节码编译。
+- 在当前 8 张 A800 上只读检查 GPU 发现逻辑，不分配显存。
+- 用降低后的测试参数执行短暂 hold/release 冒烟测试。
+- 用 `run -- true` 验证释放、执行命令和退出后的重新等待。
+- 验证状态只显示本工具 PID，第二个实例会拒绝启动。
