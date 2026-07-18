@@ -37,6 +37,40 @@ except (ImportError, RuntimeError):
     TORCHCODEC_AVAILABLE = False
 
 
+def _configure_torchvision_pyav_reader(reader, thread_count: int = 1) -> None:
+    """Bound codec threads on torchvision's underlying PyAV stream."""
+    if thread_count < 1:
+        raise ValueError(f"thread_count must be positive, got {thread_count}")
+    stream = reader.container.streams.get(**reader.pyav_stream)[0]
+    stream.thread_type = "NONE"
+    stream.codec_context.thread_count = int(thread_count)
+
+
+def _close_torchvision_pyav_decoder(reader) -> None:
+    """Close the active PyAV decode generator, if one exists."""
+    decoder = getattr(reader, "_c", None)
+    if decoder is not None:
+        close = getattr(decoder, "close", None)
+        if close is not None:
+            close()
+        reader._c = None
+
+
+def _seek_torchvision_pyav_reader(reader, timestamp: float, *, keyframes_only: bool = True):
+    """Close the old generator before torchvision replaces it during seek."""
+    _close_torchvision_pyav_decoder(reader)
+    return reader.seek(timestamp, keyframes_only=keyframes_only)
+
+
+def _close_torchvision_pyav_reader(reader) -> None:
+    """Close decoder state before closing the owning PyAV container."""
+    _close_torchvision_pyav_decoder(reader)
+    container = getattr(reader, "container", None)
+    if container is not None:
+        container.close()
+        reader.container = None
+
+
 def get_frames_by_indices(
     video_path: str,
     indices: list[int] | np.ndarray,
@@ -246,10 +280,11 @@ def get_frames_by_timestamps(
         reader = None
         try:
             reader = torchvision.io.VideoReader(video_path, "video")
+            _configure_torchvision_pyav_reader(reader, thread_count=1)
             
             for target_ts in timestamps:
                 # Reset reader state
-                reader.seek(target_ts, keyframes_only=True)
+                _seek_torchvision_pyav_reader(reader, target_ts, keyframes_only=True)
                 
                 closest_frame = None
                 closest_ts_diff = float('inf')
@@ -282,13 +317,8 @@ def get_frames_by_timestamps(
                     del closest_frame
                     
         finally:
-            # Thoroughly clean resources
             if reader is not None:
-                if hasattr(reader, '_c'):
-                    reader._c = None
-                if hasattr(reader, 'container'):
-                    reader.container.close()
-                    reader.container = None
+                _close_torchvision_pyav_reader(reader)
         
         frames = np.array(loaded_frames)
         return frames.transpose(0, 2, 3, 1)
@@ -330,12 +360,17 @@ def get_all_frames(
             frames.append(frame)
         frames = np.array(frames)
     elif video_backend == "torchvision_av":
-        # set backend and reader
         torchvision.set_video_backend("pyav")
-        reader = torchvision.io.VideoReader(video_path, "video")
+        reader = None
         frames = []
-        for frame in reader:
-            frames.append(frame["data"].numpy())
+        try:
+            reader = torchvision.io.VideoReader(video_path, "video")
+            _configure_torchvision_pyav_reader(reader, thread_count=1)
+            for frame in reader:
+                frames.append(frame["data"].numpy())
+        finally:
+            if reader is not None:
+                _close_torchvision_pyav_reader(reader)
         frames = np.array(frames)
         frames = frames.transpose(0, 2, 3, 1)
     else:
