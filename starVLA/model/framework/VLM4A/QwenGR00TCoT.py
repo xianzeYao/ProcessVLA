@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import math
 from contextlib import nullcontext
-from typing import List
+import time
+from typing import Any, Callable, List
 
 import numpy as np
 import torch
@@ -178,22 +179,42 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         uvd_times: torch.Tensor | None = None,
         uvd_num_points: int | None = None,
         uvd_valid_mask: torch.Tensor | None = None,
+        timing_callback: Callable[[str, Callable[[], Any]], Any] | None = None,
     ):
+        def timed(name: str, fn: Callable[[], Any]) -> Any:
+            return timing_callback(name, fn) if timing_callback is not None else fn()
+
         horizon = int(self.action_horizon)
-        query = self.geometry_query(
-            last_hidden,
-            attention_mask,
-            horizon=horizon,
-            uvd_num_points=uvd_num_points if uvd_num_points is not None else self.uvd_num_points,
-            uvd_times=uvd_times,
+        query = timed(
+            "query_reasoner_ms",
+            lambda: self.geometry_query(
+                last_hidden,
+                attention_mask,
+                horizon=horizon,
+                uvd_num_points=uvd_num_points if uvd_num_points is not None else self.uvd_num_points,
+                uvd_times=uvd_times,
+            ),
         )
-        image_tokens, patch_hw = self._main_image_tokens(last_hidden, qwen_inputs["input_ids"])
+        image_tokens, patch_hw = timed(
+            "image_token_extract_ms",
+            lambda: self._main_image_tokens(last_hidden, qwen_inputs["input_ids"]),
+        )
         current_query = query["depth_current_tokens"].mean(dim=1)
         future_query = query["depth_future_tokens"].mean(dim=1)
         output_hw = (self.depth_output_size, self.depth_output_size)
-        depth_current = self.depth_decoder(image_tokens, patch_hw=patch_hw, query=current_query, output_hw=output_hw)
-        depth_future = self.depth_decoder(image_tokens, patch_hw=patch_hw, query=future_query, output_hw=output_hw)
-        uvd = self._predict_uvd(query["uvd_tokens"])
+        depth_current = timed(
+            "depth_current_ms",
+            lambda: self.depth_decoder(
+                image_tokens, patch_hw=patch_hw, query=current_query, output_hw=output_hw
+            ),
+        )
+        depth_future = timed(
+            "depth_future_ms",
+            lambda: self.depth_decoder(
+                image_tokens, patch_hw=patch_hw, query=future_query, output_hw=output_hw
+            ),
+        )
+        uvd = timed("uvd_head_ms", lambda: self._predict_uvd(query["uvd_tokens"]))
         condition = torch.cat([last_hidden, query["uvd_tokens"]], dim=1)
         condition_mask = append_uvd_condition_mask(
             attention_mask,
@@ -283,6 +304,13 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
     def predict_action(self, examples: List[dict], **kwargs) -> dict:
         if type(examples) is not list:
             examples = [examples]
+        timing_callback = kwargs.pop("timing_callback", None)
+        timing: dict[str, float] = {}
+
+        def timed(name: str, fn: Callable[[], Any]) -> Any:
+            return timing_callback(name, fn) if timing_callback is not None else fn()
+
+        preprocess_start = time.perf_counter()
         batch_images = [example["image"] for example in examples]
         instructions = [example["lang"] for example in examples]
         train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
@@ -290,18 +318,25 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
             batch_images = resize_images(batch_images, target_size=train_obs_image_size)
         qwen_inputs = self.qwen_vl_interface.build_qwenvl_inputs(images=batch_images, instructions=instructions)
         attention_mask = qwen_inputs.get("attention_mask")
-        outputs = self.qwen_vl_interface(
-            **qwen_inputs,
-            output_attentions=False,
-            output_hidden_states=True,
-            return_dict=True,
+        timing["preprocess_ms"] = (time.perf_counter() - preprocess_start) * 1000.0
+        outputs = timed(
+            "qwen_backbone_ms",
+            lambda: self.qwen_vl_interface(
+                **qwen_inputs,
+                output_attentions=False,
+                output_hidden_states=True,
+                return_dict=True,
+            ),
         )
         last_hidden = outputs.hidden_states[-1]
-        query = self.geometry_query(
-            last_hidden,
-            attention_mask,
-            horizon=int(self.action_horizon),
-            uvd_num_points=self.uvd_num_points,
+        query = timed(
+            "query_reasoner_ms",
+            lambda: self.geometry_query(
+                last_hidden,
+                attention_mask,
+                horizon=int(self.action_horizon),
+                uvd_num_points=self.uvd_num_points,
+            ),
         )
         condition = torch.cat([last_hidden, query["uvd_tokens"]], dim=1)
         condition_mask = append_uvd_condition_mask(attention_mask, query["uvd_tokens"].shape[1])
@@ -313,5 +348,16 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         condition = condition.to(dtype=action_dtype)
         if state is not None:
             state = state.to(dtype=action_dtype)
-        actions = self.action_model.predict_action(condition, state, encoder_attention_mask=condition_mask)
-        return {"normalized_actions": actions.detach().float().cpu().numpy()}
+        actions = timed(
+            "action_expert_ms",
+            lambda: self.action_model.predict_action(
+                condition, state, encoder_attention_mask=condition_mask
+            ),
+        )
+        output_start = time.perf_counter()
+        normalized_actions = actions.detach().float().cpu().numpy()
+        timing["output_transfer_ms"] = (time.perf_counter() - output_start) * 1000.0
+        result = {"normalized_actions": normalized_actions}
+        if timing_callback is not None:
+            result["timing"] = timing
+        return result

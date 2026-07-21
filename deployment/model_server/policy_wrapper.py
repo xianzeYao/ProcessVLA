@@ -1,22 +1,11 @@
 # Copyright 2025 starVLA community. All rights reserved.
-# Licensed under the MIT License.
+# Licensed under the MIT License, Version 2.0.
 """Policy server wrapper.
 
-Encapsulates a `baseframework` instance plus a :class:`PolicyNormProcessor`
-that reuses the *training-time* :class:`ComposedModalityTransform` for action
-un-normalization (no hand-rolled math). The websocket server returns
-already-unnormalized actions.
-
-Client-side responsibilities that REMAIN on the client:
-  - environment-specific adapters (image_history, gripper sticky, action
-    ensembling)
-  - chunk-cache scheduling (`step % chunk_size == 0` triggers a new infer)
-
-Exposed API:
-  - ``metadata`` (dict, sent at handshake): ``action_chunk_size``,
-    ``available_unnorm_keys``, ``action_keys``, ``state_keys``.
-  - ``predict_action(examples, unnorm_key=None, **kwargs)`` returns
-    ``{"actions": np.ndarray[B, T, action_dim]}``.
+Encapsulates a ``baseframework`` instance plus a training-time action
+un-normalizer.  Action-only clients retain the historical response shape;
+optional auxiliary fields returned by a framework are forwarded as NumPy
+arrays for diagnostics.
 """
 
 from __future__ import annotations
@@ -34,7 +23,7 @@ from deployment.model_server.policy_norm_processor import PolicyNormProcessor
 
 
 class PolicyServerWrapper:
-    """Wraps a `baseframework` for use as a websocket-server policy."""
+    """Wrap a framework for use as a websocket-server policy."""
 
     def __init__(
         self,
@@ -52,13 +41,9 @@ class PolicyServerWrapper:
         framework = framework.to(device).eval()
         self._framework = framework
 
-        # Co-located metadata.
         model_cfg, _ = read_mode_config(self._ckpt_path)
         self._model_cfg = model_cfg
-
-        # action_chunk_size = future_action_window_size + 1 (matches old client).
         action_model_cfg = model_cfg["framework"]["action_model"]
-        
         if "action_horizon" in action_model_cfg:
             self._action_chunk_size = int(action_model_cfg["action_horizon"])
         elif "future_action_window_size" in action_model_cfg:
@@ -67,17 +52,12 @@ class PolicyServerWrapper:
             raise ValueError(
                 f"PolicyServerWrapper: no action_horizon or future_action_window_size found in model config for {self._ckpt_path}"
             )
-        # Cache of PolicyNormProcessor instances per unnorm_key.
-        # For single-dataset ckpts unnorm_key is auto-selected; for multi-dataset
-        # ckpts clients must pass unnorm_key per request.
+
         self._default_unnorm_key = unnorm_key
         self._norm_processors: Dict[str, PolicyNormProcessor] = {}
+        _, namespace = read_mode_config(self._ckpt_path)
+        self._available_unnorm_keys: List[str] = list(namespace.keys())
 
-        # Peek at available keys without building a full processor.
-        _, _ns = read_mode_config(self._ckpt_path)
-        self._available_unnorm_keys: List[str] = list(_ns.keys())
-
-        # Eagerly build when unambiguous; defer for multi-key / no explicit key.
         if unnorm_key is not None or len(self._available_unnorm_keys) == 1:
             default_proc = self._get_processor(unnorm_key)
             self._default_unnorm_key = default_proc.unnorm_key
@@ -108,7 +88,7 @@ class PolicyServerWrapper:
 
     @property
     def metadata(self) -> Dict[str, Any]:
-        """Model-invariant metadata; sent to client at websocket handshake."""
+        """Model-invariant metadata sent at websocket handshake."""
         base = {
             "env": "starvla_policy_server",
             "ckpt_path": self._ckpt_path,
@@ -116,7 +96,6 @@ class PolicyServerWrapper:
             "available_unnorm_keys": self._available_unnorm_keys,
             "default_unnorm_key": self._default_unnorm_key,
         }
-        # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:
             proc = self._get_processor(self._default_unnorm_key)
             base["action_keys"] = proc.action_keys
@@ -128,18 +107,12 @@ class PolicyServerWrapper:
         examples: List[dict],
         unnorm_key: Optional[str] = None,
         **kwargs,
-    ) -> Dict[str, np.ndarray]:
-        """Run the framework, then un-normalize via training-time transforms.
+    ) -> Dict[str, Any]:
+        """Run the framework and un-normalize actions.
 
-        Args:
-            examples: list of dicts (each with ``image`` / ``lang`` / optional ``state``).
-            unnorm_key: dataset key for un-normalization stats. ``None`` -->
-                use the wrapper's default (auto-picked at startup).
-            **kwargs: forwarded to the framework's ``predict_action``
-                (``do_sample``, ``use_ddim``, ``num_ddim_steps``, ...).
-
-        Returns:
-            ``{"actions": np.ndarray[B, T, D]}`` -- un-normalized.
+        The framework may optionally return an auxiliary ``geometry`` mapping.
+        Existing action-only callers receive the same ``{"actions": ...}``
+        payload as before.
         """
         effective_key = unnorm_key if unnorm_key is not None else self._default_unnorm_key
         if effective_key is None:
@@ -153,10 +126,22 @@ class PolicyServerWrapper:
         proc = self._get_processor(effective_key)
 
         out = self._framework.predict_action(examples=examples, **kwargs)
-        normalized = np.asarray(out["normalized_actions"])  # (B, T, D)
-
+        normalized = np.asarray(out["normalized_actions"])
         unnorm = np.stack(
             [proc.unapply_actions(normalized[b]) for b in range(normalized.shape[0])],
             axis=0,
         )
-        return {"actions": unnorm}
+        result: Dict[str, Any] = {"actions": unnorm}
+        auxiliary = out.get("geometry")
+        if auxiliary is not None:
+            result["geometry"] = {
+                key: self._to_numpy(value)
+                for key, value in auxiliary.items()
+            }
+        return result
+
+    @staticmethod
+    def _to_numpy(value: Any) -> np.ndarray:
+        if isinstance(value, torch.Tensor):
+            return value.detach().float().cpu().numpy()
+        return np.asarray(value)

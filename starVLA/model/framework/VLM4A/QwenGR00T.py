@@ -9,6 +9,7 @@ Flow-matching header is copyright from GR00T N1.5,
 """
 
 import sys
+import time
 from pathlib import Path
 
 # Add workspace root to Python path if not already there
@@ -17,7 +18,7 @@ if str(_workspace_root) not in sys.path:
     sys.path.insert(0, str(_workspace_root))
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -237,6 +238,13 @@ class Qwen_GR00T(baseframework):
         """
         if type(examples) is not list:
             examples = [examples]
+        timing_callback = kwargs.pop("timing_callback", None)
+        timing: dict[str, float] = {}
+
+        def timed(name: str, fn: Callable[[], Any]) -> Any:
+            return timing_callback(name, fn) if timing_callback is not None else fn()
+
+        preprocess_start = time.perf_counter()
         batch_images = [to_pil_preserve(example["image"]) for example in examples]  #  [B, [PLT]]
         instructions = [example["lang"] for example in examples]  # [B, str]
 
@@ -251,16 +259,19 @@ class Qwen_GR00T(baseframework):
         backbone_attention_mask = qwen_inputs.get("attention_mask", None)
         if backbone_attention_mask is not None:
             backbone_attention_mask = backbone_attention_mask.to(dtype=torch.bool)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            qwenvl_outputs = self.qwen_vl_interface(
-                **qwen_inputs,
-                output_attentions=False,
-                output_hidden_states=True,
-                return_dict=True,
-            )
+        timing["preprocess_ms"] = (time.perf_counter() - preprocess_start) * 1000.0
+        def run_qwen():
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                outputs = self.qwen_vl_interface(
+                    **qwen_inputs,
+                    output_attentions=False,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+            return outputs.hidden_states[-1]
 
-            # last_hidden_state: [B, seq_len, H]
-            last_hidden = qwenvl_outputs.hidden_states[-1]  # [B, L, H]
+        last_hidden = timed("qwen_backbone_ms", run_qwen)
+
 
         state = (
             torch.from_numpy(np.array(state)).to(last_hidden.device, dtype=last_hidden.dtype)
@@ -269,13 +280,20 @@ class Qwen_GR00T(baseframework):
         )
 
         # Step 4: Action Expert Forward
-        with torch.autocast("cuda", dtype=torch.float32):
-            pred_actions = self.action_model.predict_action(
-                last_hidden, state, encoder_attention_mask=backbone_attention_mask
-            )  # (B, chunk_len, action_dim)
+        def run_action():
+            with torch.autocast("cuda", dtype=torch.float32):
+                return self.action_model.predict_action(
+                    last_hidden, state, encoder_attention_mask=backbone_attention_mask
+                )
 
+        pred_actions = timed("action_expert_ms", run_action)
+        output_start = time.perf_counter()
         normalized_actions = pred_actions.detach().cpu().numpy()
-        return {"normalized_actions": normalized_actions}
+        timing["output_transfer_ms"] = (time.perf_counter() - output_start) * 1000.0
+        result = {"normalized_actions": normalized_actions}
+        if timing_callback is not None:
+            result["timing"] = timing
+        return result
 
 
 if __name__ == "__main__":
