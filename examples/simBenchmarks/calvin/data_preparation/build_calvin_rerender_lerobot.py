@@ -40,7 +40,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def find_h5_files(rerender_root: Path) -> list[Path]:
-    paths = sorted(set(rerender_root.glob("episode_*/episode_*.h5")) | set(rerender_root.glob("episode_*.h5")))
+    # The single-worker renderer writes directly below ``rerender_root``.
+    # The parallel launcher writes each worker's local episode numbering below
+    # ``rerender_root/worker-*``. Recursive discovery keeps both layouts
+    # consumable; frame_id is used below to associate each file with its source
+    # segment, so local worker numbering does not affect the conversion.
+    paths = sorted(rerender_root.rglob("episode_*.h5"))
     if not paths:
         raise FileNotFoundError(f"no rerender H5 files under {rerender_root}")
     return paths
