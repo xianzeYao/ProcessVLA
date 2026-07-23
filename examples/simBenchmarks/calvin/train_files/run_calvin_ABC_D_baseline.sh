@@ -4,11 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../" && pwd)"
 cd "$ROOT_DIR"
 PYTHON_BIN="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT/bin/python}"
-DATA_ROOT="${CALVIN_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin_lerobot}"
+DATA_ROOT="${CALVIN_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin/lerobot_native}"
 DATASET_NAME="calvin_task_ABC_D"
 # Default to the persisted, real-frame ABC_D validation slice. Set
 # CALVIN_RAW_ROOT to the complete official task_ABC_D root for full training.
-RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin_hf/task_ABC_D}"
+RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin/task_ABC_D}"
 CONFIG="examples/simBenchmarks/calvin/train_files/qwen35_gr00t_calvin_ABC_D_baseline.yaml"
 
 case "${1:-train}" in

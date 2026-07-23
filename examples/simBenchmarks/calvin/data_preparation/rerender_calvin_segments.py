@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-segments", type=int, default=0)
     parser.add_argument("--start-segment", type=int, default=0)
     parser.add_argument("--fps", type=float, default=FPS)
+    parser.add_argument("--no-comparison", action="store_true", help="Skip comparison MP4/JPEG files for full runs.")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -76,6 +77,7 @@ def main() -> None:
                 int(segment["source_start"]),
                 int(segment["source_end"]),
                 args.fps,
+                write_comparison=not args.no_comparison,
             )
             summary.update(
                 {
@@ -101,6 +103,7 @@ def main() -> None:
         "num_segments": len(summaries),
         "segments": summaries,
         "output_root": str(args.output_root),
+        "comparison_visualizations": not args.no_comparison,
     }
     (args.output_root / "summary.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",

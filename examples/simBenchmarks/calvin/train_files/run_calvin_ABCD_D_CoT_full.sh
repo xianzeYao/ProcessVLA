@@ -8,15 +8,15 @@ COT_PYTHON="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT/bin/python}"
 # The locally available official subset023 is a complete, metadata-backed
 # ABCD_D shard. Set CALVIN_RAW_ROOT to a merged full task_ABCD_D root when it
 # is available.
-RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin_hf/task_ABCD_D}"
-RERENDER_ROOT="${CALVIN_RERENDER_ROOT:-/root/data/yxz/datasets/calvin_rerender_subset023/task_ABCD_D}"
-DATA_ROOT="${CALVIN_RERENDER_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin_rerender_lerobot}"
+RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin/task_ABCD_D}"
+RERENDER_ROOT="${CALVIN_RERENDER_ROOT:-/root/data/yxz/datasets/calvin/rerender_ABCD_D}"
+DATA_ROOT="${CALVIN_RERENDER_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin/lerobot_rerender}"
 DATASET_NAME="calvin_task_ABCD_D"
 CONFIG="examples/simBenchmarks/calvin/train_files/qwen35_gr00t_calvin_ABCD_D_CoT_v1.yaml"
 
 case "${1:-train}" in
   prepare)
-    bash examples/simBenchmarks/calvin/data_preparation/prepare_calvin_raw_sets.sh abcd_d
+    bash examples/simBenchmarks/calvin/data_preparation/merge_calvin_abcd_d_hf_zip.sh
     ;;
   rerender)
     test -d "$RAW_ROOT/training" || { echo "missing merged raw dataset: $RAW_ROOT" >&2; exit 2; }
@@ -24,7 +24,7 @@ case "${1:-train}" in
       examples.simBenchmarks.calvin.data_preparation.rerender_calvin_segments \
       --dataset-root "$RAW_ROOT" --output-root "$RERENDER_ROOT" \
       --max-segments "${MAX_SEGMENTS:-0}" --start-segment "${START_SEGMENT:-0}" \
-      --source-split training --config-split training --overwrite "${@:2}"
+      --source-split training --config-split training --overwrite --no-comparison "${@:2}"
     ;;
   convert)
     "$CALVIN_PYTHON" -m examples.simBenchmarks.calvin.data_preparation.build_calvin_rerender_lerobot \

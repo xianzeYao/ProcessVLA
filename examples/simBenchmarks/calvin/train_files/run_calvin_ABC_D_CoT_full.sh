@@ -7,15 +7,18 @@ CALVIN_PYTHON="${CALVIN_PYTHON:-/root/data/yxz/miniforge3/envs/calvin/bin/python
 COT_PYTHON="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT/bin/python}"
 # Default to the persisted, real-frame ABC_D validation slice. Set
 # CALVIN_RAW_ROOT to the complete official task_ABC_D root for full training.
-RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin_hf/task_ABC_D}"
-RERENDER_ROOT="${CALVIN_RERENDER_ROOT:-/root/data/yxz/datasets/calvin_rerender/task_ABC_D_probe}"
-DATA_ROOT="${CALVIN_RERENDER_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin_rerender_lerobot}"
+RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin/task_ABC_D}"
+RERENDER_ROOT="${CALVIN_RERENDER_ROOT:-/root/data/yxz/datasets/calvin/rerender_ABC_D}"
+DATA_ROOT="${CALVIN_RERENDER_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin/lerobot_rerender}"
 DATASET_NAME="calvin_task_ABC_D"
 CONFIG="examples/simBenchmarks/calvin/train_files/qwen35_gr00t_calvin_ABC_D_CoT_v1.yaml"
 
 case "${1:-train}" in
   prepare)
-    bash examples/simBenchmarks/calvin/data_preparation/prepare_calvin_raw_sets.sh abc_d
+    if ! test -f "/training/ep_start_end_ids.npy"; then
+      test -f ".zip" || { echo "missing official archive: .zip" >&2; exit 2; }
+      unzip -q ".zip" -d "1001 1001dirname "")"
+    fi
     ;;
   rerender)
     test -d "$RAW_ROOT/training" || { echo "missing merged raw dataset: $RAW_ROOT" >&2; exit 2; }
@@ -23,7 +26,7 @@ case "${1:-train}" in
       examples.simBenchmarks.calvin.data_preparation.rerender_calvin_segments \
       --dataset-root "$RAW_ROOT" --output-root "$RERENDER_ROOT" \
       --max-segments "${MAX_SEGMENTS:-0}" --start-segment "${START_SEGMENT:-0}" \
-      --source-split training --config-split training --overwrite "${@:2}"
+      --source-split training --config-split training --overwrite --no-comparison "${@:2}"
     ;;
   convert)
     "$CALVIN_PYTHON" -m examples.simBenchmarks.calvin.data_preparation.build_calvin_rerender_lerobot \

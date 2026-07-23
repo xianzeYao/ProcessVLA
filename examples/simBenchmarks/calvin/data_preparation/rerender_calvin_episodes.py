@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-episode", type=int, default=0)
     parser.add_argument("--config-split", choices=("auto", "validation", "training"), default="auto")
     parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument("--no-comparison", action="store_true", help="Skip comparison MP4/JPEG files for large runs.")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -228,7 +229,7 @@ class EpisodeWriter:
             "camera_projection_gripper": ((length, 4, 4), np.float32),
         }
         for name, (shape, dtype) in specs.items():
-            self.datasets[name] = self.file.create_dataset(name, shape=shape, dtype=dtype, chunks=(1,) + shape[1:])
+            self.datasets[name] = self.file.create_dataset(name, shape=shape, dtype=dtype, chunks=(1,) + shape[1:], compression="lzf", shuffle=True)
 
     def append(self, values: Dict[str, Any]) -> None:
         for name, dataset in self.datasets.items():
@@ -251,12 +252,12 @@ def make_env(config_dir: Path) -> Any:
     return hydra.utils.instantiate(config.env, show_gui=False, use_vr=False, use_scene_info=True)
 
 
-def render_episode(env: Any, raw_dir: Path, output_dir: Path, episode_index: int, begin: int, end: int, fps: float) -> Dict[str, Any]:
+def render_episode(env: Any, raw_dir: Path, output_dir: Path, episode_index: int, begin: int, end: int, fps: float, write_comparison: bool = True) -> Dict[str, Any]:
     length = end - begin + 1
     h5_path = output_dir / ("episode_%03d.h5" % episode_index)
     video_path = output_dir / ("episode_%03d_comparison.mp4" % episode_index)
     writer = EpisodeWriter(h5_path, length)
-    video = imageio.get_writer(str(video_path), fps=fps, codec="libx264", quality=5, macro_block_size=1, ffmpeg_params=["-preset", "ultrafast", "-crf", "23"])
+    video = imageio.get_writer(str(video_path), fps=fps, codec="libx264", quality=5, macro_block_size=1, ffmpeg_params=["-preset", "ultrafast", "-crf", "23"]) if write_comparison else None
     contacts: List[np.ndarray] = []
     contact_offsets = set(np.linspace(0, length - 1, 9, dtype=np.int64).tolist())
     static_camera = next(cam for cam in env.cameras if cam.name == "static")
@@ -301,18 +302,21 @@ def render_episode(env: Any, raw_dir: Path, output_dir: Path, episode_index: int
                     values["camera_view_" + camera] = cal["view_opengl"]
                     values["camera_projection_" + camera] = cal["projection"]
                 writer.append(values)
-                canvas = comparison_frame(original, rendered, frame_id)
-                video.append_data(canvas)
-                if offset in contact_offsets:
-                    contacts.append(canvas)
+                if write_comparison:
+                    canvas = comparison_frame(original, rendered, frame_id)
+                    video.append_data(canvas)
+                    if offset in contact_offsets:
+                        contacts.append(canvas)
             if offset % 500 == 0:
                 print("[episode %03d] %d/%d" % (episode_index, offset + 1, length), flush=True)
     finally:
-        video.close()
+        if video is not None:
+            video.close()
         writer.close()
-    contact = np.concatenate([np.concatenate(contacts[i:i + 3], axis=1) for i in range(0, len(contacts), 3)], axis=0)
-    imageio.imwrite(output_dir / ("episode_%03d_contact.jpg" % episode_index), contact)
-    return {"episode_index": episode_index, "begin": begin, "end": end, "frames": length, "h5": h5_path.name, "video": video_path.name}
+    if write_comparison:
+        contact = np.concatenate([np.concatenate(contacts[i:i + 3], axis=1) for i in range(0, len(contacts), 3)], axis=0)
+        imageio.imwrite(output_dir / ("episode_%03d_contact.jpg" % episode_index), contact)
+    return {"episode_index": episode_index, "begin": begin, "end": end, "frames": length, "h5": h5_path.name, "video": video_path.name if write_comparison else None}
 
 
 def main() -> None:
@@ -332,10 +336,10 @@ def main() -> None:
     summaries: List[Dict[str, Any]] = []
     try:
         for episode_index, begin, end in selected:
-            summaries.append(render_episode(env, raw_dir, args.output_root, episode_index, begin, end, args.fps))
+            summaries.append(render_episode(env, raw_dir, args.output_root, episode_index, begin, end, args.fps, write_comparison=not args.no_comparison))
     finally:
         env.close()
-    summary = {"status": "success", "source_dataset": str(dataset_root), "config_dir": str(config_dir), "episodes": summaries, "uv_point": "robot_obs[:3] EEF world position", "output_root": str(args.output_root)}
+    summary = {"status": "success", "source_dataset": str(dataset_root), "config_dir": str(config_dir), "episodes": summaries, "uv_point": "robot_obs[:3] EEF world position", "output_root": str(args.output_root), "comparison_visualizations": not args.no_comparison}
     (args.output_root / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, indent=2), flush=True)
 

@@ -4,12 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../" && pwd)"
 cd "$ROOT_DIR"
 PYTHON_BIN="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT/bin/python}"
-DATA_ROOT="${CALVIN_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin_lerobot}"
+DATA_ROOT="${CALVIN_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin/lerobot_native}"
 DATASET_NAME="calvin_task_ABCD_D"
 # The locally available official subset023 is a complete, metadata-backed
 # ABCD_D shard. Set CALVIN_RAW_ROOT to a merged full task_ABCD_D root when it
 # is available.
-RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin_hf/task_ABCD_D}"
+RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin/task_ABCD_D}"
 CONFIG="examples/simBenchmarks/calvin/train_files/qwen35_gr00t_calvin_ABCD_D_baseline.yaml"
 
 case "${1:-train}" in
