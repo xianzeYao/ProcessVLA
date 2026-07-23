@@ -36,11 +36,13 @@ For training, the Calvin dataset must be converted into **LeRobot format**.
    Please refer to **RoboTron-Mani (ICCV 2025)** for detailed instructions:
    👉 [https://github.com/EmbodiedAI-RoboTron/RoboTron-Mani/tree/lerobot/examples/calvin](https://github.com/EmbodiedAI-RoboTron/RoboTron-Mani/tree/lerobot/examples/simBenchmarks/calvin)
 
-2. Copy the modality definition file:
+2. If converting manually, copy the Calvin relative-action modality definition:
 
    ```bash
-   cp examples/simBenchmarks/calvin/train_files/modality.json <lerobot_dataset_path>/meta/modality.json
+   cp examples/simBenchmarks/calvin/train_files/modality_calvin_lerobot_relative.json <lerobot_dataset_path>/meta/modality.json
    ```
+
+   The rerender converter copies this file automatically.
 
 ---
 
@@ -94,7 +96,21 @@ Make sure the key name (e.g. `calvin_task_D_D`) matches the one used during trai
 * `calvin_data_root`: Path to the **LeRobot-format Calvin dataset**
 * `data_mix`: Must match the key defined in `mixtures.py`
 
-Start training with:
+For the complete ABC-D/ABCD-D rerender pipeline, the one-click entry points are:
+
+```bash
+bash examples/simBenchmarks/calvin/train_files/run_calvin_ABC_D_baseline.sh {raw_verify|rerender|convert|verify|train}
+bash examples/simBenchmarks/calvin/train_files/run_calvin_ABC_D_CoT_full.sh {raw_verify|rerender|convert|verify|train}
+bash examples/simBenchmarks/calvin/train_files/run_calvin_ABCD_D_baseline.sh {raw_verify|rerender|convert|verify|train}
+bash examples/simBenchmarks/calvin/train_files/run_calvin_ABCD_D_CoT_full.sh {raw_verify|rerender|convert|verify|train}
+```
+
+The default paths are under `/root/data/yxz/datasets/calvin`; override them with
+`CALVIN_RAW_ROOT`, `CALVIN_RERENDER_ROOT`, and
+`CALVIN_RERENDER_LEROBOT_ROOT` when needed. Rerendering is restricted to GPUs
+`4,5,6,7` by default.
+
+For the original D2D smoke pipeline, start training with:
 
 ```bash
 bash examples/simBenchmarks/calvin/train_files/run_calvin_train.sh
@@ -121,9 +137,9 @@ Ensure the checkpoint path specified in `run_policy_server.sh` is correct.
 
 ---
 
-### Step 2. Run Calvin Evaluation (Calvin Environment)
+### Step 2. Run Calvin Evaluation (`calvin` Environment)
 
-In the second terminal, activate the `Calvin` conda environment and run:
+In the second terminal, activate the `calvin` conda environment and run:
 
 ```bash
 bash examples/simBenchmarks/calvin/eval_files/eval_calvin.sh
@@ -143,5 +159,3 @@ Additionally, you need to modify the following paths in `eval_calvin.py`:
 * `eval_sequences_path`: Path to evaluation sequences JSON file (default: `"/path/to/calvin/eval_sequences.json"`)
 
 For convenience, we provide a reference evaluation sequence file at `examples/simBenchmarks/calvin/eval_files/eval_sequences.json`, which can be used directly.
-
-
