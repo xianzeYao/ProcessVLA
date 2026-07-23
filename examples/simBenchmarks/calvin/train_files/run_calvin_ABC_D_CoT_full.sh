@@ -20,8 +20,12 @@ case "${1:-train}" in
       unzip -q "$RAW_ROOT.zip" -d "$(dirname "$RAW_ROOT")"
     fi
     ;;
+  raw_verify)
+    "$CALVIN_PYTHON" examples/simBenchmarks/calvin/data_preparation/verify_calvin_raw.py "$RAW_ROOT" --split training --require-config
+    ;;
   rerender)
     test -d "$RAW_ROOT/training" || { echo "missing merged raw dataset: $RAW_ROOT" >&2; exit 2; }
+    "$0" raw_verify
     if test "${CALVIN_RERENDER_WORKERS:-4}" -gt 1 && test "${MAX_SEGMENTS:-0}" -eq 0 && test "${START_SEGMENT:-0}" -eq 0; then
       CALVIN_RERENDER_GPUS="${CUDA_VISIBLE_DEVICES:-4,5,6,7}" \
         CALVIN_RERENDER_WORKERS="${CALVIN_RERENDER_WORKERS:-4}" \
@@ -53,5 +57,5 @@ case "${1:-train}" in
       --run_root_dir "${RUN_ROOT_DIR:-/root/data/yxz/outputs/calvin}" \
       --run_id "${RUN_ID:-calvin_ABC_D_CoT_v1}" "${@:2}"
     ;;
-  *) echo "usage: $0 {prepare|rerender|convert|verify|train} [extra args]" >&2; exit 2 ;;
+  *) echo "usage: $0 {prepare|raw_verify|rerender|convert|verify|train} [extra args]" >&2; exit 2 ;;
 esac

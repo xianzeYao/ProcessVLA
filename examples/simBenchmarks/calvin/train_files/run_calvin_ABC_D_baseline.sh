@@ -12,7 +12,17 @@ RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin/task_ABC_D}"
 CONFIG="examples/simBenchmarks/calvin/train_files/qwen35_gr00t_calvin_ABC_D_baseline.yaml"
 
 case "${1:-train}" in
+  prepare)
+    if ! test -f "$RAW_ROOT/training/ep_start_end_ids.npy"; then
+      test -f "$RAW_ROOT.zip" || { echo "missing official archive: $RAW_ROOT.zip" >&2; exit 2; }
+      unzip -q "$RAW_ROOT.zip" -d "$(dirname "$RAW_ROOT")"
+    fi
+    ;;
+  raw_verify)
+    "$PYTHON_BIN" examples/simBenchmarks/calvin/data_preparation/verify_calvin_raw.py "$RAW_ROOT" --split training --require-config
+    ;;
   convert)
+    "$0" raw_verify
     "$PYTHON_BIN" -m examples.simBenchmarks.calvin.data_preparation.build_calvin_relative_lerobot \
       --dataset-root "$RAW_ROOT" --output-root "$DATA_ROOT/$DATASET_NAME" \
       --action-key rel_actions --overwrite "${@:2}"
@@ -32,5 +42,5 @@ case "${1:-train}" in
       --run_root_dir "${RUN_ROOT_DIR:-/root/data/yxz/outputs/calvin}" \
       --run_id "${RUN_ID:-calvin_ABC_D_baseline}" "${@:2}"
     ;;
-  *) echo "usage: $0 {convert|verify|train} [extra args]" >&2; exit 2 ;;
+  *) echo "usage: $0 {prepare|raw_verify|convert|verify|train} [extra args]" >&2; exit 2 ;;
 esac
