@@ -15,18 +15,24 @@ CONFIG="examples/simBenchmarks/calvin/train_files/qwen35_gr00t_calvin_ABC_D_CoT_
 
 case "${1:-train}" in
   prepare)
-    if ! test -f "/training/ep_start_end_ids.npy"; then
-      test -f ".zip" || { echo "missing official archive: .zip" >&2; exit 2; }
-      unzip -q ".zip" -d "1001 1001dirname "")"
+    if ! test -f "$RAW_ROOT/training/ep_start_end_ids.npy"; then
+      test -f "$RAW_ROOT.zip" || { echo "missing official archive: $RAW_ROOT.zip" >&2; exit 2; }
+      unzip -q "$RAW_ROOT.zip" -d "$(dirname "$RAW_ROOT")"
     fi
     ;;
   rerender)
     test -d "$RAW_ROOT/training" || { echo "missing merged raw dataset: $RAW_ROOT" >&2; exit 2; }
-    CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}" "$CALVIN_PYTHON" -m \
-      examples.simBenchmarks.calvin.data_preparation.rerender_calvin_segments \
-      --dataset-root "$RAW_ROOT" --output-root "$RERENDER_ROOT" \
-      --max-segments "${MAX_SEGMENTS:-0}" --start-segment "${START_SEGMENT:-0}" \
-      --source-split training --config-split training --overwrite --no-comparison "${@:2}"
+    if test "${CALVIN_RERENDER_WORKERS:-4}" -gt 1 && test "${MAX_SEGMENTS:-0}" -eq 0 && test "${START_SEGMENT:-0}" -eq 0; then
+      CALVIN_RERENDER_GPUS="${CUDA_VISIBLE_DEVICES:-4,5,6,7}" \
+        CALVIN_RERENDER_WORKERS="${CALVIN_RERENDER_WORKERS:-4}" \
+        bash examples/simBenchmarks/calvin/data_preparation/run_calvin_rerender_parallel.sh "$RAW_ROOT" "$RERENDER_ROOT"
+    else
+      CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}" "$CALVIN_PYTHON" -m \
+        examples.simBenchmarks.calvin.data_preparation.rerender_calvin_segments \
+        --dataset-root "$RAW_ROOT" --output-root "$RERENDER_ROOT" \
+        --max-segments "${MAX_SEGMENTS:-0}" --start-segment "${START_SEGMENT:-0}" \
+        --source-split training --config-split training --overwrite --no-comparison "${@:2}"
+    fi
     ;;
   convert)
     "$CALVIN_PYTHON" -m examples.simBenchmarks.calvin.data_preparation.build_calvin_rerender_lerobot \
