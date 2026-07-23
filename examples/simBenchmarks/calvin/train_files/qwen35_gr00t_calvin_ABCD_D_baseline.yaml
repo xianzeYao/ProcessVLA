@@ -56,7 +56,7 @@ datasets:
   vla_data:
     dataset_py: calvin_lerobot_datasets
     dataformat: lerobot
-    data_root_dir: /root/data/yxz/datasets/calvin/lerobot_native
+    data_root_dir: /root/data/yxz/datasets/calvin/lerobot_rerender
     dataset_name: calvin_task_ABCD_D
     enable_cot_geometry: false
     # Calvin's `action` column is copied from official `rel_actions`; abs means no extra conversion.

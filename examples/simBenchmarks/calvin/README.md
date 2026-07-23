@@ -57,6 +57,13 @@ Training and evaluation use **different dataset formats**:
 * **Training**: LeRobot format (converted from original Calvin)
 * **Evaluation**: Original Calvin format (with `validation/` folder)
 
+For the ABC-D and ABCD-D experiments in this directory, the baseline and CoT
+runs intentionally share the same simulator-rerendered LeRobot dataset. This
+keeps RGB/depth/camera generation identical between the two runs; the baseline
+only sets `enable_cot_geometry: false`, while the CoT configuration consumes the
+additional depth/UVD fields. The original Calvin directory remains the
+evaluation source.
+
 ---
 
 ## ⚙️ 1. Configure Data Mix
@@ -136,6 +143,5 @@ Additionally, you need to modify the following paths in `eval_calvin.py`:
 * `eval_sequences_path`: Path to evaluation sequences JSON file (default: `"/path/to/calvin/eval_sequences.json"`)
 
 For convenience, we provide a reference evaluation sequence file at `examples/simBenchmarks/calvin/eval_files/eval_sequences.json`, which can be used directly.
-
 
 
