@@ -3,23 +3,25 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../" && pwd)"
 cd "$ROOT_DIR"
-PYTHON_BIN="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python}"
 CALVIN_PYTHON="${CALVIN_PYTHON:-/root/data/yxz/miniforge3/envs/calvin/bin/python}"
-RERENDER_ROOT="${CALVIN_RERENDER_ROOT:-/root/data/yxz/datasets/calvin/rerender_ABCD_D}"
+RERENDER_ROOT="${CALVIN_RERENDER_ROOT:-/root/data/yxz/datasets/calvin/rerender_ABC_D}"
 DATA_ROOT="${CALVIN_RERENDER_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin/lerobot_rerender}"
-DATASET_NAME="calvin_task_ABCD_D"
-# The locally available official subset023 is a complete, metadata-backed
-# ABCD_D shard. Set CALVIN_RAW_ROOT to a merged full task_ABCD_D root when it
-# is available.
-RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin/task_ABCD_D}"
-CONFIG="examples/simBenchmarks/calvin/train_files/qwen35_gr00t_calvin_ABCD_D_baseline.yaml"
+DATASET_NAME="calvin_task_ABC_D"
+# Default to the persisted, real-frame ABC_D validation slice. Set
+# CALVIN_RAW_ROOT to the complete official task_ABC_D root for full training.
+RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin/task_ABC_D}"
+CONFIG="examples/modelExtensions/CoT/configs/qwen35_gr00t_calvin_ABC_D_baseline.yaml"
 
 case "${1:-train}" in
   prepare)
-    bash examples/simBenchmarks/calvin/data_preparation/merge_calvin_abcd_d_hf_zip.sh
+    if ! test -f "$RAW_ROOT/training/ep_start_end_ids.npy"; then
+      test -f "$RAW_ROOT.zip" || { echo "missing official archive: $RAW_ROOT.zip" >&2; exit 2; }
+      unzip -q "$RAW_ROOT.zip" -d "$(dirname "$RAW_ROOT")"
+    fi
     ;;
   raw_verify)
-    "$CALVIN_PYTHON" examples/simBenchmarks/calvin/data_preparation/verify_calvin_raw.py "$RAW_ROOT" --split training --require-config
+    "$CALVIN_PYTHON" examples/simBenchmarks/calvin/data_preparation/verify_calvin_raw.py "$RAW_ROOT" --split training --require-config --allow-extra-frames
     ;;
   rerender)
     test -d "$RAW_ROOT/training" || { echo "missing merged raw dataset: $RAW_ROOT" >&2; exit 2; }
@@ -56,7 +58,7 @@ case "${1:-train}" in
       --datasets.vla_data.data_root_dir "$DATA_ROOT" \
       --datasets.vla_data.dataset_name "$DATASET_NAME" \
       --run_root_dir "${RUN_ROOT_DIR:-/root/data/yxz/outputs/calvin}" \
-      --run_id "${RUN_ID:-calvin_ABCD_D_baseline}" "${@:2}"
+      --run_id "${RUN_ID:-calvin_ABC_D_baseline}" "${@:2}"
     ;;
   *) echo "usage: $0 {prepare|raw_verify|rerender|convert|verify|train} [extra args]" >&2; exit 2 ;;
 esac

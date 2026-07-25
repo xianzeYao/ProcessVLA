@@ -26,10 +26,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-frames", type=int, default=32)
     parser.add_argument("--require-config", action="store_true")
     parser.add_argument("--require-scene-info", action="store_true")
+    parser.add_argument(
+        "--allow-extra-frames",
+        action="store_true",
+        help=(
+            "Allow frame files outside ep_start_end_ids.npy. Official CALVIN "
+            "archives can contain a small number of valid but unannotated frames."
+        ),
+    )
+    parser.add_argument(
+        "--allow-unsorted-boundaries",
+        action="store_true",
+        help=(
+            "Allow non-monotonic episode boundary rows. The official CALVIN "
+            "validation split contains disjoint intervals in this order."
+        ),
+    )
     return parser.parse_args()
 
 
-def load_boundaries(split_dir: Path) -> np.ndarray:
+def load_boundaries(split_dir: Path, allow_unsorted: bool = False) -> np.ndarray:
     path = split_dir / "ep_start_end_ids.npy"
     if not path.exists():
         raise FileNotFoundError(path)
@@ -38,16 +54,23 @@ def load_boundaries(split_dir: Path) -> np.ndarray:
         raise ValueError(f"invalid episode boundaries shape: {boundaries.shape}")
     if np.any(boundaries[:, 1] < boundaries[:, 0]):
         raise ValueError("episode boundaries contain an inverted range")
-    if len(boundaries) and np.any(boundaries[1:, 0] <= boundaries[:-1, 0]):
+    if len(boundaries) and np.any(boundaries[1:, 0] <= boundaries[:-1, 0]) and not allow_unsorted:
         raise ValueError("episode boundaries are not strictly ordered")
+    if allow_unsorted and len(boundaries) > 1:
+        ordered = boundaries[np.argsort(boundaries[:, 0], kind="stable")]
+        if np.any(ordered[1:, 0] <= ordered[:-1, 1]):
+            raise ValueError("episode boundaries overlap after sorting")
     return boundaries
 
 
-def load_frame_bitmap(split_dir: Path, max_frame: int) -> tuple[np.ndarray, int, int, list[Path]]:
+def load_frame_bitmap(
+    split_dir: Path, max_frame: int
+) -> tuple[np.ndarray, int, int, list[Path], list[int]]:
     present = np.zeros(max_frame + 1, dtype=np.bool_)
     count = 0
     invalid: list[Path] = []
     sampled: list[Path] = []
+    out_of_range: list[int] = []
     min_frame = max_frame + 1
     max_seen = -1
     for entry in __import__("os").scandir(split_dir):
@@ -57,6 +80,7 @@ def load_frame_bitmap(split_dir: Path, max_frame: int) -> tuple[np.ndarray, int,
         frame_id = int(match.group(1))
         if frame_id > max_frame:
             invalid.append(Path(entry.path))
+            out_of_range.append(frame_id)
             continue
         if present[frame_id]:
             raise ValueError(f"duplicate frame id: {frame_id}")
@@ -68,7 +92,7 @@ def load_frame_bitmap(split_dir: Path, max_frame: int) -> tuple[np.ndarray, int,
             sampled.append(Path(entry.path))
     if count:
         sampled.extend([Path(split_dir / f"episode_{int(i):07d}.npz") for i in np.linspace(min_frame, max_seen, 8, dtype=np.int64) if present[int(i)]])
-    return present, count, max_seen, list(dict.fromkeys(sampled))
+    return present, count, max_seen, list(dict.fromkeys(sampled)), sorted(out_of_range)
 
 
 def main() -> None:
@@ -77,22 +101,26 @@ def main() -> None:
     split_dir = dataset_root / args.split
     if not split_dir.is_dir():
         raise FileNotFoundError(split_dir)
-    boundaries = load_boundaries(split_dir)
+    boundaries = load_boundaries(split_dir, allow_unsorted=args.allow_unsorted_boundaries)
     max_end = int(boundaries[:, 1].max()) if len(boundaries) else -1
     expected = np.zeros(max_end + 1, dtype=np.bool_)
     for begin, end in boundaries:
         expected[int(begin) : int(end) + 1] = True
     expected_count = int(expected.sum())
-    present, frame_count, max_seen, sampled_paths = load_frame_bitmap(split_dir, max_end)
+    present, frame_count, max_seen, sampled_paths, out_of_range_ids = load_frame_bitmap(split_dir, max_end)
     missing_ids = np.flatnonzero(expected & ~present)
-    extra_ids = np.flatnonzero(present & ~expected)
-    if len(missing_ids) or len(extra_ids):
+    in_range_extra_ids = np.flatnonzero(present & ~expected).tolist()
+    extra_ids = sorted(set(int(i) for i in in_range_extra_ids) | set(out_of_range_ids))
+    if len(missing_ids) or (extra_ids and not args.allow_extra_frames):
         raise ValueError(
             f"raw frame coverage mismatch: missing={len(missing_ids)} extra={len(extra_ids)} "
             f"first_missing={missing_ids[:8].tolist()} first_extra={extra_ids[:8].tolist()}"
         )
-    if frame_count != expected_count:
-        raise ValueError(f"frame count mismatch: found={frame_count} expected={expected_count}")
+    covered_frame_count = int(np.count_nonzero(expected & present))
+    if covered_frame_count != expected_count:
+        raise ValueError(
+            f"frame count mismatch: found={covered_frame_count} expected={expected_count}"
+        )
 
     for name in ("ep_lens.npy", "ep_start_end_ids.npy"):
         if not (split_dir / name).exists():
@@ -131,7 +159,11 @@ def main() -> None:
         "dataset_root": str(dataset_root),
         "split": args.split,
         "episodes": int(len(boundaries)),
-        "frames": frame_count,
+        "frames": covered_frame_count,
+        "raw_frame_files": int(frame_count + len(out_of_range_ids)),
+        "extra_frames_ignored": extra_ids,
+        "allow_extra_frames": bool(args.allow_extra_frames),
+        "allow_unsorted_boundaries": bool(args.allow_unsorted_boundaries),
         "min_frame_id": int(np.flatnonzero(present)[0]) if frame_count else None,
         "max_frame_id": max_seen,
         "language_annotations": int(len(language.get("language", {}).get("ann", []))),

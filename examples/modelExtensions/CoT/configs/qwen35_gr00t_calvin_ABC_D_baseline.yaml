@@ -1,4 +1,4 @@
-run_id: qwen35_gr00t_calvin_ABC_D_CoT_v1
+run_id: qwen35_gr00t_calvin_ABC_D_baseline
 run_root_dir: /root/data/yxz/outputs/calvin
 seed: 42
 wandb_entity: yao-xian-ze
@@ -7,7 +7,7 @@ is_debug: false
 version_id: '0.21'
 
 framework:
-  name: QwenGR00TCoT
+  name: QwenGR00T
   qwenvl:
     base_vlm: /root/data/yxz/models/Qwen3.5-4B
     attn_implementation: flash_attention_2
@@ -19,7 +19,7 @@ framework:
     add_pos_embed: true
     max_seq_len: 1024
     action_dim: 7
-    state_dim: 7
+    state_dim: 8
     action_horizon: 8
     repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
@@ -39,22 +39,6 @@ framework:
       positional_embeddings: null
     future_action_window_size: 7
     past_action_window_size: 0
-  geometry:
-    depth_query_count: 8
-    query_num_heads: 16
-    query_layer_count: 2
-    query_dropout: 0.0
-    uvd_num_points: 4
-    uvd_hand_count: 1
-    uvd_depth_scale: 2.0
-    depth_decoder_features: 256
-    depth_decoder_stages: 3
-    depth_output_size: 224
-    lambda_action: 1.0
-    lambda_depth_current: 0.14
-    lambda_depth_future: 0.15
-    lambda_uvd: 0.62
-    lambda_geometry: 0.13
 
 datasets:
   vlm_data:
@@ -74,7 +58,7 @@ datasets:
     dataformat: lerobot
     data_root_dir: /root/data/yxz/datasets/calvin/lerobot_rerender
     dataset_name: calvin_task_ABC_D
-    enable_cot_geometry: true
+    enable_cot_geometry: false
     # Calvin's `action` column is copied from official `rel_actions`; abs means no extra conversion.
     action_mode: abs
     include_state: false
@@ -82,18 +66,11 @@ datasets:
     per_device_batch_size: 16
     load_all_data_for_training: true
     video_backend: torchvision_av
-    cot_geometry:
-      action_horizon: 8
-      uvd_num_points: 4
-      uvd_hand_count: 1
-      image_size: 224
-      uvd_depth_scale: 2.0
-      episode_cache_size: 1
 
 trainer:
-  max_train_steps: 30000
+  max_train_steps: 60000
   num_warmup_steps: 5000
-  save_interval: 5000
+  save_interval: 10000
   eval_interval: 100
   learning_rate:
     base: 2.5e-05
@@ -111,14 +88,6 @@ trainer:
   logging_frequency: 10
   gradient_accumulation_steps: 1
   gradient_checkpointing: true
-  test_diagnostics:
-    enabled: false
-    num_samples: 4
-    interval: 100
-    save_predictions: true
-    prediction_save_interval: 1000
-    log_module_gradients: true
-    module_gradient_interval: 100
   optimizer:
     name: AdamW
     betas: [0.9, 0.95]

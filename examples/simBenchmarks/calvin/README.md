@@ -99,10 +99,10 @@ Make sure the key name (e.g. `calvin_task_D_D`) matches the one used during trai
 For the complete ABC-D/ABCD-D rerender pipeline, the one-click entry points are:
 
 ```bash
-bash examples/simBenchmarks/calvin/train_files/run_calvin_ABC_D_baseline.sh {raw_verify|rerender|convert|verify|train}
-bash examples/simBenchmarks/calvin/train_files/run_calvin_ABC_D_CoT_full.sh {raw_verify|rerender|convert|verify|train}
-bash examples/simBenchmarks/calvin/train_files/run_calvin_ABCD_D_baseline.sh {raw_verify|rerender|convert|verify|train}
-bash examples/simBenchmarks/calvin/train_files/run_calvin_ABCD_D_CoT_full.sh {raw_verify|rerender|convert|verify|train}
+bash examples/modelExtensions/CoT/scripts/run_calvin_ABC_D_baseline.sh {raw_verify|rerender|convert|verify|train}
+bash examples/modelExtensions/CoT/scripts/run_calvin_ABC_D_CoT_full.sh {raw_verify|rerender|convert|verify|train}
+bash examples/modelExtensions/CoT/scripts/run_calvin_ABCD_D_baseline.sh {raw_verify|rerender|convert|verify|train}
+bash examples/modelExtensions/CoT/scripts/run_calvin_ABCD_D_CoT_full.sh {raw_verify|rerender|convert|verify|train}
 ```
 
 The default paths are under `/root/data/yxz/datasets/calvin`; override them with

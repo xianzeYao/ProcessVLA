@@ -1,4 +1,4 @@
-run_id: qwen35_gr00t_calvin_ABCD_D_CoT_v1
+run_id: qwen35_gr00t_calvin_ABC_D_CoT_v1
 run_root_dir: /root/data/yxz/outputs/calvin
 seed: 42
 wandb_entity: yao-xian-ze
@@ -19,7 +19,7 @@ framework:
     add_pos_embed: true
     max_seq_len: 1024
     action_dim: 7
-    state_dim: 7
+    state_dim: 8
     action_horizon: 8
     repeated_diffusion_steps: 8
     noise_beta_alpha: 1.5
@@ -46,7 +46,7 @@ framework:
     query_dropout: 0.0
     uvd_num_points: 4
     uvd_hand_count: 1
-    uvd_depth_scale: 2.0
+    uvd_depth_scale: 1.0
     depth_decoder_features: 256
     depth_decoder_stages: 3
     depth_output_size: 224
@@ -54,7 +54,7 @@ framework:
     lambda_depth_current: 0.14
     lambda_depth_future: 0.15
     lambda_uvd: 0.62
-    lambda_geometry: 0.13
+    lambda_geometry: 0.0
 
 datasets:
   vlm_data:
@@ -73,7 +73,7 @@ datasets:
     dataset_py: calvin_lerobot_datasets
     dataformat: lerobot
     data_root_dir: /root/data/yxz/datasets/calvin/lerobot_rerender
-    dataset_name: calvin_task_ABCD_D
+    dataset_name: calvin_task_ABC_D
     enable_cot_geometry: true
     # Calvin's `action` column is copied from official `rel_actions`; abs means no extra conversion.
     action_mode: abs
@@ -87,13 +87,13 @@ datasets:
       uvd_num_points: 4
       uvd_hand_count: 1
       image_size: 224
-      uvd_depth_scale: 2.0
+      uvd_depth_scale: 1.0
       episode_cache_size: 1
 
 trainer:
-  max_train_steps: 30000
+  max_train_steps: 60000
   num_warmup_steps: 5000
-  save_interval: 5000
+  save_interval: 10000
   eval_interval: 100
   learning_rate:
     base: 2.5e-05

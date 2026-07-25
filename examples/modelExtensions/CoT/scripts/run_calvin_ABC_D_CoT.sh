@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../" && pwd)"
 cd "$ROOT_DIR"
 DATA_ROOT="${CALVIN_RERENDER_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin/lerobot_rerender}"
 DATASET_NAME="calvin_task_ABC_D"
-CONFIG="examples/simBenchmarks/calvin/train_files/qwen35_gr00t_calvin_ABC_D_CoT_v1.yaml"
+CONFIG="examples/modelExtensions/CoT/configs/qwen35_gr00t_calvin_ABC_D_CoT_v1.yaml"
 
 case "${1:-train}" in
   verify)
