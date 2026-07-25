@@ -44,6 +44,7 @@ framework:
     query_layer_count: 2
     query_dropout: 0.0
     uvd_num_points: 4
+    uvd_hand_count: 1
     uvd_depth_scale: 1.0
     depth_decoder_features: 256
     depth_decoder_stages: 3
@@ -52,7 +53,7 @@ framework:
     lambda_depth_current: 0.14
     lambda_depth_future: 0.15
     lambda_uvd: 0.62
-    lambda_geometry: 0.13
+    lambda_geometry: 0.0
 datasets:
   vlm_data:
     dataset_py: vlm_datasets
@@ -90,10 +91,10 @@ datasets:
 trainer:
   max_train_steps: 60000
   num_warmup_steps: 5000
-  save_interval: 15000
+  save_interval: 10000
   eval_interval: 100
   learning_rate:
-    base: 3.0e-05
+    base: 2.5e-05
     qwen_vl_interface: 1.0e-05
     action_model: 0.0001
   lr_scheduler_type: cosine_with_min_lr

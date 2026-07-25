@@ -53,7 +53,7 @@ datasets:
     per_device_batch_size: 4
   vla_data:
     dataset_py: lerobot_datasets
-    data_root_dir: /root/data/yxz/datasets/libero_replay
+    data_root_dir: /root/data/yxz/datasets/libero_rerender
     data_mix: libero_all
     action_type: delta_qpos
     sequential_step_sampling: false
@@ -64,10 +64,10 @@ datasets:
 trainer:
   max_train_steps: 60000
   num_warmup_steps: 5000
-  save_interval: 15000
+  save_interval: 10000
   eval_interval: 100
   learning_rate:
-    base: 3.0e-05
+    base: 2.5e-05
     qwen_vl_interface: 1.0e-05
     action_model: 0.0001
   lr_scheduler_type: cosine_with_min_lr

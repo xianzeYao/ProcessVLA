@@ -11,8 +11,8 @@ PYTHON_BIN="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/pytho
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29510}"
 RUN_ROOT_DIR="/root/data/yxz/outputs"
-RUN_ID="${RUN_ID:-qwen35_gr00t_libero_CoT_v1_5}"
-CONFIG_YAML="${REPO_ROOT}/examples/modelExtensions/CoT/configs/qwen35_gr00t_libero_CoT_v1.yaml"
+RUN_ID="${RUN_ID:-qwen35_gr00t_libero_baseline_v1_5}"
+CONFIG_YAML="${REPO_ROOT}/examples/modelExtensions/CoT/configs/qwen35_gr00t_libero_baseline.yaml"
 OUTPUT_DIR="${RUN_ROOT_DIR}/${RUN_ID}"
 LOG_ROOT="${OUTPUT_DIR}/logs"
 mkdir -p "${OUTPUT_DIR}" "${LOG_ROOT}"
@@ -25,8 +25,9 @@ exec "${PYTHON_BIN}" -m accelerate.commands.launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes "${NUM_PROCESSES}" \
   --main_process_port "${MAIN_PROCESS_PORT}" \
-  starVLA/training/train_starvla_cot_v1.py \
+  starVLA/training/train_starvla.py \
   --config_yaml "${CONFIG_YAML}" \
+  --framework.name QwenGR00T \
   --run_root_dir "${RUN_ROOT_DIR}" \
   --run_id "${RUN_ID}" \
   "$@" \
