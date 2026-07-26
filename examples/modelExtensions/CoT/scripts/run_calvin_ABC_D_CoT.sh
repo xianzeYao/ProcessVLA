@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 DATA_ROOT="${CALVIN_RERENDER_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin/lerobot_rerender}"
 DATASET_NAME="calvin_task_ABC_D"
 CONFIG="examples/modelExtensions/CoT/configs/qwen35_gr00t_calvin_ABC_D_CoT_v1.yaml"
+ACCELERATE_BIN="${ACCELERATE_BIN:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/accelerate}"
 
 case "${1:-train}" in
   verify)
@@ -16,7 +17,7 @@ case "${1:-train}" in
     "$0" verify
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
     export WANDB_MODE="${WANDB_MODE:-offline}"
-    accelerate launch --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+    "$ACCELERATE_BIN" launch --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
       --num_processes "${NUM_GPUS:-4}" starVLA/training/train_starvla_cot_v1.py \
       --config_yaml "$CONFIG" \
       --datasets.vla_data.data_root_dir "$DATA_ROOT" \

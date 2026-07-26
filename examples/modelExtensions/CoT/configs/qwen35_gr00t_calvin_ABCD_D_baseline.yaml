@@ -11,7 +11,7 @@ framework:
   qwenvl:
     base_vlm: /root/data/yxz/models/Qwen3.5-4B
     attn_implementation: flash_attention_2
-    vl_hidden_dim: 2048
+    vl_hidden_dim: 2560
   action_model:
     action_model_type: DiT-B
     action_hidden_dim: 1024
@@ -68,7 +68,7 @@ datasets:
     video_backend: torchvision_av
 
 trainer:
-  max_train_steps: 60000
+  max_train_steps: 80000
   num_warmup_steps: 5000
   save_interval: 10000
   eval_interval: 100

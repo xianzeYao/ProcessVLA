@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../" && pwd)"
 cd "$ROOT_DIR"
 PYTHON_BIN="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python}"
 CALVIN_PYTHON="${CALVIN_PYTHON:-/root/data/yxz/miniforge3/envs/calvin/bin/python}"
+ACCELERATE_BIN="${ACCELERATE_BIN:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/accelerate}"
 RERENDER_ROOT="${CALVIN_RERENDER_ROOT:-/root/data/yxz/datasets/calvin/rerender_ABC_D}"
 DATA_ROOT="${CALVIN_RERENDER_LEROBOT_ROOT:-/root/data/yxz/datasets/calvin/lerobot_rerender}"
 DATASET_NAME="calvin_task_ABC_D"
@@ -52,7 +53,7 @@ case "${1:-train}" in
     test -f "$DATA_ROOT/$DATASET_NAME/meta/info.json" || { echo "Run '$0 convert' first." >&2; exit 2; }
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
     export WANDB_MODE="${WANDB_MODE:-offline}"
-    accelerate launch --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+    "$ACCELERATE_BIN" launch --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
       --num_processes "${NUM_GPUS:-4}" starVLA/training/train_starvla.py \
       --config_yaml "$CONFIG" \
       --datasets.vla_data.data_root_dir "$DATA_ROOT" \

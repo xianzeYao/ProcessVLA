@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../" && pwd)"
 cd "$ROOT_DIR"
 CALVIN_PYTHON="${CALVIN_PYTHON:-/root/data/yxz/miniforge3/envs/calvin/bin/python}"
 COT_PYTHON="${PYTHON_BIN:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python}"
+ACCELERATE_BIN="${ACCELERATE_BIN:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/accelerate}"
 # Default to the persisted, real-frame ABC_D validation slice. Set
 # CALVIN_RAW_ROOT to the complete official task_ABC_D root for full training.
 RAW_ROOT="${CALVIN_RAW_ROOT:-/root/data/yxz/datasets/calvin/task_ABC_D}"
@@ -50,7 +51,7 @@ case "${1:-train}" in
     "$0" verify
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
     export WANDB_MODE="${WANDB_MODE:-offline}"
-    accelerate launch --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+    "$ACCELERATE_BIN" launch --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
       --num_processes "${NUM_GPUS:-4}" starVLA/training/train_starvla_cot_v1.py \
       --config_yaml "$CONFIG" --datasets.vla_data.data_root_dir "$DATA_ROOT" \
       --datasets.vla_data.dataset_name "$DATASET_NAME" \
