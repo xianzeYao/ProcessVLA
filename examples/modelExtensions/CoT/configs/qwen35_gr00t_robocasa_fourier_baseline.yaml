@@ -1,5 +1,5 @@
 # RGB/action baseline on the formal 24-task Fourier GR1 rerender corpus.
-run_id: qwen3vl_gr00t_robocasa_fourier_baseline
+run_id: qwen35_gr00t_robocasa_fourier_baseline
 run_root_dir: /root/data/yxz/outputs
 seed: 42
 wandb_entity: yao-xian-ze
@@ -59,7 +59,7 @@ datasets:
     data_mix: fourier_gr1_unified_1000
     action_mode: abs
     CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
-    per_device_batch_size: 8
+    per_device_batch_size: 16
     load_all_data_for_training: true
     video_backend: torchvision_av
     num_workers: 4
@@ -72,7 +72,7 @@ trainer:
   save_interval: 10000
   eval_interval: 1000
   learning_rate:
-    base: 3.0e-05
+    base: 1.0e-05
     qwen_vl_interface: 1.0e-05
     action_model: 0.0001
   lr_scheduler_type: cosine_with_min_lr
