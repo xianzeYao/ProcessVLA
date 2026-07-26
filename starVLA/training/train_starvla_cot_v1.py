@@ -108,7 +108,6 @@ class CotV1Trainer(VLATrainer):
             metrics["weighted_depth_current_loss"]
             + metrics["weighted_depth_future_loss"]
             + metrics["weighted_uvd_loss"]
-            + metrics["weighted_geometry_loss"]
         )
         action_scale = max(abs(metrics["weighted_action_loss"]), 1.0e-12)
         total_weighted_scale = action_scale + weighted_aux_loss

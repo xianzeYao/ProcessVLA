@@ -35,8 +35,22 @@ def project_eef_to_agentview_uvd(
     t = np.asarray(t_world_camera, dtype=np.float32)
 
     xyz_batch = xyz.reshape(-1, 3)
-    k_batch = np.broadcast_to(k, (xyz_batch.shape[0], 3, 3)) if k.ndim == 2 else k.reshape(-1, 3, 3)
-    t_batch = np.broadcast_to(t, (xyz_batch.shape[0], 4, 4)) if t.ndim == 2 else t.reshape(-1, 4, 4)
+
+    def expand_per_frame(matrix: np.ndarray, matrix_shape: tuple[int, int]) -> np.ndarray:
+        if matrix.ndim == 2:
+            return np.broadcast_to(matrix, (xyz_batch.shape[0], *matrix_shape))
+        flattened = matrix.reshape(-1, *matrix_shape)
+        if len(flattened) == len(xyz_batch):
+            return flattened
+        # Camera matrices are recorded once per timestep. A dual-wrist point
+        # set has extra axes after that timestep axis.
+        if xyz.ndim >= 3 and len(flattened) == xyz.shape[0]:
+            points_per_frame = int(np.prod(xyz.shape[1:-1]))
+            return np.repeat(flattened, points_per_frame, axis=0)
+        return flattened
+
+    k_batch = expand_per_frame(k, (3, 3))
+    t_batch = expand_per_frame(t, (4, 4))
     if len(k_batch) != len(xyz_batch) or len(t_batch) != len(xyz_batch):
         raise ValueError(f"frame count mismatch: xyz={xyz.shape}, K={k.shape}, T={t.shape}")
 

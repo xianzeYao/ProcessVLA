@@ -7,6 +7,33 @@ import torch
 import torch.nn.functional as F
 
 
+def aggregate_cot_total_loss(
+    action_loss: torch.Tensor,
+    depth_current_loss: torch.Tensor,
+    depth_future_loss: torch.Tensor,
+    uvd_loss: torch.Tensor,
+    *,
+    lambda_action: float,
+    lambda_depth_current: float,
+    lambda_depth_future: float,
+    lambda_uvd: float,
+) -> torch.Tensor:
+    """Aggregate the active V1 objective without endpoint geometry consistency.
+
+    UVD depth is the camera-space EEF reference-point depth, while a rendered
+    depth map stores the visible surface depth. Without a visibility target,
+    coupling them with a sampled-depth loss can impose a wrong constraint.
+    The endpoint helper remains available for future visibility-aware
+    experiments, but is not part of the active V1 objective.
+    """
+    return (
+        float(lambda_action) * action_loss
+        + float(lambda_depth_current) * depth_current_loss
+        + float(lambda_depth_future) * depth_future_loss
+        + float(lambda_uvd) * uvd_loss
+    )
+
+
 def _masked_mean(values: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     mask = valid.to(dtype=values.dtype)
     while mask.ndim < values.ndim:
@@ -47,27 +74,33 @@ def endpoint_depth_uvd_consistency(
     """Require predicted UVD endpoint depth to agree with predicted depth maps."""
     if depth_scale <= 0:
         raise ValueError(f"depth_scale must be positive, got {depth_scale}")
-    batch = torch.arange(uvd.shape[0], device=uvd.device)
+    batch_size = uvd.shape[0]
     if endpoint_indices is None:
-        current_indices = torch.zeros(uvd.shape[0], dtype=torch.long, device=uvd.device)
+        current_indices = torch.zeros(batch_size, 1, dtype=torch.long, device=uvd.device)
         future_indices = torch.full(
-            (uvd.shape[0],), uvd.shape[1] - 1, dtype=torch.long, device=uvd.device
+            (batch_size, 1), uvd.shape[1] - 1, dtype=torch.long, device=uvd.device
         )
     else:
         endpoint_indices = endpoint_indices.to(device=uvd.device, dtype=torch.long)
-        if endpoint_indices.shape != (uvd.shape[0], 2):
+        if endpoint_indices.shape == (batch_size, 2):
+            endpoint_indices = endpoint_indices.unsqueeze(1)
+        if endpoint_indices.ndim != 3 or endpoint_indices.shape[0] != batch_size or endpoint_indices.shape[2] != 2:
             raise ValueError(
-                f"endpoint_indices must have shape {(uvd.shape[0], 2)}, got {tuple(endpoint_indices.shape)}"
+                f"endpoint_indices must have shape [B, 2] or [B, H, 2] with B={batch_size}, got {tuple(endpoint_indices.shape)}"
             )
-        current_indices, future_indices = endpoint_indices[:, 0], endpoint_indices[:, 1]
+        current_indices, future_indices = endpoint_indices[..., 0], endpoint_indices[..., 1]
+    hand_count = current_indices.shape[1]
+    batch = torch.arange(batch_size, device=uvd.device)[:, None]
     current_uvd = uvd[batch, current_indices]
     future_uvd = uvd[batch, future_indices]
-    current_grid = current_uvd[:, None, :2].mul(2.0).sub(1.0).unsqueeze(2)
-    future_grid = future_uvd[:, None, :2].mul(2.0).sub(1.0).unsqueeze(2)
-    sampled_current = F.grid_sample(depth_current.float(), current_grid, align_corners=True).flatten(1)
-    sampled_future = F.grid_sample(depth_future.float(), future_grid, align_corners=True).flatten(1)
-    target_current = current_uvd[:, 2:3].float() * depth_scale
-    target_future = future_uvd[:, 2:3].float() * depth_scale
-    values = torch.cat([sampled_current - target_current, sampled_future - target_future], dim=1).abs()
-    endpoint_valid = torch.stack([valid[batch, current_indices], valid[batch, future_indices]], dim=1)
+    current_grid = current_uvd[..., :2].mul(2.0).sub(1.0).reshape(batch_size * hand_count, 1, 1, 2)
+    future_grid = future_uvd[..., :2].mul(2.0).sub(1.0).reshape(batch_size * hand_count, 1, 1, 2)
+    depth_current = depth_current.float().repeat_interleave(hand_count, dim=0)
+    depth_future = depth_future.float().repeat_interleave(hand_count, dim=0)
+    sampled_current = F.grid_sample(depth_current, current_grid, align_corners=True).reshape(batch_size, hand_count)
+    sampled_future = F.grid_sample(depth_future, future_grid, align_corners=True).reshape(batch_size, hand_count)
+    target_current = current_uvd[..., 2].float() * depth_scale
+    target_future = future_uvd[..., 2].float() * depth_scale
+    values = torch.stack([sampled_current - target_current, sampled_future - target_future], dim=-1).abs()
+    endpoint_valid = torch.stack([valid[batch, current_indices], valid[batch, future_indices]], dim=-1)
     return _masked_mean(values, endpoint_valid)

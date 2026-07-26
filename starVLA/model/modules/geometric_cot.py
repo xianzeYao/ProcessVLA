@@ -61,6 +61,16 @@ class _GeometricQueryLayer(nn.Module):
         return queries + self.ffn(self.ffn_norm(queries))
 
 
+def build_hand_major_ids(num_tokens: int, hand_count: int, *, device=None) -> torch.Tensor:
+    """Return hand ids grouped as all points for hand 0, then hand 1, etc."""
+    num_tokens = int(num_tokens)
+    hand_count = int(hand_count)
+    if num_tokens < 1 or hand_count < 1:
+        raise ValueError(f"num_tokens and hand_count must be positive, got {num_tokens}, {hand_count}")
+    points_per_hand = math.ceil(num_tokens / hand_count)
+    return torch.arange(hand_count, device=device, dtype=torch.long).repeat_interleave(points_per_hand)[:num_tokens]
+
+
 class GeometricQueryReasoner(nn.Module):
     """Decode current depth, future depth, and temporal UVD query embeddings.
 
@@ -77,12 +87,16 @@ class GeometricQueryReasoner(nn.Module):
         depth_query_count: int = 8,
         layer_count: int = 2,
         dropout: float = 0.0,
+        hand_count: int = 1,
     ) -> None:
         super().__init__()
         if hidden_dim % num_heads != 0:
             raise ValueError(f"hidden_dim={hidden_dim} must be divisible by num_heads={num_heads}")
         self.hidden_dim = hidden_dim
         self.depth_query_count = int(depth_query_count)
+        self.hand_count = int(hand_count)
+        if self.hand_count < 1:
+            raise ValueError(f"hand_count must be positive, got {self.hand_count}")
         self.current_depth_queries = nn.Parameter(torch.randn(1, depth_query_count, hidden_dim) * 0.02)
         self.future_depth_queries = nn.Parameter(torch.randn(1, depth_query_count, hidden_dim) * 0.02)
         self.trajectory_seed = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
@@ -91,6 +105,10 @@ class GeometricQueryReasoner(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
+        # The hand identity is injected before query self-attention so the
+        # reasoner can model left/right coordination, not only label the
+        # final UVD predictions.
+        self.hand_embedding = nn.Embedding(self.hand_count, hidden_dim)
         self.layers = nn.ModuleList(
             [_GeometricQueryLayer(hidden_dim, num_heads, dropout) for _ in range(layer_count)]
         )
@@ -104,6 +122,7 @@ class GeometricQueryReasoner(nn.Module):
         horizon: int,
         uvd_num_points: int | None = None,
         uvd_times: torch.Tensor | None = None,
+        uvd_hand_ids: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         batch_size = backbone_hidden.shape[0]
         if uvd_num_points is None:
@@ -116,7 +135,9 @@ class GeometricQueryReasoner(nn.Module):
         current = self.current_depth_queries.expand(batch_size, -1, -1)
         future = self.future_depth_queries.expand(batch_size, -1, -1)
         if uvd_times is None:
-            tau = torch.linspace(0.0, 1.0, int(uvd_num_points), device=backbone_hidden.device, dtype=parameter_dtype)
+            points_per_hand = math.ceil(int(uvd_num_points) / self.hand_count)
+            tau = torch.linspace(0.0, 1.0, points_per_hand, device=backbone_hidden.device, dtype=parameter_dtype)
+            tau = tau.repeat(self.hand_count)[: int(uvd_num_points)]
             tau = tau.view(1, -1).expand(batch_size, -1)
         else:
             tau = uvd_times.to(device=backbone_hidden.device, dtype=parameter_dtype)
@@ -126,6 +147,22 @@ class GeometricQueryReasoner(nn.Module):
                 )
         trajectory = self.trajectory_seed.expand(batch_size, int(uvd_num_points), -1)
         trajectory = trajectory + self.time_embedding(tau.unsqueeze(-1))
+        if uvd_hand_ids is None:
+            hand_ids = build_hand_major_ids(
+                int(uvd_num_points), self.hand_count, device=backbone_hidden.device
+            )
+            hand_ids = hand_ids.unsqueeze(0).expand(batch_size, -1)
+        else:
+            hand_ids = uvd_hand_ids.to(device=backbone_hidden.device, dtype=torch.long)
+            if hand_ids.ndim != 2 or hand_ids.shape != (batch_size, int(uvd_num_points)):
+                raise ValueError(
+                    f"uvd_hand_ids must have shape {(batch_size, int(uvd_num_points))}, "
+                    f"got {tuple(hand_ids.shape)}"
+                )
+        if torch.any(hand_ids < 0) or torch.any(hand_ids >= self.hand_count):
+            raise ValueError(f"uvd_hand_ids must be in [0, {self.hand_count}), got invalid values")
+        if self.hand_count > 1:
+            trajectory = trajectory + self.hand_embedding(hand_ids).to(dtype=trajectory.dtype)
         queries = torch.cat([current, future, trajectory], dim=1)
 
         allowed = build_group_causal_attention_mask(

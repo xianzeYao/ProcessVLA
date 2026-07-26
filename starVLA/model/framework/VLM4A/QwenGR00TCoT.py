@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import math
-from contextlib import nullcontext
 import time
 from typing import Any, Callable, List
 
@@ -16,12 +15,12 @@ from torch import nn
 
 from starVLA.model.framework.VLM4A.QwenGR00T import Qwen_GR00T
 from starVLA.model.modules.cot_losses import (
-    endpoint_depth_uvd_consistency,
+    aggregate_cot_total_loss,
     masked_smooth_l1_loss,
     uvd_regression_loss,
 )
 from starVLA.model.modules.depth_cot_decoder import SharedFiLMConvStack
-from starVLA.model.modules.geometric_cot import GeometricQueryReasoner
+from starVLA.model.modules.geometric_cot import GeometricQueryReasoner, build_hand_major_ids
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 
@@ -91,12 +90,16 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         self.geometry_hidden_dim = hidden_dim
         self.depth_query_count = depth_query_count
         self.uvd_num_points = geometry.get("uvd_num_points", None)
+        self.uvd_hand_count = int(geometry.get("uvd_hand_count", 1))
+        if self.uvd_hand_count < 1:
+            raise ValueError(f"uvd_hand_count must be positive, got {self.uvd_hand_count}")
         self.geometry_query = GeometricQueryReasoner(
             hidden_dim=hidden_dim,
             num_heads=max(query_heads, 1),
             depth_query_count=depth_query_count,
             layer_count=int(geometry.get("query_layer_count", 2)),
             dropout=float(geometry.get("query_dropout", 0.0)),
+            hand_count=self.uvd_hand_count,
         )
         self.depth_decoder = SharedFiLMConvStack(
             hidden_dim=hidden_dim,
@@ -146,29 +149,69 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         raw = self.uvd_head(cast_input_to_module_dtype(tokens, self.uvd_head))
         return torch.cat([torch.sigmoid(raw[..., :2]), F.softplus(raw[..., 2:3])], dim=-1)
 
-    def _prepare_uvd_targets(self, examples: List[dict], device: torch.device):
+    def _trajectory_point_count(self) -> int:
         default_points = self.uvd_num_points
         if default_points is None:
             default_points = int(math.floor(0.3 * int(self.action_horizon))) + 2
-        lengths = [int(np.asarray(example["uvd"]).shape[0]) for example in examples]
-        point_count = max(int(default_points), max(lengths, default=1), 2)
-        target = torch.zeros(len(examples), point_count, 3, device=device, dtype=torch.float32)
-        valid = torch.zeros(len(examples), point_count, device=device, dtype=torch.bool)
-        times = torch.zeros(len(examples), point_count, device=device, dtype=torch.float32)
-        endpoints = torch.zeros(len(examples), 2, device=device, dtype=torch.long)
-        for batch_index, example in enumerate(examples):
+        return max(int(default_points), 2)
+
+    def _prepare_uvd_targets(self, examples: List[dict], device: torch.device):
+        """Flatten UVD from [time, hand, 3] in contiguous per-hand blocks (left points, then right points)."""
+        normalized = []
+        configured_points = self._trajectory_point_count()
+        max_time = configured_points
+        max_hands = 1
+        for example in examples:
             uvd = np.asarray(example["uvd"], dtype=np.float32)
-            uvd_valid = np.asarray(example["uvd_valid_mask"], dtype=np.bool_)
+            valid = np.asarray(example["uvd_valid_mask"], dtype=np.bool_)
+            if uvd.ndim == 2:
+                uvd = uvd[:, None, :]
+            if uvd.ndim != 3 or uvd.shape[-1] != 3:
+                raise ValueError(f"uvd must have shape [T, 3] or [T, H, 3], got {uvd.shape}")
+            if valid.ndim == 1:
+                valid = valid[:, None]
+            if valid.shape != uvd.shape[:2]:
+                raise ValueError(f"uvd_valid_mask must have shape {uvd.shape[:2]}, got {valid.shape}")
+            if uvd.shape[0] > configured_points:
+                raise ValueError(
+                    f"uvd has {uvd.shape[0]} temporal points, but configured K is {configured_points}; "
+                    "sample dense UVD in the dataloader before model input"
+                )
             uvd_time = np.asarray(
-                example.get("uvd_time", np.linspace(0.0, 1.0, len(uvd), dtype=np.float32)),
-                dtype=np.float32,
+                example.get("uvd_time", np.linspace(0.0, 1.0, len(uvd), dtype=np.float32)), dtype=np.float32
             )
-            count = min(len(uvd), point_count)
-            target[batch_index, :count] = torch.as_tensor(uvd[:count], device=device)
-            valid[batch_index, :count] = torch.as_tensor(uvd_valid[:count], device=device)
-            times[batch_index, :count] = torch.as_tensor(uvd_time[:count], device=device)
-            endpoints[batch_index, 1] = max(count - 1, 0)
-        return target, valid, times, endpoints
+            if uvd_time.shape != (uvd.shape[0],):
+                raise ValueError(f"uvd_time must have shape {(uvd.shape[0],)}, got {uvd_time.shape}")
+            normalized.append((uvd, valid, uvd_time))
+            max_hands = max(max_hands, uvd.shape[1])
+        if max_hands > self.uvd_hand_count:
+            raise ValueError(f"received {max_hands} wrist tracks but uvd_hand_count={self.uvd_hand_count}")
+        token_count = max_time * self.uvd_hand_count
+        target = torch.zeros(len(examples), token_count, 3, device=device, dtype=torch.float32)
+        valid = torch.zeros(len(examples), token_count, device=device, dtype=torch.bool)
+        times = torch.zeros(len(examples), token_count, device=device, dtype=torch.float32)
+        hand_ids = build_hand_major_ids(
+            token_count, self.uvd_hand_count, device=device
+        )
+        hand_ids = hand_ids.unsqueeze(0).expand(len(examples), -1)
+        endpoints = torch.zeros(len(examples), self.uvd_hand_count, 2, device=device, dtype=torch.long)
+        for batch_index, (uvd, uvd_valid, uvd_time) in enumerate(normalized):
+            count = min(uvd.shape[0], max_time)
+            hand_count = uvd.shape[1]
+            for hand_index in range(hand_count):
+                positions = hand_index * max_time + np.arange(count)
+                target[batch_index, positions] = torch.as_tensor(
+                    uvd[:count, hand_index], device=device
+                )
+                valid[batch_index, positions] = torch.as_tensor(
+                    uvd_valid[:count, hand_index], device=device
+                )
+                times[batch_index, positions] = torch.as_tensor(
+                    uvd_time[:count], device=device
+                )
+                endpoints[batch_index, hand_index, 0] = hand_index * max_time
+                endpoints[batch_index, hand_index, 1] = hand_index * max_time + count - 1
+        return target, valid, times, hand_ids, endpoints
 
     def _geometry_forward(
         self,
@@ -179,6 +222,7 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         uvd_times: torch.Tensor | None = None,
         uvd_num_points: int | None = None,
         uvd_valid_mask: torch.Tensor | None = None,
+        uvd_hand_ids: torch.Tensor | None = None,
         timing_callback: Callable[[str, Callable[[], Any]], Any] | None = None,
     ):
         def timed(name: str, fn: Callable[[], Any]) -> Any:
@@ -193,6 +237,7 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
                 horizon=horizon,
                 uvd_num_points=uvd_num_points if uvd_num_points is not None else self.uvd_num_points,
                 uvd_times=uvd_times,
+                uvd_hand_ids=uvd_hand_ids,
             ),
         )
         image_tokens, patch_hw = timed(
@@ -226,7 +271,7 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
     def predict_geometry(self, examples: List[dict]) -> dict[str, torch.Tensor]:
         """Run only the geometry branch for fixed-sample diagnostics."""
         qwen_inputs, last_hidden, attention_mask = self._run_backbone(examples)
-        uvd_target, uvd_valid, uvd_times, _ = self._prepare_uvd_targets(examples, last_hidden.device)
+        uvd_target, uvd_valid, uvd_times, uvd_hand_ids, _ = self._prepare_uvd_targets(examples, last_hidden.device)
         _, depth_current, depth_future, uvd, _, _ = self._geometry_forward(
             qwen_inputs,
             last_hidden,
@@ -234,6 +279,7 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
             uvd_times=uvd_times,
             uvd_num_points=uvd_target.shape[1],
             uvd_valid_mask=uvd_valid,
+            uvd_hand_ids=uvd_hand_ids,
         )
         return {
             "depth_current": depth_current,
@@ -242,11 +288,10 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         }
 
     def _action_loss(self, condition: torch.Tensor, condition_mask: torch.Tensor | None, examples: List[dict]) -> torch.Tensor:
-        action_dtype = next(self.action_model.parameters()).dtype
-        actions = torch.as_tensor(np.asarray([example["action"] for example in examples]), device=condition.device, dtype=action_dtype)
+        actions = torch.as_tensor(np.asarray([example["action"] for example in examples]), device=condition.device, dtype=condition.dtype)
         actions_target = actions[:, -self.action_horizon :, :]
         repeated_steps = int(self.config.framework.action_model.get("repeated_diffusion_steps", 4))
-        repeated_condition = condition.to(dtype=action_dtype).repeat(repeated_steps, 1, 1)
+        repeated_condition = condition.repeat(repeated_steps, 1, 1)
         repeated_mask = condition_mask.repeat(repeated_steps, 1) if condition_mask is not None else None
         repeated_actions = actions_target.repeat(repeated_steps, 1, 1)
         state = None
@@ -254,12 +299,13 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
             state = torch.as_tensor(np.asarray([example["state"] for example in examples]), device=condition.device, dtype=condition.dtype)
             state = state[..., : int(self.config.framework.action_model.state_dim)]
             state = state.repeat(repeated_steps, 1, 1)
-        return self.action_model(repeated_condition, repeated_actions, state, encoder_attention_mask=repeated_mask)
+        with torch.autocast("cuda", dtype=torch.float32):
+            return self.action_model(repeated_condition, repeated_actions, state, encoder_attention_mask=repeated_mask)
 
     def forward(self, examples: List[dict] = None, **kwargs) -> dict[str, torch.Tensor]:
         qwen_inputs, last_hidden, attention_mask = self._run_backbone(examples)
         device = last_hidden.device
-        uvd_target, uvd_valid, uvd_times, uvd_endpoints = self._prepare_uvd_targets(examples, device)
+        uvd_target, uvd_valid, uvd_times, uvd_hand_ids, _ = self._prepare_uvd_targets(examples, device)
         query, depth_current, depth_future, uvd, condition, condition_mask = self._geometry_forward(
             qwen_inputs,
             last_hidden,
@@ -267,6 +313,7 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
             uvd_times=uvd_times,
             uvd_num_points=uvd_target.shape[1],
             uvd_valid_mask=uvd_valid,
+            uvd_hand_ids=uvd_hand_ids,
         )
         action_loss = self._action_loss(condition, condition_mask, examples)
         depth_current_target = torch.as_tensor(np.stack([x["depth_current"] for x in examples]), device=device)
@@ -276,20 +323,19 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         depth_current_loss = masked_smooth_l1_loss(depth_current, depth_current_target, depth_current_valid)
         depth_future_loss = masked_smooth_l1_loss(depth_future, depth_future_target, depth_future_valid)
         uvd_loss = uvd_regression_loss(uvd, uvd_target, uvd_valid)
-        geometry_loss = endpoint_depth_uvd_consistency(
-            depth_current,
-            depth_future,
-            uvd,
-            uvd_valid,
-            depth_scale=self.uvd_depth_scale,
-            endpoint_indices=uvd_endpoints,
-        )
-        total_loss = (
-            self.lambda_action * action_loss
-            + self.lambda_depth_current * depth_current_loss
-            + self.lambda_depth_future * depth_future_loss
-            + self.lambda_uvd * uvd_loss
-            + self.lambda_geometry * geometry_loss
+        # Keep a zero-valued compatibility metric for existing logging and
+        # checkpoint tooling, but do not let the invalid visibility assumption
+        # contribute gradients to the active V1 objective.
+        geometry_loss = action_loss.new_zeros(())
+        total_loss = aggregate_cot_total_loss(
+            action_loss,
+            depth_current_loss,
+            depth_future_loss,
+            uvd_loss,
+            lambda_action=self.lambda_action,
+            lambda_depth_current=self.lambda_depth_current,
+            lambda_depth_future=self.lambda_depth_future,
+            lambda_uvd=self.lambda_uvd,
         )
         return {
             "action_loss": action_loss,
@@ -335,7 +381,7 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
                 last_hidden,
                 attention_mask,
                 horizon=int(self.action_horizon),
-                uvd_num_points=self.uvd_num_points,
+                uvd_num_points=self._trajectory_point_count() * self.uvd_hand_count,
             ),
         )
         condition = torch.cat([last_hidden, query["uvd_tokens"]], dim=1)
@@ -344,15 +390,14 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         if "state" in examples[0] and self.config.framework.action_model.get("state_dim", 0):
             state = torch.as_tensor(np.asarray([example["state"] for example in examples]), device=condition.device, dtype=condition.dtype)
             state = state[..., : int(self.config.framework.action_model.state_dim)]
-        action_dtype = next(self.action_model.parameters()).dtype
-        condition = condition.to(dtype=action_dtype)
-        if state is not None:
-            state = state.to(dtype=action_dtype)
+        def run_action():
+            with torch.autocast("cuda", dtype=torch.float32):
+                return self.action_model.predict_action(
+                    condition, state, encoder_attention_mask=condition_mask
+                )
         actions = timed(
             "action_expert_ms",
-            lambda: self.action_model.predict_action(
-                condition, state, encoder_attention_mask=condition_mask
-            ),
+            run_action,
         )
         output_start = time.perf_counter()
         normalized_actions = actions.detach().float().cpu().numpy()
