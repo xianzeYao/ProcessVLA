@@ -28,6 +28,11 @@ import hydra
 import numpy as np
 import tyro
 
+# Configure headless rendering before importing CALVIN/MuJoCo modules.
+_render_backend = os.environ.get("CALVIN_RENDER_BACKEND", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", _render_backend)
+os.environ.setdefault("MUJOCO_GL", _render_backend)
+
 # # Add Calvin to path
 # CALVIN_ROOT = Path(__file__).resolve().parents[2] / "third_party" / "calvin"
 # sys.path.insert(0, str(CALVIN_ROOT))
@@ -46,12 +51,13 @@ from tqdm import tqdm
 from deployment.model_server.tools import image_tools
 from examples.simBenchmarks.LIBERO.eval_files.model2libero_interface import ModelClient
 
+from examples.simBenchmarks.calvin.eval_files.calvin_eval_protocol import (
+    normalize_split,
+    summarize_chain_results,
+)
+
 # from calvin_env.envs.play_table_env import get_env
 
-# Set OpenGL platform for headless rendering
-os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-os.environ["MUJOCO_GL"] = "osmesa"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -66,7 +72,7 @@ class Args:
     host: str = "127.0.0.1"
     port: int = 8000
     resize_size: int = 224
-    replan_steps: int = 5
+    action_stride: int = 0
     pretrained_path: str = ""
     unnorm_key: str = ""
 
@@ -88,6 +94,10 @@ class Args:
     eval_log_dir: str = "tmp/calvin/eval_logs"  # Path to save evaluation logs and videos
     reset: bool = False  # If True, reset robot state between tasks (easier)
     diverse_inst: bool = False  # Use diverse instructions (zero-shot generalization)
+    split: str = "ABCD_D"  # ABCD->D or ABC->D; recorded for protocol traceability
+    sequence_start: int = 0
+    sequence_end: int = -1
+    output_json: str = ""  # Optional per-worker result payload
 
 
 class CalvinPolicyClient:
@@ -98,7 +108,7 @@ class CalvinPolicyClient:
         host: str,
         port: int,
         resize_size: int = 224,
-        replan_steps: int = 5,
+        action_stride: int = 0,
         pretrained_path: str = "",
         unnorm_key: str = "",
     ):
@@ -108,9 +118,10 @@ class CalvinPolicyClient:
             port=port,
             image_size=[resize_size, resize_size],
             unnorm_key=(unnorm_key or None),
+            action_stride=action_stride,
         )
         self.resize_size = resize_size
-        self.replan_steps = replan_steps
+        self.action_stride = int(self.client.action_stride)
         self.step_count = 0
 
     def reset(self):
@@ -204,6 +215,10 @@ def evaluate_policy_ddp(
     create_plan_tsne=False,
     reset=False,
     diverse_inst=False,
+    split="ABCD_D",
+    sequence_start=0,
+    sequence_end=-1,
+    output_json="",
 ):
     """
     Run this function to evaluate a model on the CALVIN challenge.
@@ -230,9 +245,19 @@ def evaluate_policy_ddp(
     else:
         val_annotations = OmegaConf.load(conf_dir / "annotations/new_playtable_validation.yaml")
 
+    split = normalize_split(split)
     eval_log_dir = get_log_dir(eval_log_dir)
     with open(eval_sequences_path, "r") as f:
-        eval_sequences = json.load(f)
+        all_eval_sequences = json.load(f)
+    if not isinstance(all_eval_sequences, list):
+        raise ValueError(f"CALVIN sequence file must contain a list, got {type(all_eval_sequences).__name__}")
+    available = len(all_eval_sequences)
+    requested_total = available if num_sequences <= 0 else min(int(num_sequences), available)
+    start = max(0, int(sequence_start))
+    end = requested_total if int(sequence_end) < 0 else min(int(sequence_end), requested_total)
+    if end < start:
+        raise ValueError(f"invalid sequence range [{start}, {end})")
+    eval_sequences = all_eval_sequences[start:end]
     # device_num = int(torch.distributed.get_world_size())
     # device_id = torch.distributed.get_rank()
     # assert num_sequences % device_num == 0
@@ -241,12 +266,11 @@ def evaluate_policy_ddp(
     results = []
     plans = defaultdict(list)
     local_sequence_i = 0
-    base_sequence_i = 0  # device_id * interval_len
+    base_sequence_i = start
 
-    if not debug:
-        eval_sequences = tqdm(eval_sequences, position=0, leave=True)
+    sequence_iter = tqdm(eval_sequences, position=0, leave=True) if not debug else eval_sequences
 
-    for initial_state, eval_sequence in eval_sequences:
+    for initial_state, eval_sequence in sequence_iter:
         result = evaluate_sequence(
             env,
             policy,
@@ -263,7 +287,7 @@ def evaluate_policy_ddp(
         )
         results.append(result)
         if not debug:
-            eval_sequences.set_description(
+            sequence_iter.set_description(
                 " ".join([f"{i + 1}/5 : {v * 100:.1f}% |" for i, v in enumerate(count_success(results))]) + "|"
             )
         local_sequence_i += 1
@@ -274,15 +298,25 @@ def evaluate_policy_ddp(
             tmp.extend(l)
         return tmp
 
-    def extract_iter_from_tqdm(tqdm_iter):
-        return [_ for _ in tqdm_iter]
-
     # if create_plan_tsne:
     #     create_tsne(plans, eval_log_dir, epoch)
 
-    eval_sequences = extract_iter_from_tqdm(eval_sequences)
-
     print_and_save(results, eval_sequences, eval_log_dir, epoch)
+
+    if output_json:
+        output_path = Path(output_json)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": 1,
+            "split": split,
+            "sequence_start": start,
+            "sequence_end": end,
+            "num_sequences": len(results),
+            "action_chunk_size": int(policy.action_chunk_size),
+            "action_stride": int(policy.action_stride),
+            **summarize_chain_results(results),
+        }
+        output_path.write_text(json.dumps(payload, indent=2) + "\n")
 
     return results
 
@@ -429,7 +463,7 @@ def main(args: Args):
         args.host,
         args.port,
         args.resize_size,
-        args.replan_steps,
+        args.action_stride,
         pretrained_path=args.pretrained_path,
         unnorm_key=args.unnorm_key,
     )
@@ -447,6 +481,10 @@ def main(args: Args):
         args.create_plan_tsne,
         args.reset,
         args.diverse_inst,
+        args.split,
+        args.sequence_start,
+        args.sequence_end,
+        args.output_json,
     )
 
 

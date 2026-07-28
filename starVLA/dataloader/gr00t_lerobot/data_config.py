@@ -606,6 +606,20 @@ class FourierGr1ArmsWaistDataConfig:
         "action.right_hand",
         "action.waist",
     ]
+    action_key_dims = {
+        "action.left_arm": 7,
+        "action.right_arm": 7,
+        "action.left_hand": 6,
+        "action.right_hand": 6,
+        "action.waist": 3,
+    }
+    state_key_dims = {
+        "state.left_arm": 7,
+        "state.right_arm": 7,
+        "state.left_hand": 6,
+        "state.right_hand": 6,
+        "state.waist": 3,
+    }
     language_keys = ["annotation.human.coarse_action"]
     observation_indices = [0]
     action_indices = list(range(16))

@@ -16,7 +16,9 @@ import dataclasses
 import json
 import logging
 import os
+import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -33,6 +35,13 @@ from robocasa.utils.gym_utils import GrootRoboCasaEnv  # noqa: F401
 
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.base_config import BasePolicy, ModalityConfig
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.model2robocasa_interface import PolicyWarper
+from examples.simBenchmarks.Robocasa_tabletop.eval_files.robocasa_eval_protocol import (
+    build_completed_task_payload,
+    build_failed_task_payload,
+    emit_episode_progress,
+    emit_task_complete,
+    write_json,
+)
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.wrappers.multistep_wrapper import MultiStepWrapper
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.wrappers.video_recording_wrapper import (
     VideoRecorder,
@@ -73,6 +82,7 @@ class SimulationConfig:
     n_envs: int = 1
     video: VideoConfig = field(default_factory=VideoConfig)
     multistep: MultiStepConfig = field(default_factory=MultiStepConfig)
+    task_index: Optional[int] = None
 
 
 class SimulationInferenceEnv:
@@ -82,6 +92,7 @@ class SimulationInferenceEnv:
         """Initialize the simulation client with a model."""
         self.model = model
         self.env = None
+        self.last_run_seconds: Optional[float] = None
 
     def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
         """Get action from the model based on observations."""
@@ -124,7 +135,10 @@ class SimulationInferenceEnv:
             raise ValueError("No model provided. Please provide a model either in __init__ or run_simulation")
 
         start_time = time.time()
-        print(f"Running {config.n_episodes} episodes for {config.env_name} with {config.n_envs} environments")
+        print(
+            f"Running {config.n_episodes} episodes for {config.env_name} with {config.n_envs} environments",
+            flush=True,
+        )
         # Set up the environment
         self.env = self.setup_environment(config)
         # Initialize tracking variables
@@ -151,6 +165,15 @@ class SimulationInferenceEnv:
                 if terminations[env_idx] or truncations[env_idx]:
                     episode_lengths.append(current_lengths[env_idx])
                     episode_successes.append(current_successes[env_idx])
+                    if config.task_index is not None:
+                        emit_episode_progress(
+                            task_index=config.task_index,
+                            episode=len(episode_successes),
+                            total_episodes=config.n_episodes,
+                            success=episode_successes[-1],
+                            task_successes=sum(episode_successes),
+                            elapsed_seconds=time.time() - start_time,
+                        )
                     current_successes[env_idx] = False
                     completed_episodes += 1
                     # Reset trackers for this environment
@@ -161,7 +184,9 @@ class SimulationInferenceEnv:
         self.env.reset()
         self.env.close()
         self.env = None
-        print(f"Collecting {config.n_episodes} episodes took {time.time() - start_time:.2f} seconds")
+        elapsed_seconds = time.time() - start_time
+        self.last_run_seconds = elapsed_seconds
+        print(f"Collecting {config.n_episodes} episodes took {elapsed_seconds:.2f} seconds", flush=True)
         assert (
             len(episode_successes) >= config.n_episodes
         ), f"Expected at least {config.n_episodes} episodes, got {len(episode_successes)}"
@@ -219,6 +244,12 @@ def run_evaluation(
     n_envs: int = 1,
     n_action_steps: int = 2,
     max_episode_steps: int = 100,
+    result_json: Optional[str] = None,
+    result_metadata: Optional[Dict[str, Any]] = None,
+    task_index: int = -1,
+    gpu: int = -1,
+    worker_id: int = -1,
+    task_start_time: Optional[float] = None,
 ) -> Tuple[str, List[bool]]:
     """
     Simple entry point to run a simulation evaluation.
@@ -240,13 +271,37 @@ def run_evaluation(
         n_envs=n_envs,
         video=VideoConfig(video_dir=video_dir),
         multistep=MultiStepConfig(n_action_steps=n_action_steps, max_episode_steps=max_episode_steps),
+        task_index=task_index if task_index >= 0 else None,
     )
     # Create client and run simulation
     client = SimulationInferenceEnv(model=model)
     results = client.run_simulation(config)
+    task_elapsed_seconds = (
+        time.time() - task_start_time
+        if task_start_time is not None
+        else client.last_run_seconds or 0.0
+    )
     # Print results
-    print(f"Results for {env_name}:")
-    print(f"Success rate: {np.mean(results[1]):.2f}")
+    print(f"Results for {env_name}:", flush=True)
+    print(f"Success rate: {np.mean(results[1]):.2f}", flush=True)
+    if result_json:
+        payload = build_completed_task_payload(
+            task_index=task_index,
+            env_name=results[0],
+            successes=results[1],
+            elapsed_seconds=task_elapsed_seconds,
+            gpu=gpu,
+            worker_id=worker_id,
+            metadata=result_metadata,
+        )
+        write_json(Path(result_json), payload)
+    if task_index >= 0:
+        emit_task_complete(
+            task_index=task_index,
+            episodes=len(results[1]),
+            successes=sum(results[1]),
+            elapsed_seconds=task_elapsed_seconds,
+        )
     return results
 
 
@@ -272,9 +327,11 @@ class Args:
     #################################################################################################################
     # Utils
     #################################################################################################################
-    video_out_path: str = (
-        "experiments/1029_qwenGR00T_fourier_gr1_unified_1000_PnPMilkToMicrowaveClose_gpus_woPretrain_wState/checkpoints/steps_20000_pytorch_model.pt.log/gr1_unified/logs/PnPMilkToMicrowaveClose_GR1ArmsAndWaistFourierHands_Env"  # Path to save videos
-    )
+    video_out_path: Optional[str] = None
+    result_json: Optional[str] = None
+    task_index: int = -1
+    gpu: int = -1
+    worker_id: int = -1
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -287,25 +344,61 @@ def eval_gr1_unified(args: Args) -> None:
     logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
     if os.getenv("DEBUG", False):
         start_debugpy_once()
-
-    model = PolicyWarper(
-        policy_ckpt_path=args.pretrained_path,  # to get unnormalization stats
-        unnorm_key=args.unnorm_key,
-        host=args.host,
-        port=args.port,
-        image_size=args.resize_size,
-        n_action_steps=args.n_action_steps,
-        send_state=args.send_state,
-    )
-    run_evaluation(
-        env_name=args.env_name,
-        model=model,
-        video_dir=args.video_out_path,
-        n_episodes=args.n_episodes,
-        n_envs=args.n_envs,
-        n_action_steps=args.n_action_steps,
-        max_episode_steps=args.max_episode_steps,
-    )
+    task_start_time = time.time()
+    result_metadata = {
+        "n_envs": args.n_envs,
+        "max_episode_steps": args.max_episode_steps,
+        "n_action_steps": args.n_action_steps,
+        "send_state": args.send_state,
+        "video_out_path": args.video_out_path,
+        "pretrained_path": args.pretrained_path,
+    }
+    try:
+        model = PolicyWarper(
+            policy_ckpt_path=args.pretrained_path,  # to get unnormalization stats
+            unnorm_key=args.unnorm_key,
+            host=args.host,
+            port=args.port,
+            image_size=args.resize_size,
+            n_action_steps=args.n_action_steps,
+            send_state=args.send_state,
+        )
+        run_evaluation(
+            env_name=args.env_name,
+            model=model,
+            video_dir=args.video_out_path,
+            n_episodes=args.n_episodes,
+            n_envs=args.n_envs,
+            n_action_steps=args.n_action_steps,
+            max_episode_steps=args.max_episode_steps,
+            result_json=args.result_json,
+            result_metadata=result_metadata,
+            task_index=args.task_index,
+            gpu=args.gpu,
+            worker_id=args.worker_id,
+            task_start_time=task_start_time,
+        )
+    except Exception as exc:
+        traceback_text = traceback.format_exc()
+        if args.result_json:
+            failed_payload = build_failed_task_payload(
+                task_index=args.task_index,
+                env_name=args.env_name,
+                error=str(exc),
+                traceback_text=traceback_text,
+                elapsed_seconds=time.time() - task_start_time,
+                gpu=args.gpu,
+                worker_id=args.worker_id,
+                metadata=result_metadata,
+            )
+            write_json(Path(args.result_json), failed_payload)
+        print(
+            f"[robocasa] task={args.task_index:02d} failed status=failed error={exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(traceback_text, file=sys.stderr, end="", flush=True)
+        raise
 
 
 def start_debugpy_once():

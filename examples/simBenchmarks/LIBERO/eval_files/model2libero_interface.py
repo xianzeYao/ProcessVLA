@@ -39,11 +39,22 @@ class ModelClient:
         host: str = "0.0.0.0",
         port: int = 10095,
         image_size: Sequence[int] = (224, 224),
+        action_stride: Optional[int] = None,
     ) -> None:
         # Connect & receive handshake metadata (action_chunk_size, etc.)
         self.client = WebsocketClientPolicy(host, port)
         meta = self.client.get_server_metadata()
         self.action_chunk_size = int(meta["action_chunk_size"])
+        self.action_stride = (
+            int(action_stride)
+            if action_stride is not None and int(action_stride) > 0
+            else self.action_chunk_size
+        )
+        if self.action_stride > self.action_chunk_size:
+            raise ValueError(
+                f"action_stride={self.action_stride} exceeds checkpoint action chunk "
+                f"length={self.action_chunk_size}"
+            )
         self._server_metadata = meta
 
         self.image_size: tuple = tuple(image_size)
@@ -128,7 +139,7 @@ class ModelClient:
             example = {**example, "image": resized}
 
         # Refresh chunk if needed.
-        if step % self.action_chunk_size == 0 or self.raw_actions is None:
+        if step % self.action_stride == 0 or self.raw_actions is None:
             vla_input = {
                 "examples": [example],
                 "unnorm_key": self.unnorm_key,
@@ -156,7 +167,7 @@ class ModelClient:
                 )
             self.raw_actions = np.asarray(actions_batch)[0]  # (T, D)
 
-        raw_actions = self.raw_actions[step % self.action_chunk_size][None]
+        raw_actions = self.raw_actions[step % self.action_stride][None]
         raw_action = {
             "world_vector": np.array(raw_actions[0, :3]),
             "rotation_delta": np.array(raw_actions[0, 3:6]),
