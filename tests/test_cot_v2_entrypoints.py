@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -27,6 +28,10 @@ def test_v2_yamls_keep_fixed_geometry_contract_per_bench():
         assert cfg.datasets.vla_data.cot_geometry.action_horizon == horizon
         assert cfg.datasets.vla_data.cot_geometry.uvd_num_points == points
         assert cfg.trainer.max_train_steps == max_steps
+        assert cfg.trainer.test_diagnostics.enabled is False
+        assert cfg.trainer.test_diagnostics.log_token_utilization is True
+        assert cfg.trainer.test_diagnostics.log_decoder_reliance is True
+        assert cfg.trainer.test_diagnostics.log_uvd_time_metrics is True
 
 
 def test_v2_scripts_dry_run_the_independent_trainer_and_matching_config():
@@ -51,3 +56,21 @@ def test_v2_scripts_dry_run_the_independent_trainer_and_matching_config():
         assert "starVLA/training/train_starvla_cot_v2.py" in result.stdout
         assert CASES[bench][0] in result.stdout
         assert "--num_processes 4" in result.stdout
+
+
+def test_v2_gradient_probe_cli_exposes_reproducibility_arguments():
+    script = ROOT / "examples/modelExtensions/CoT/scripts/probe_qwen35_gr00t_CoT_v2_gradients.py"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--config_yaml" in result.stdout
+    assert "--checkpoint" in result.stdout
+    assert "--sample_indices" in result.stdout
+    assert "--qwen_tail_layers" in result.stdout
