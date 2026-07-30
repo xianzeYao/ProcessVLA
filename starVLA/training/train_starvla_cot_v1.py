@@ -98,12 +98,22 @@ class CotV1Trainer(VLATrainer):
             "depth_current_loss": output_dict["depth_current_loss"].item(),
             "depth_future_loss": output_dict["depth_future_loss"].item(),
             "uvd_loss": output_dict["uvd_loss"].item(),
-            "geometry_loss": output_dict["geometry_loss"].item(),
             "weighted_depth_current_loss": self.model.lambda_depth_current * output_dict["depth_current_loss"].item(),
             "weighted_depth_future_loss": self.model.lambda_depth_future * output_dict["depth_future_loss"].item(),
             "weighted_uvd_loss": self.model.lambda_uvd * output_dict["uvd_loss"].item(),
-            "weighted_geometry_loss": self.model.lambda_geometry * output_dict["geometry_loss"].item(),
         }
+        if "uvd_absolute_loss" in output_dict:
+            metrics["uvd_absolute_loss"] = output_dict["uvd_absolute_loss"].item()
+            metrics["weighted_uvd_absolute_loss"] = (
+                self.model.lambda_uvd * metrics["uvd_absolute_loss"]
+            )
+        if "uvd_relative_loss" in output_dict:
+            metrics["uvd_relative_loss"] = output_dict["uvd_relative_loss"].item()
+            metrics["weighted_uvd_relative_loss"] = (
+                self.model.lambda_uvd
+                * float(getattr(self.model, "lambda_uvd_relative", 0.0))
+                * metrics["uvd_relative_loss"]
+            )
         weighted_aux_loss = (
             metrics["weighted_depth_current_loss"]
             + metrics["weighted_depth_future_loss"]
@@ -148,6 +158,8 @@ class CotV1Trainer(VLATrainer):
             self._diagnostic_examples,
             depth_scale=float(model.uvd_depth_scale),
             image_size=int(model.depth_output_size),
+            uvd_hand_count=int(getattr(model, "uvd_hand_count", 1)),
+            uvd_order=str(getattr(model, "uvd_token_order", "hand_major")),
         )
         step_metrics.update({f"diagnostic/{key}": value for key, value in geometry_metrics.items()})
         if self.accelerator.is_main_process:
@@ -159,7 +171,14 @@ class CotV1Trainer(VLATrainer):
             save_interval = int(diagnostic_config.get("prediction_save_interval", 1000))
             if bool(diagnostic_config.get("save_predictions", True)) and self.completed_steps % save_interval == 0:
                 try:
-                    save_prediction_bundle(output_dir, self.completed_steps, predictions, self._diagnostic_examples)
+                    save_prediction_bundle(
+                        output_dir,
+                        self.completed_steps,
+                        predictions,
+                        self._diagnostic_examples,
+                        uvd_hand_count=int(getattr(model, "uvd_hand_count", 1)),
+                        uvd_order=str(getattr(model, "uvd_token_order", "hand_major")),
+                    )
                     step_metrics["diagnostic/prediction_save_failed"] = 0.0
                 except Exception:
                     # Prediction bundles are observability artifacts, not training state.

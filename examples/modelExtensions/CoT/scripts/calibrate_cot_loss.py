@@ -40,7 +40,12 @@ def main() -> None:
         data_cfg=data_cfg,
     )
 
-    values: dict[str, list[float]] = {"action_loss": [], "depth_current_loss": [], "depth_future_loss": [], "uvd_loss": [], "geometry_loss": []}
+    values: dict[str, list[float]] = {
+        "action_loss": [],
+        "depth_current_loss": [],
+        "depth_future_loss": [],
+        "uvd_loss": [],
+    }
     with torch.inference_mode():
         for sample_index in range(args.num_samples):
             torch.manual_seed(sample_index)
@@ -54,7 +59,6 @@ def main() -> None:
         "depth_current_loss": 0.04,
         "depth_future_loss": 0.04,
         "uvd_loss": 0.01,
-        "geometry_loss": 0.01,
     }
     action_mean = max(means["action_loss"], 1e-8)
     recommendations = {

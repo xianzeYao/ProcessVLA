@@ -18,14 +18,7 @@ def aggregate_cot_total_loss(
     lambda_depth_future: float,
     lambda_uvd: float,
 ) -> torch.Tensor:
-    """Aggregate the active V1 objective without endpoint geometry consistency.
-
-    UVD depth is the camera-space EEF reference-point depth, while a rendered
-    depth map stores the visible surface depth. Without a visibility target,
-    coupling them with a sampled-depth loss can impose a wrong constraint.
-    The endpoint helper remains available for future visibility-aware
-    experiments, but is not part of the active V1 objective.
-    """
+    """Aggregate Action, current/future Depth, and UVD objectives."""
     return (
         float(lambda_action) * action_loss
         + float(lambda_depth_current) * depth_current_loss
@@ -62,45 +55,40 @@ def uvd_regression_loss(
     return _masked_mean(values * weights, valid)
 
 
-def endpoint_depth_uvd_consistency(
-    depth_current: torch.Tensor,
-    depth_future: torch.Tensor,
-    uvd: torch.Tensor,
+def uvd_adjacent_relative_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
     valid: torch.Tensor,
     *,
-    depth_scale: float,
-    endpoint_indices: torch.Tensor | None = None,
+    hand_count: int,
+    coordinate_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> torch.Tensor:
-    """Require predicted UVD endpoint depth to agree with predicted depth maps."""
-    if depth_scale <= 0:
-        raise ValueError(f"depth_scale must be positive, got {depth_scale}")
-    batch_size = uvd.shape[0]
-    if endpoint_indices is None:
-        current_indices = torch.zeros(batch_size, 1, dtype=torch.long, device=uvd.device)
-        future_indices = torch.full(
-            (batch_size, 1), uvd.shape[1] - 1, dtype=torch.long, device=uvd.device
+    """Smooth-L1 on adjacent same-hand UVD deltas in time-major order."""
+    if pred.shape != target.shape or pred.ndim != 3 or pred.shape[-1] != 3:
+        raise ValueError(
+            f"pred/target must share shape [B,K,3], got {tuple(pred.shape)}/{tuple(target.shape)}"
         )
-    else:
-        endpoint_indices = endpoint_indices.to(device=uvd.device, dtype=torch.long)
-        if endpoint_indices.shape == (batch_size, 2):
-            endpoint_indices = endpoint_indices.unsqueeze(1)
-        if endpoint_indices.ndim != 3 or endpoint_indices.shape[0] != batch_size or endpoint_indices.shape[2] != 2:
-            raise ValueError(
-                f"endpoint_indices must have shape [B, 2] or [B, H, 2] with B={batch_size}, got {tuple(endpoint_indices.shape)}"
-            )
-        current_indices, future_indices = endpoint_indices[..., 0], endpoint_indices[..., 1]
-    hand_count = current_indices.shape[1]
-    batch = torch.arange(batch_size, device=uvd.device)[:, None]
-    current_uvd = uvd[batch, current_indices]
-    future_uvd = uvd[batch, future_indices]
-    current_grid = current_uvd[..., :2].mul(2.0).sub(1.0).reshape(batch_size * hand_count, 1, 1, 2)
-    future_grid = future_uvd[..., :2].mul(2.0).sub(1.0).reshape(batch_size * hand_count, 1, 1, 2)
-    depth_current = depth_current.float().repeat_interleave(hand_count, dim=0)
-    depth_future = depth_future.float().repeat_interleave(hand_count, dim=0)
-    sampled_current = F.grid_sample(depth_current, current_grid, align_corners=True).reshape(batch_size, hand_count)
-    sampled_future = F.grid_sample(depth_future, future_grid, align_corners=True).reshape(batch_size, hand_count)
-    target_current = current_uvd[..., 2].float() * depth_scale
-    target_future = future_uvd[..., 2].float() * depth_scale
-    values = torch.stack([sampled_current - target_current, sampled_future - target_future], dim=-1).abs()
-    endpoint_valid = torch.stack([valid[batch, current_indices], valid[batch, future_indices]], dim=-1)
-    return _masked_mean(values, endpoint_valid)
+    if valid.shape != pred.shape[:2]:
+        raise ValueError(f"valid must have shape {tuple(pred.shape[:2])}, got {tuple(valid.shape)}")
+    hand_count = int(hand_count)
+    if hand_count < 1 or pred.shape[1] % hand_count != 0:
+        raise ValueError(
+            f"token count {pred.shape[1]} must be divisible by positive hand_count={hand_count}"
+        )
+    point_count = pred.shape[1] // hand_count
+    if point_count < 2:
+        raise ValueError(f"relative UVD loss requires at least two points per hand, got {point_count}")
+
+    pred_tracks = pred.float().reshape(pred.shape[0], point_count, hand_count, 3)
+    target_tracks = target.float().reshape(target.shape[0], point_count, hand_count, 3)
+    valid_tracks = valid.to(dtype=torch.bool).reshape(valid.shape[0], point_count, hand_count)
+    pred_delta = pred_tracks[:, 1:] - pred_tracks[:, :-1]
+    target_delta = target_tracks[:, 1:] - target_tracks[:, :-1]
+    segment_valid = valid_tracks[:, 1:] & valid_tracks[:, :-1]
+    values = F.smooth_l1_loss(pred_delta, target_delta, reduction="none")
+    weights = torch.as_tensor(
+        coordinate_weights,
+        device=values.device,
+        dtype=values.dtype,
+    ).view(1, 1, 1, 3)
+    return _masked_mean(values * weights, segment_valid)

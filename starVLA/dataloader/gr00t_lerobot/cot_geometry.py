@@ -66,9 +66,9 @@ def project_eef_to_agentview_uvd(
         np.isfinite(uvd).all(axis=1)
         & (uvd[:, 2] > 0.0)
         & (uvd[:, 0] >= 0.0)
-        & (uvd[:, 0] < float(width))
+        & (uvd[:, 0] <= float(width - 1))
         & (uvd[:, 1] >= 0.0)
-        & (uvd[:, 1] < float(height))
+        & (uvd[:, 1] <= float(height - 1))
     )
     return uvd.reshape(*xyz.shape[:-1], 3), valid.reshape(xyz.shape[:-1])
 
@@ -100,7 +100,8 @@ def transform_uvd_to_model_space(
     target_width: int,
     target_height: int,
     depth_scale: float,
-) -> np.ndarray:
+    return_boundary_clamp_mask: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Apply resize-equivalent pixel transform and normalize u/v to [0, 1]."""
     if source_width < 2 or source_height < 2 or target_width < 2 or target_height < 2:
         raise ValueError("all image dimensions must be at least 2")
@@ -111,7 +112,14 @@ def transform_uvd_to_model_space(
     out[..., 1] *= (target_height - 1) / float(source_height - 1)
     out[..., 0] /= float(target_width - 1)
     out[..., 1] /= float(target_height - 1)
+    boundary_clamp = np.any(
+        np.isfinite(out[..., :2]) & ((out[..., :2] < 0.0) | (out[..., :2] > 1.0)),
+        axis=-1,
+    )
+    out[..., :2] = np.clip(out[..., :2], 0.0, 1.0)
     out[..., 2] /= float(depth_scale)
+    if return_boundary_clamp_mask:
+        return out, boundary_clamp
     return out
 
 
@@ -224,15 +232,26 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
         current_depth, current_valid = _resize_depth(current_depth, current_valid, target_hw)
         future_depth, future_valid = _resize_depth(future_depth, future_valid, target_hw)
 
-        uvd = transform_uvd_to_model_space(
-            eef_uvd[sample_indices],
+        sampled_uvd_pixels = eef_uvd[sample_indices]
+        uvd, boundary_clamp = transform_uvd_to_model_space(
+            sampled_uvd_pixels,
             source_width=int(depth.shape[-1]),
             source_height=int(depth.shape[-2]),
             target_width=target_size,
             target_height=target_size,
             depth_scale=depth_scale,
+            return_boundary_clamp_mask=True,
         )
         valid = eef_valid[sample_indices].astype(np.bool_)
+        finite_positive = np.isfinite(sampled_uvd_pixels).all(axis=-1) & (sampled_uvd_pixels[..., 2] > 0.0)
+        in_frame = (
+            (sampled_uvd_pixels[..., 0] >= 0.0)
+            & (sampled_uvd_pixels[..., 0] <= float(depth.shape[-1] - 1))
+            & (sampled_uvd_pixels[..., 1] >= 0.0)
+            & (sampled_uvd_pixels[..., 1] <= float(depth.shape[-2] - 1))
+        )
+        out_of_frame = finite_positive & ~in_frame
+        boundary_clamp = np.asarray(boundary_clamp, dtype=np.bool_) & valid
         effective_horizon = max(future_index - base_index, 1)
         uvd_time = ((sample_indices - base_index) / float(effective_horizon)).astype(np.float32)
         return {
@@ -242,6 +261,8 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
             "depth_future_valid": future_valid[None].astype(np.bool_),
             "uvd": uvd.astype(np.float32),
             "uvd_valid_mask": valid,
+            "uvd_out_of_frame_mask": out_of_frame.astype(np.bool_),
+            "uvd_boundary_clamp_mask": boundary_clamp,
             "uvd_frame_indices": sample_indices.astype(np.int64),
             "uvd_time": uvd_time,
             "uvd_endpoint_indices": np.asarray([0, len(sample_indices) - 1], dtype=np.int64),

@@ -117,7 +117,6 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         self.lambda_depth_current = float(geometry.get("lambda_depth_current", 0.05))
         self.lambda_depth_future = float(geometry.get("lambda_depth_future", 0.05))
         self.lambda_uvd = float(geometry.get("lambda_uvd", 0.1))
-        self.lambda_geometry = float(geometry.get("lambda_geometry", 0.01))
 
     def _main_image_tokens(self, last_hidden: torch.Tensor, input_ids: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int]]:
         runs = [extract_contiguous_image_token_runs(row) for row in input_ids]
@@ -323,10 +322,6 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
         depth_current_loss = masked_smooth_l1_loss(depth_current, depth_current_target, depth_current_valid)
         depth_future_loss = masked_smooth_l1_loss(depth_future, depth_future_target, depth_future_valid)
         uvd_loss = uvd_regression_loss(uvd, uvd_target, uvd_valid)
-        # Keep a zero-valued compatibility metric for existing logging and
-        # checkpoint tooling, but do not let the invalid visibility assumption
-        # contribute gradients to the active V1 objective.
-        geometry_loss = action_loss.new_zeros(())
         total_loss = aggregate_cot_total_loss(
             action_loss,
             depth_current_loss,
@@ -342,7 +337,6 @@ class Qwen_GR00T_CoT(Qwen_GR00T):
             "depth_current_loss": depth_current_loss,
             "depth_future_loss": depth_future_loss,
             "uvd_loss": uvd_loss,
-            "geometry_loss": geometry_loss,
             "total_loss": total_loss,
         }
 

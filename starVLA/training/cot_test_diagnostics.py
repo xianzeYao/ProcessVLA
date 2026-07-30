@@ -12,10 +12,8 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
-
-from starVLA.model.modules.cot_losses import endpoint_depth_uvd_consistency
-
 
 def _masked_abs_mean(pred: torch.Tensor, target: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     values = (pred.float() - target.float()).abs()
@@ -33,6 +31,18 @@ def _masked_rmse(pred: torch.Tensor, target: torch.Tensor, valid: torch.Tensor) 
     mean_square = (values * mask).sum() / mask.expand_as(values).sum().clamp_min(1.0)
     return torch.sqrt(mean_square.clamp_min(0.0))
 
+
+def _masked_smooth_l1_mean(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid: torch.Tensor,
+) -> torch.Tensor:
+    values = F.smooth_l1_loss(pred.float(), target.float(), reduction="none")
+    mask = valid.to(dtype=values.dtype)
+    while mask.ndim < values.ndim:
+        mask = mask.unsqueeze(-1)
+    return (values * mask).sum() / mask.expand_as(values).sum().clamp_min(1.0)
+
 def collect_batch_valid_ratios(examples: list[dict]) -> dict[str, float]:
     """Summarize label validity without retaining tensors or image data."""
     output: dict[str, float] = {}
@@ -40,6 +50,8 @@ def collect_batch_valid_ratios(examples: list[dict]) -> dict[str, float]:
         ("depth_current_valid", "data/depth_current_valid_ratio"),
         ("depth_future_valid", "data/depth_future_valid_ratio"),
         ("uvd_valid_mask", "data/uvd_valid_ratio"),
+        ("uvd_out_of_frame_mask", "data/uvd_out_of_frame_ratio"),
+        ("uvd_boundary_clamp_mask", "data/uvd_boundary_clamp_ratio"),
     ):
         values = [np.asarray(example[key], dtype=np.float32).mean() for example in examples if key in example]
         if values:
@@ -153,23 +165,54 @@ def collect_module_grad_norms(
 def _pad_uvd_examples(
     examples: list[dict],
     point_count: int,
+    *,
+    hand_count: int = 1,
+    order: str = "hand_major",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    hand_count = int(hand_count)
+    point_count = int(point_count)
+    if hand_count < 1 or point_count % hand_count != 0:
+        raise ValueError(f"point_count={point_count} must be divisible by hand_count={hand_count}")
+    if order not in {"hand_major", "time_major"}:
+        raise ValueError(f"uvd order must be 'hand_major' or 'time_major', got {order!r}")
+    points_per_hand = point_count // hand_count
     target = np.zeros((len(examples), point_count, 3), dtype=np.float32)
     valid = np.zeros((len(examples), point_count), dtype=np.bool_)
     times = np.zeros((len(examples), point_count), dtype=np.float32)
-    endpoints = np.zeros((len(examples), 2), dtype=np.int64)
+    endpoints = np.zeros((len(examples), hand_count, 2), dtype=np.int64)
     for batch_index, example in enumerate(examples):
         uvd = np.asarray(example["uvd"], dtype=np.float32)
         uvd_valid = np.asarray(example["uvd_valid_mask"], dtype=np.bool_)
+        if uvd.ndim == 2:
+            uvd = uvd[:, None, :]
+        if uvd_valid.ndim == 1:
+            uvd_valid = uvd_valid[:, None]
+        if uvd.ndim != 3 or uvd.shape[-1] != 3 or uvd_valid.shape != uvd.shape[:2]:
+            raise ValueError(
+                f"uvd/valid must have shapes [T,H,3]/[T,H], got {uvd.shape}/{uvd_valid.shape}"
+            )
+        if uvd.shape[1] != hand_count:
+            raise ValueError(f"expected {hand_count} UVD hands, got {uvd.shape[1]}")
         uvd_time = np.asarray(
             example.get("uvd_time", np.linspace(0.0, 1.0, len(uvd), dtype=np.float32)),
             dtype=np.float32,
         )
-        count = min(len(uvd), point_count)
-        target[batch_index, :count] = uvd[:count]
-        valid[batch_index, :count] = uvd_valid[:count]
-        times[batch_index, :count] = uvd_time[:count]
-        endpoints[batch_index, 1] = max(count - 1, 0)
+        count = min(len(uvd), points_per_hand)
+        for time_index in range(count):
+            for hand_index in range(hand_count):
+                if order == "time_major":
+                    token_index = time_index * hand_count + hand_index
+                else:
+                    token_index = hand_index * points_per_hand + time_index
+                target[batch_index, token_index] = uvd[time_index, hand_index]
+                valid[batch_index, token_index] = uvd_valid[time_index, hand_index]
+                times[batch_index, token_index] = uvd_time[time_index]
+        for hand_index in range(hand_count):
+            if order == "time_major":
+                endpoints[batch_index, hand_index] = [hand_index, (count - 1) * hand_count + hand_index]
+            else:
+                start = hand_index * points_per_hand
+                endpoints[batch_index, hand_index] = [start, start + count - 1]
     return target, valid, times, endpoints
 
 
@@ -179,6 +222,8 @@ def compute_geometry_metrics(
     *,
     depth_scale: float,
     image_size: int,
+    uvd_hand_count: int = 1,
+    uvd_order: str = "hand_major",
 ) -> dict[str, float]:
     """Compute fixed-sample depth/UVD metrics for a diagnostics checkpoint."""
     device = predictions["depth_current"].device
@@ -187,7 +232,10 @@ def compute_geometry_metrics(
     depth_current_valid = torch.as_tensor(np.stack([x["depth_current_valid"] for x in examples]), device=device)
     depth_future_valid = torch.as_tensor(np.stack([x["depth_future_valid"] for x in examples]), device=device)
     uvd_target_np, uvd_valid_np, _, uvd_endpoints_np = _pad_uvd_examples(
-        examples, int(predictions["uvd"].shape[1])
+        examples,
+        int(predictions["uvd"].shape[1]),
+        hand_count=uvd_hand_count,
+        order=uvd_order,
     )
     uvd_target = torch.as_tensor(uvd_target_np, device=device)
     uvd_valid = torch.as_tensor(uvd_valid_np, device=device)
@@ -198,17 +246,24 @@ def compute_geometry_metrics(
     uvd = predictions["uvd"].float()
     pixel_scale = float(max(image_size - 1, 1))
     batch_indices = torch.arange(uvd.shape[0], device=device)
-    endpoint_batch = batch_indices[:, None].expand_as(uvd_endpoints)
+    endpoint_batch = batch_indices[:, None, None].expand_as(uvd_endpoints)
     uvd_pred_endpoints = uvd[endpoint_batch, uvd_endpoints]
     uvd_target_endpoints = uvd_target[endpoint_batch, uvd_endpoints]
     uvd_endpoint_valid = uvd_valid[endpoint_batch, uvd_endpoints]
-    segment_valid = uvd_valid[:, 1:] & uvd_valid[:, :-1]
-    pred_segments = torch.linalg.vector_norm(
-        (uvd[:, 1:, :2] - uvd[:, :-1, :2]) * pixel_scale, dim=-1
-    )
-    target_segments = torch.linalg.vector_norm(
-        (uvd_target[:, 1:, :2] - uvd_target[:, :-1, :2]) * pixel_scale, dim=-1
-    )
+    points_per_hand = uvd.shape[1] // int(uvd_hand_count)
+    if uvd_order == "time_major":
+        uvd_tracks = uvd.view(uvd.shape[0], points_per_hand, int(uvd_hand_count), 3)
+        target_tracks = uvd_target.view(uvd.shape[0], points_per_hand, int(uvd_hand_count), 3)
+        valid_tracks = uvd_valid.view(uvd.shape[0], points_per_hand, int(uvd_hand_count))
+    else:
+        uvd_tracks = uvd.view(uvd.shape[0], int(uvd_hand_count), points_per_hand, 3).transpose(1, 2)
+        target_tracks = uvd_target.view(uvd.shape[0], int(uvd_hand_count), points_per_hand, 3).transpose(1, 2)
+        valid_tracks = uvd_valid.view(uvd.shape[0], int(uvd_hand_count), points_per_hand).transpose(1, 2)
+    segment_valid = valid_tracks[:, 1:] & valid_tracks[:, :-1]
+    pred_delta = uvd_tracks[:, 1:] - uvd_tracks[:, :-1]
+    target_delta = target_tracks[:, 1:] - target_tracks[:, :-1]
+    pred_segments = torch.linalg.vector_norm(pred_delta[..., :2] * pixel_scale, dim=-1)
+    target_segments = torch.linalg.vector_norm(target_delta[..., :2] * pixel_scale, dim=-1)
     trace_valid = segment_valid.any(dim=1)
     trace_count = trace_valid.sum().clamp_min(1)
     pred_path_mean = ((pred_segments * segment_valid).sum(dim=1) * trace_valid).sum() / trace_count
@@ -218,28 +273,29 @@ def compute_geometry_metrics(
         "depth_future_mae_m": float((_masked_abs_mean(depth_future, depth_future_target, depth_future_valid) * depth_scale).item()),
         "depth_current_rmse_m": float((_masked_rmse(depth_current, depth_current_target, depth_current_valid) * depth_scale).item()),
         "depth_future_rmse_m": float((_masked_rmse(depth_future, depth_future_target, depth_future_valid) * depth_scale).item()),
+        "uvd_u_mae_pixel": float((_masked_abs_mean(uvd[..., 0], uvd_target[..., 0], uvd_valid) * pixel_scale).item()),
+        "uvd_v_mae_pixel": float((_masked_abs_mean(uvd[..., 1], uvd_target[..., 1], uvd_valid) * pixel_scale).item()),
         "uvd_xy_mae_norm": float(_masked_abs_mean(uvd[..., :2], uvd_target[..., :2], uvd_valid).item()),
         "uvd_xy_mae_pixel": float((_masked_abs_mean(uvd[..., :2], uvd_target[..., :2], uvd_valid) * max(image_size - 1, 1)).item()),
         "uvd_depth_mae_m": float((_masked_abs_mean(uvd[..., 2:3], uvd_target[..., 2:3], uvd_valid) * depth_scale).item()),
+        "uvd_u_rmse_pixel": float((_masked_rmse(uvd[..., 0], uvd_target[..., 0], uvd_valid) * pixel_scale).item()),
+        "uvd_v_rmse_pixel": float((_masked_rmse(uvd[..., 1], uvd_target[..., 1], uvd_valid) * pixel_scale).item()),
         "uvd_xy_rmse_pixel": float((_masked_rmse(uvd[..., :2], uvd_target[..., :2], uvd_valid) * pixel_scale).item()),
         "uvd_depth_rmse_m": float((_masked_rmse(uvd[..., 2:3], uvd_target[..., 2:3], uvd_valid) * depth_scale).item()),
-        "uvd_start_xy_mae_pixel": float((_masked_abs_mean(uvd_pred_endpoints[:, 0, :2], uvd_target_endpoints[:, 0, :2], uvd_endpoint_valid[:, 0]) * pixel_scale).item()),
-        "uvd_end_xy_mae_pixel": float((_masked_abs_mean(uvd_pred_endpoints[:, 1, :2], uvd_target_endpoints[:, 1, :2], uvd_endpoint_valid[:, 1]) * pixel_scale).item()),
-        "uvd_start_depth_mae_m": float((_masked_abs_mean(uvd_pred_endpoints[:, 0, 2:3], uvd_target_endpoints[:, 0, 2:3], uvd_endpoint_valid[:, 0]) * depth_scale).item()),
-        "uvd_end_depth_mae_m": float((_masked_abs_mean(uvd_pred_endpoints[:, 1, 2:3], uvd_target_endpoints[:, 1, 2:3], uvd_endpoint_valid[:, 1]) * depth_scale).item()),
+        "uvd_u_smooth_l1": float(_masked_smooth_l1_mean(uvd[..., 0], uvd_target[..., 0], uvd_valid).item()),
+        "uvd_v_smooth_l1": float(_masked_smooth_l1_mean(uvd[..., 1], uvd_target[..., 1], uvd_valid).item()),
+        "uvd_depth_smooth_l1": float(_masked_smooth_l1_mean(uvd[..., 2], uvd_target[..., 2], uvd_valid).item()),
+        "uvd_adjacent_u_mae_pixel": float((_masked_abs_mean(pred_delta[..., 0], target_delta[..., 0], segment_valid) * pixel_scale).item()),
+        "uvd_adjacent_v_mae_pixel": float((_masked_abs_mean(pred_delta[..., 1], target_delta[..., 1], segment_valid) * pixel_scale).item()),
+        "uvd_adjacent_depth_mae_m": float((_masked_abs_mean(pred_delta[..., 2], target_delta[..., 2], segment_valid) * depth_scale).item()),
+        "uvd_adjacent_relative_smooth_l1": float(_masked_smooth_l1_mean(pred_delta, target_delta, segment_valid).item()),
+        "uvd_start_xy_mae_pixel": float((_masked_abs_mean(uvd_pred_endpoints[:, :, 0, :2], uvd_target_endpoints[:, :, 0, :2], uvd_endpoint_valid[:, :, 0]) * pixel_scale).item()),
+        "uvd_end_xy_mae_pixel": float((_masked_abs_mean(uvd_pred_endpoints[:, :, 1, :2], uvd_target_endpoints[:, :, 1, :2], uvd_endpoint_valid[:, :, 1]) * pixel_scale).item()),
+        "uvd_start_depth_mae_m": float((_masked_abs_mean(uvd_pred_endpoints[:, :, 0, 2:3], uvd_target_endpoints[:, :, 0, 2:3], uvd_endpoint_valid[:, :, 0]) * depth_scale).item()),
+        "uvd_end_depth_mae_m": float((_masked_abs_mean(uvd_pred_endpoints[:, :, 1, 2:3], uvd_target_endpoints[:, :, 1, 2:3], uvd_endpoint_valid[:, :, 1]) * depth_scale).item()),
         "pred/uvd_path_length_pixel": float(pred_path_mean.item()),
         "target/uvd_path_length_pixel": float(target_path_mean.item()),
         "uvd_path_length_mae_pixel": float(_masked_abs_mean((pred_segments * segment_valid).sum(dim=1), (target_segments * segment_valid).sum(dim=1), trace_valid).item()),
-        "endpoint_geometry_mae_m": float(
-            endpoint_depth_uvd_consistency(
-                depth_current,
-                depth_future,
-                uvd,
-                uvd_valid,
-                depth_scale=depth_scale,
-                endpoint_indices=uvd_endpoints,
-            ).item()
-        ),
         "pred/depth_current_mean": float(depth_current.mean().item()),
         "pred/depth_current_min": float(depth_current.min().item()),
         "pred/depth_current_max": float(depth_current.max().item()),
@@ -259,18 +315,30 @@ def save_prediction_bundle(
     step: int,
     predictions: dict[str, torch.Tensor],
     examples: list[dict],
+    *,
+    uvd_hand_count: int = 1,
+    uvd_order: str = "hand_major",
 ) -> Path:
     """Save small fixed-sample prediction/target bundles, not hidden states or images."""
     directory = Path(output_dir) / "test_diagnostics"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"predictions_step_{int(step):08d}.npz"
     uvd_target, uvd_valid, uvd_time, uvd_endpoints = _pad_uvd_examples(
-        examples, int(predictions["uvd"].shape[1])
+        examples,
+        int(predictions["uvd"].shape[1]),
+        hand_count=uvd_hand_count,
+        order=uvd_order,
     )
     frame_indices = np.full(uvd_valid.shape, -1, dtype=np.int64)
+    points_per_hand = frame_indices.shape[1] // int(uvd_hand_count)
     for batch_index, example in enumerate(examples):
         actual_indices = np.asarray(example["uvd_frame_indices"], dtype=np.int64)
-        frame_indices[batch_index, : min(len(actual_indices), frame_indices.shape[1])] = actual_indices[: frame_indices.shape[1]]
+        actual_indices = actual_indices[:points_per_hand]
+        if uvd_order == "time_major":
+            expanded_indices = np.repeat(actual_indices, int(uvd_hand_count))
+        else:
+            expanded_indices = np.tile(actual_indices, int(uvd_hand_count))
+        frame_indices[batch_index, : len(expanded_indices)] = expanded_indices
     np.savez_compressed(
         path,
         # NumPy cannot represent torch.bfloat16. Geometry inference follows the
