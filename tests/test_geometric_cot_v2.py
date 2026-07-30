@@ -5,7 +5,9 @@ import torch
 from starVLA.model.modules.geometric_cot_v2 import (
     GeometryTokenEmbedding,
     GeometryTokenLayout,
+    SharedDepthAttentionPool,
     append_geometry_slots,
+    build_depth_summary_interventions,
     build_geometry_full_attention_mask,
     pack_uvd_targets_time_major,
 )
@@ -135,3 +137,63 @@ def test_dual_hand_layout_rejects_collapsed_single_hand_target():
 
     with pytest.raises(ValueError, match="exactly 2 hands"):
         pack_uvd_targets_time_major(examples, layout, device=torch.device("cpu"))
+
+
+def test_shared_depth_attention_pool_returns_normalized_nonuniform_weights_and_gradients():
+    pool = SharedDepthAttentionPool(hidden_dim=2)
+    with torch.no_grad():
+        pool.norm.weight.fill_(1.0)
+        pool.norm.bias.zero_()
+        pool.score.weight.copy_(torch.tensor([[1.0, -1.0]]))
+
+    tokens = torch.tensor(
+        [[[2.0, 0.0], [0.0, 2.0], [1.0, 1.0]]],
+        requires_grad=True,
+    )
+    summary, weights = pool(tokens)
+
+    assert summary.shape == (1, 2)
+    assert weights.shape == (1, 3)
+    assert torch.allclose(weights.sum(dim=1), torch.ones(1))
+    assert weights[0, 0] > weights[0, 2] > weights[0, 1]
+
+    summary.square().sum().backward()
+    assert tokens.grad is not None
+    assert torch.isfinite(tokens.grad).all()
+    assert pool.score.weight.grad is not None
+    assert pool.score.weight.grad.abs().sum() > 0
+
+
+def test_shared_depth_attention_pool_reuses_one_parameter_set_for_both_calls():
+    pool = SharedDepthAttentionPool(hidden_dim=4)
+    current = torch.randn(2, 8, 4)
+    future = torch.randn(2, 8, 4)
+
+    current_summary, current_weights = pool(current)
+    future_summary, future_weights = pool(future)
+
+    assert current_summary.shape == future_summary.shape == (2, 4)
+    assert current_weights.shape == future_weights.shape == (2, 8)
+    assert len(list(pool.parameters())) == 3
+
+
+def test_depth_summary_interventions_preserve_zero_swap_and_cyclic_shuffle_semantics():
+    current = torch.tensor([[1.0], [2.0], [3.0]])
+    future = torch.tensor([[10.0], [20.0], [30.0]])
+
+    variants = build_depth_summary_interventions(current, future)
+
+    assert torch.equal(variants["normal"][0], current)
+    assert torch.equal(variants["normal"][1], future)
+    assert torch.equal(variants["zero"][0], torch.zeros_like(current))
+    assert torch.equal(variants["zero"][1], torch.zeros_like(future))
+    assert torch.equal(variants["swap"][0], future)
+    assert torch.equal(variants["swap"][1], current)
+    assert torch.equal(variants["shuffle"][0], torch.tensor([[3.0], [1.0], [2.0]]))
+    assert torch.equal(variants["shuffle"][1], torch.tensor([[30.0], [10.0], [20.0]]))
+
+
+def test_depth_summary_interventions_skip_shuffle_for_single_sample():
+    variants = build_depth_summary_interventions(torch.ones(1, 2), torch.zeros(1, 2))
+
+    assert set(variants) == {"normal", "zero", "swap"}

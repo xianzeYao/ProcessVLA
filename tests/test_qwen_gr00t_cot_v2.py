@@ -1,11 +1,17 @@
 import numpy as np
+import pytest
 import torch
 from types import MethodType
 
 from starVLA.model.framework.VLM4A.QwenGR00T import Qwen_GR00T
-from starVLA.model.framework.VLM4A.QwenGR00TCoTV2 import Qwen_GR00T_CoT_V2
-from starVLA.model.modules.geometric_cot_v2 import GeometryTokenLayout, PackedUVDTargets
+from starVLA.model.framework.VLM4A.QwenGR00TCoTV2 import GeometryHiddenSplit, Qwen_GR00T_CoT_V2
+from starVLA.model.modules.geometric_cot_v2 import (
+    GeometryTokenLayout,
+    PackedUVDTargets,
+    SharedDepthAttentionPool,
+)
 from starVLA.model.tools import FRAMEWORK_REGISTRY
+from starVLA.training.trainer_utils.trainer_tools import TrainerUtils
 
 
 def make_uninitialized_model(*, depth_queries=2, points=3, hands=2):
@@ -127,3 +133,115 @@ def test_predict_geometry_does_not_require_ground_truth_uvd_fields():
     output = model.predict_geometry([{"image": [], "lang": "move"}])
 
     assert output["uvd"].shape == (1, 2, 3)
+
+
+def test_old_mean_pooling_v2_checkpoint_is_rejected_explicitly():
+    model = make_uninitialized_model(depth_queries=1, points=2, hands=1)
+    torch.nn.Module.__init__(model)
+
+    with pytest.raises(RuntimeError, match="attention-pooling"):
+        model.load_state_dict(
+            {"geometry_tokens.current_depth": torch.zeros(1, 1, 1)},
+            strict=False,
+        )
+
+
+def test_partial_reload_cannot_bypass_old_v2_checkpoint_rejection(tmp_path):
+    model = make_uninitialized_model(depth_queries=1, points=2, hands=1)
+    torch.nn.Module.__init__(model)
+    model.geometry_tokens = torch.nn.Module()
+    model.geometry_tokens.register_parameter(
+        "current_depth",
+        torch.nn.Parameter(torch.zeros(1, 1, 1)),
+    )
+    model.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=1)
+    checkpoint = tmp_path / "old_mean_pool_v2.pt"
+    torch.save(
+        {"geometry_tokens.current_depth": torch.ones(1, 1, 1)},
+        checkpoint,
+    )
+
+    with pytest.raises(RuntimeError, match="attention-pooling"):
+        TrainerUtils.load_pretrained_backbones(
+            model,
+            checkpoint,
+            reload_modules="geometry_tokens",
+        )
+
+
+class _CountingDepthDecoder(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.queries = []
+
+    def forward(self, image_tokens, *, patch_hw, query, output_hw):
+        self.queries.append(query.detach().clone())
+        return query[:, :1, None, None].expand(-1, 1, *output_hw)
+
+
+def make_diagnostic_model():
+    model = make_uninitialized_model(depth_queries=2, points=2, hands=1)
+    torch.nn.Module.__init__(model)
+    model.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=2)
+    with torch.no_grad():
+        model.depth_attention_pool.score.weight.zero_()
+    model.depth_decoder = _CountingDepthDecoder()
+    model.depth_output_size = 2
+    split = GeometryHiddenSplit(
+        native=torch.zeros(2, 2, 2),
+        depth_current=torch.tensor(
+            [[[1.0, 0.0], [3.0, 0.0]], [[5.0, 0.0], [7.0, 0.0]]]
+        ),
+        depth_future=torch.tensor(
+            [[[10.0, 0.0], [14.0, 0.0]], [[20.0, 0.0], [24.0, 0.0]]]
+        ),
+        uvd=torch.zeros(2, 2, 2),
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(2, 2, dtype=torch.long)},
+            torch.ones(2, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+    model._main_image_tokens = MethodType(
+        lambda self, native, input_ids: (torch.zeros(2, 1, 2), (1, 1)),
+        model,
+    )
+    model._predict_uvd = MethodType(
+        lambda self, tokens: torch.zeros(tokens.shape[0], tokens.shape[1], 3),
+        model,
+    )
+    return model
+
+
+def test_v2_diagnostics_skip_decoder_interventions_when_disabled():
+    model = make_diagnostic_model()
+
+    output = model.predict_geometry_diagnostics(
+        [{"image": [], "lang": "move"}, {"image": [], "lang": "move"}],
+        include_decoder_interventions=False,
+    )
+
+    assert len(model.depth_decoder.queries) == 2
+    assert "decoder_interventions" not in output
+    assert output["depth_current_pool_weights"].shape == (2, 2)
+    assert output["depth_current_tokens"].shape == (2, 2, 2)
+
+
+def test_v2_diagnostics_reuse_features_for_zero_swap_shuffle_without_parameter_changes():
+    model = make_diagnostic_model()
+    before = {name: value.detach().clone() for name, value in model.state_dict().items()}
+
+    output = model.predict_geometry_diagnostics(
+        [{"image": [], "lang": "move"}, {"image": [], "lang": "move"}],
+        include_decoder_interventions=True,
+    )
+
+    assert len(model.depth_decoder.queries) == 8
+    assert set(output["decoder_interventions"]) == {"zero", "swap", "shuffle"}
+    assert torch.equal(model.depth_decoder.queries[2], torch.zeros(2, 2))
+    assert torch.equal(model.depth_decoder.queries[4], torch.tensor([[12.0, 0.0], [22.0, 0.0]]))
+    assert torch.equal(model.depth_decoder.queries[6], torch.tensor([[6.0, 0.0], [2.0, 0.0]]))
+    assert all(torch.equal(before[name], value) for name, value in model.state_dict().items())

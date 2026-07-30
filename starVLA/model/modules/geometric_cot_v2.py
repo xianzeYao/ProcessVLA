@@ -10,6 +10,46 @@ import torch
 from torch import nn
 
 
+class SharedDepthAttentionPool(nn.Module):
+    """Pool a depth-token group with one shared learned scoring function."""
+
+    def __init__(self, hidden_dim: int) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(int(hidden_dim))
+        self.score = nn.Linear(int(hidden_dim), 1, bias=False)
+
+    def forward(self, tokens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if tokens.ndim != 3:
+            raise ValueError(f"depth tokens must have shape [B,Q,H], got {tuple(tokens.shape)}")
+        scores = self.score(self.norm(tokens)).squeeze(-1)
+        weights = torch.softmax(scores.float(), dim=-1).to(dtype=tokens.dtype)
+        summary = torch.sum(tokens * weights.unsqueeze(-1), dim=1)
+        return summary, weights
+
+
+def build_depth_summary_interventions(
+    current: torch.Tensor,
+    future: torch.Tensor,
+) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    """Construct deterministic decoder-only interventions on pooled summaries."""
+
+    if current.shape != future.shape or current.ndim != 2:
+        raise ValueError(
+            f"current/future summaries must share [B,H], got {tuple(current.shape)}/{tuple(future.shape)}"
+        )
+    variants = {
+        "normal": (current, future),
+        "zero": (torch.zeros_like(current), torch.zeros_like(future)),
+        "swap": (future, current),
+    }
+    if current.shape[0] > 1:
+        variants["shuffle"] = (
+            torch.roll(current, shifts=1, dims=0),
+            torch.roll(future, shifts=1, dims=0),
+        )
+    return variants
+
+
 @dataclass(frozen=True)
 class GeometrySequenceSlices:
     """Absolute slices after geometry tokens are appended to native Qwen tokens."""

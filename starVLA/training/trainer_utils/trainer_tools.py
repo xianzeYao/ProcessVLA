@@ -273,6 +273,10 @@ class TrainerUtils:
         except Exception as e:
             raise RuntimeError(f"❌ loading checkpoint failed: {e}")
 
+        validator = getattr(model, "validate_checkpoint_state_dict", None)
+        if callable(validator):
+            validator(checkpoint)
+
         loaded_modules = []
 
         if reload_modules:  # partial load

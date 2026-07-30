@@ -25,7 +25,9 @@ from starVLA.model.modules.geometric_cot_v2 import (
     GeometryTokenEmbedding,
     GeometryTokenLayout,
     PackedUVDTargets,
+    SharedDepthAttentionPool,
     append_geometry_slots,
+    build_depth_summary_interventions,
     build_geometry_full_attention_mask,
     pack_uvd_targets_time_major,
 )
@@ -87,6 +89,7 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         self.uvd_hand_count = int(self.geometry_layout.hand_count)
         self.uvd_token_order = "time_major"
         self.geometry_tokens = GeometryTokenEmbedding(hidden_dim=hidden_dim, layout=self.geometry_layout)
+        self.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=hidden_dim)
         self.depth_decoder = SharedFiLMConvStack(
             hidden_dim=hidden_dim,
             features=int(geometry.get("depth_decoder_features", 256)),
@@ -119,6 +122,30 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         if placeholder_id is None:
             raise ValueError("Qwen tokenizer must define pad_token_id or eos_token_id for geometry placeholders")
         self.geometry_placeholder_token_id = int(placeholder_id)
+
+    @staticmethod
+    def validate_checkpoint_state_dict(state_dict) -> None:
+        """Reject old mean-pooled V2 checkpoints before full or partial loading."""
+
+        keys = tuple(str(key) for key in state_dict)
+        has_v2_geometry = any(
+            key.startswith("geometry_tokens.") or ".geometry_tokens." in key
+            for key in keys
+        )
+        has_attention_pool = any(
+            key.startswith("depth_attention_pool.") or ".depth_attention_pool." in key
+            for key in keys
+        )
+        if has_v2_geometry and not has_attention_pool:
+            raise RuntimeError(
+                "This checkpoint predates the V2 shared depth attention-pooling module. "
+                "Mean-pooling V2 checkpoints are intentionally incompatible; start a new "
+                "V2 run or load a checkpoint containing depth_attention_pool parameters."
+            )
+
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        self.validate_checkpoint_state_dict(state_dict)
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     @property
     def geometry_query(self) -> nn.Module:
@@ -251,6 +278,47 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         raw = self.uvd_head(_cast_to_module_dtype(tokens, self.uvd_head))
         return torch.cat([torch.sigmoid(raw[..., :2]), F.softplus(raw[..., 2:3])], dim=-1)
 
+    def _pool_depth_summaries(
+        self,
+        split: GeometryHiddenSplit,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        current_summary, current_weights = self.depth_attention_pool(split.depth_current)
+        future_summary, future_weights = self.depth_attention_pool(split.depth_future)
+        return current_summary, future_summary, current_weights, future_weights
+
+    def _decode_depth_summaries(
+        self,
+        image_tokens: torch.Tensor,
+        *,
+        patch_hw: tuple[int, int],
+        current_summary: torch.Tensor,
+        future_summary: torch.Tensor,
+        timing_callback: Callable[[str, Callable[[], Any]], Any] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        def timed(name: str, fn: Callable[[], Any]) -> Any:
+            return timing_callback(name, fn) if timing_callback is not None else fn()
+
+        output_hw = (self.depth_output_size, self.depth_output_size)
+        depth_current = timed(
+            "depth_current_ms",
+            lambda: self.depth_decoder(
+                image_tokens,
+                patch_hw=patch_hw,
+                query=current_summary,
+                output_hw=output_hw,
+            ),
+        )
+        depth_future = timed(
+            "depth_future_ms",
+            lambda: self.depth_decoder(
+                image_tokens,
+                patch_hw=patch_hw,
+                query=future_summary,
+                output_hw=output_hw,
+            ),
+        )
+        return depth_current, depth_future
+
     def _decode_geometry(
         self,
         split: GeometryHiddenSplit,
@@ -265,26 +333,13 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             "image_token_extract_ms",
             lambda: self._main_image_tokens(split.native, qwen_inputs["input_ids"]),
         )
-        current_query = split.depth_current.mean(dim=1)
-        future_query = split.depth_future.mean(dim=1)
-        output_hw = (self.depth_output_size, self.depth_output_size)
-        depth_current = timed(
-            "depth_current_ms",
-            lambda: self.depth_decoder(
-                image_tokens,
-                patch_hw=patch_hw,
-                query=current_query,
-                output_hw=output_hw,
-            ),
-        )
-        depth_future = timed(
-            "depth_future_ms",
-            lambda: self.depth_decoder(
-                image_tokens,
-                patch_hw=patch_hw,
-                query=future_query,
-                output_hw=output_hw,
-            ),
+        current_summary, future_summary, _, _ = self._pool_depth_summaries(split)
+        depth_current, depth_future = self._decode_depth_summaries(
+            image_tokens,
+            patch_hw=patch_hw,
+            current_summary=current_summary,
+            future_summary=future_summary,
+            timing_callback=timing_callback,
         )
         uvd = timed("uvd_head_ms", lambda: self._predict_uvd(split.uvd))
         return depth_current, depth_future, uvd
@@ -369,6 +424,56 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         split = self._run_geometry_backbone(qwen_inputs)
         depth_current, depth_future, uvd = self._decode_geometry(split, qwen_inputs)
         return {"depth_current": depth_current, "depth_future": depth_future, "uvd": uvd}
+
+    @torch.inference_mode()
+    def predict_geometry_diagnostics(
+        self,
+        examples: List[dict],
+        *,
+        include_decoder_interventions: bool = False,
+    ) -> dict[str, Any]:
+        """Decode geometry once and optionally perturb only the depth summaries."""
+
+        if not isinstance(examples, list):
+            examples = [examples]
+        qwen_inputs, _ = self._build_native_inputs(examples, inference=True)
+        split = self._run_geometry_backbone(qwen_inputs)
+        image_tokens, patch_hw = self._main_image_tokens(split.native, qwen_inputs["input_ids"])
+        current_summary, future_summary, current_weights, future_weights = self._pool_depth_summaries(split)
+        depth_current, depth_future = self._decode_depth_summaries(
+            image_tokens,
+            patch_hw=patch_hw,
+            current_summary=current_summary,
+            future_summary=future_summary,
+        )
+        output: dict[str, Any] = {
+            "depth_current": depth_current,
+            "depth_future": depth_future,
+            "uvd": self._predict_uvd(split.uvd),
+            "depth_current_tokens": split.depth_current,
+            "depth_future_tokens": split.depth_future,
+            "uvd_tokens": split.uvd,
+            "depth_current_pool_weights": current_weights,
+            "depth_future_pool_weights": future_weights,
+        }
+        if include_decoder_interventions:
+            interventions = {}
+            variants = build_depth_summary_interventions(current_summary, future_summary)
+            for name, (variant_current, variant_future) in variants.items():
+                if name == "normal":
+                    continue
+                variant_depth_current, variant_depth_future = self._decode_depth_summaries(
+                    image_tokens,
+                    patch_hw=patch_hw,
+                    current_summary=variant_current,
+                    future_summary=variant_future,
+                )
+                interventions[name] = {
+                    "depth_current": variant_depth_current,
+                    "depth_future": variant_depth_future,
+                }
+            output["decoder_interventions"] = interventions
+        return output
 
     @torch.inference_mode()
     def predict_action(self, examples: List[dict], **kwargs) -> dict:
