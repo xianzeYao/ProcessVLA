@@ -84,6 +84,9 @@ trainer:
     enabled: false
     log_module_gradients: true
     module_gradient_interval: 100
+    log_token_utilization: true
+    log_decoder_reliance: true
+    log_uvd_time_metrics: true
   optimizer:
     betas: [0.9, 0.95]
     eps: 1.0e-08

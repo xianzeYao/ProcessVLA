@@ -27,9 +27,13 @@ from starVLA.training.trainer_utils.config_tracker import wrap_config
 from starVLA.training.cot_test_diagnostics import (
     collect_batch_valid_ratios,
     collect_module_grad_norms,
+    compute_decoder_reliance_metrics,
+    compute_gradient_clipping_metrics,
     install_module_grad_norm_hooks,
     compute_geometry_metrics,
+    compute_token_utilization_metrics,
     save_prediction_bundle,
+    resolve_post_step_gradient_norm,
     write_run_manifest,
 )
 
@@ -70,7 +74,10 @@ class CotV1Trainer(VLATrainer):
             module_grad_metrics = {}
             grad_diagnostics_time = 0.0
             hook_state = None
-            if bool(diagnostic_config.get("log_module_gradients", False)):
+            if (
+                bool(diagnostic_config.get("enabled", False))
+                and bool(diagnostic_config.get("log_module_gradients", False))
+            ):
                 gradient_interval = max(
                     int(diagnostic_config.get("module_gradient_interval", 100)), 1
                 )
@@ -88,6 +95,12 @@ class CotV1Trainer(VLATrainer):
             if self.config.trainer.gradient_clipping is not None:
                 grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
             self.optimizer.step()
+            if (
+                grad_norm is None
+                and self.config.trainer.gradient_clipping is not None
+                and self.accelerator.sync_gradients
+            ):
+                grad_norm = resolve_post_step_gradient_norm(None, self.model)
             if self.accelerator.sync_gradients:
                 self.lr_scheduler.step()
 
@@ -128,6 +141,12 @@ class CotV1Trainer(VLATrainer):
         metrics["diagnostic/module_gradients_collected"] = float(hook_state is not None)
         if grad_norm is not None:
             metrics["train/grad_norm"] = grad_norm.item() if hasattr(grad_norm, "item") else float(grad_norm)
+            metrics.update(
+                compute_gradient_clipping_metrics(
+                    pre_clip_norm=grad_norm,
+                    threshold=float(self.config.trainer.gradient_clipping),
+                )
+            )
         metrics.update(module_grad_metrics)
         if bool(diagnostic_config.get("enabled", False)):
             metrics.update(collect_batch_valid_ratios(batch_vla))
@@ -150,7 +169,21 @@ class CotV1Trainer(VLATrainer):
         model = self.accelerator.unwrap_model(self.model)
         was_training = model.training
         model.eval()
-        predictions = model.predict_geometry(self._diagnostic_examples)
+        log_token_utilization = bool(
+            diagnostic_config.get("log_token_utilization", False)
+        )
+        log_decoder_reliance = bool(
+            diagnostic_config.get("log_decoder_reliance", False)
+        )
+        if hasattr(model, "predict_geometry_diagnostics") and (
+            log_token_utilization or log_decoder_reliance
+        ):
+            predictions = model.predict_geometry_diagnostics(
+                self._diagnostic_examples,
+                include_decoder_interventions=log_decoder_reliance,
+            )
+        else:
+            predictions = model.predict_geometry(self._diagnostic_examples)
         if was_training:
             model.train()
         geometry_metrics = compute_geometry_metrics(
@@ -160,7 +193,39 @@ class CotV1Trainer(VLATrainer):
             image_size=int(model.depth_output_size),
             uvd_hand_count=int(getattr(model, "uvd_hand_count", 1)),
             uvd_order=str(getattr(model, "uvd_token_order", "hand_major")),
+            include_uvd_time_metrics=bool(
+                diagnostic_config.get("log_uvd_time_metrics", False)
+            ),
         )
+        if log_token_utilization:
+            geometry_metrics.update(
+                compute_token_utilization_metrics(
+                    predictions["depth_current_tokens"],
+                    prefix="depth_current",
+                    attention_weights=predictions["depth_current_pool_weights"],
+                )
+            )
+            geometry_metrics.update(
+                compute_token_utilization_metrics(
+                    predictions["depth_future_tokens"],
+                    prefix="depth_future",
+                    attention_weights=predictions["depth_future_pool_weights"],
+                )
+            )
+            geometry_metrics.update(
+                compute_token_utilization_metrics(
+                    predictions["uvd_tokens"],
+                    prefix="uvd",
+                )
+            )
+        if log_decoder_reliance:
+            geometry_metrics.update(
+                compute_decoder_reliance_metrics(
+                    predictions,
+                    self._diagnostic_examples,
+                    depth_scale=float(model.uvd_depth_scale),
+                )
+            )
         step_metrics.update({f"diagnostic/{key}": value for key, value in geometry_metrics.items()})
         if self.accelerator.is_main_process:
             output_dir = Path(self.config.output_dir)

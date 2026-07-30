@@ -5,6 +5,7 @@ import torch
 from omegaconf import OmegaConf
 from torch import nn
 
+import starVLA.training.train_starvla_cot_v1 as cot_trainer_module
 from starVLA.training.train_starvla_cot_v1 import CotV1Trainer
 
 
@@ -109,6 +110,10 @@ def test_cot_trainer_accepts_four_loss_objective_without_geometry_consistency():
     assert metrics["depth_future_loss"] == 0.25
     assert metrics["uvd_loss"] == 0.125
     assert all("geometry" not in key for key in metrics)
+    assert metrics["train/grad_norm_pre_clip"] == pytest.approx(2.37)
+    assert metrics["train/grad_clip_threshold"] == 1.0
+    assert metrics["train/grad_clip_triggered"] == 1.0
+    assert metrics["train/grad_clip_scale"] == pytest.approx(1.0 / 2.37)
 
 
 def test_cot_trainer_logs_v2_uvd_absolute_and_relative_components():
@@ -132,3 +137,31 @@ def test_cot_trainer_logs_v2_uvd_absolute_and_relative_components():
     assert metrics["uvd_loss"] == pytest.approx(0.15)
     assert metrics["weighted_uvd_absolute_loss"] == pytest.approx(0.62 * 0.125)
     assert metrics["weighted_uvd_relative_loss"] == pytest.approx(0.62 * 0.1 * 0.25)
+
+
+def test_disabled_diagnostics_never_install_module_gradient_hooks(monkeypatch):
+    model = _FourLossModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    config = OmegaConf.create(
+        {
+            "datasets": {"vla_data": {"per_device_batch_size": 1}},
+            "trainer": {
+                "gradient_clipping": 1.0,
+                "test_diagnostics": {
+                    "enabled": False,
+                    "log_module_gradients": True,
+                    "module_gradient_interval": 1,
+                },
+            },
+        }
+    )
+    trainer = CotV1Trainer(config, model, [], optimizer, _Scheduler(), _Accelerator())
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("disabled diagnostics must not install gradient hooks")
+
+    monkeypatch.setattr(cot_trainer_module, "install_module_grad_norm_hooks", fail_if_called)
+
+    metrics = trainer._train_step([])
+
+    assert metrics["diagnostic/module_gradients_collected"] == 0.0

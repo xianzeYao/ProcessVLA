@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import math
 import os
 import subprocess
 import sys
@@ -42,6 +43,161 @@ def _masked_smooth_l1_mean(
     while mask.ndim < values.ndim:
         mask = mask.unsqueeze(-1)
     return (values * mask).sum() / mask.expand_as(values).sum().clamp_min(1.0)
+
+
+def compute_gradient_clipping_metrics(
+    *,
+    pre_clip_norm: float | torch.Tensor,
+    threshold: float,
+    eps: float = 1.0e-12,
+) -> dict[str, float]:
+    """Report the already-computed pre-clip norm and implied clipping scale."""
+
+    norm = float(pre_clip_norm.item() if hasattr(pre_clip_norm, "item") else pre_clip_norm)
+    threshold = float(threshold)
+    if not np.isfinite(norm) or norm < 0.0:
+        raise ValueError(f"pre_clip_norm must be finite and non-negative, got {norm}")
+    if not np.isfinite(threshold) or threshold <= 0.0:
+        raise ValueError(f"gradient clipping threshold must be positive and finite, got {threshold}")
+    scale = min(1.0, threshold / max(norm, float(eps)))
+    return {
+        "train/grad_norm_pre_clip": norm,
+        "train/grad_clip_threshold": threshold,
+        "train/grad_clip_triggered": float(norm > threshold),
+        "train/grad_clip_scale": scale,
+    }
+
+
+def resolve_post_step_gradient_norm(
+    accelerator_norm: float | torch.Tensor | None,
+    model: torch.nn.Module,
+) -> float | None:
+    """Use Accelerate's norm or DeepSpeed's post-step cached global norm."""
+
+    value = accelerator_norm
+    if value is None:
+        getter = getattr(model, "get_global_grad_norm", None)
+        value = getter() if callable(getter) else None
+    if value is None:
+        return None
+    return float(value.item() if hasattr(value, "item") else value)
+
+
+def compute_token_utilization_metrics(
+    tokens: torch.Tensor,
+    *,
+    prefix: str,
+    attention_weights: torch.Tensor | None = None,
+) -> dict[str, float]:
+    """Summarize token diversity and optional attention-pooling utilization."""
+
+    if tokens.ndim != 3:
+        raise ValueError(f"tokens must have shape [B,Q,H], got {tuple(tokens.shape)}")
+    token_values = tokens.detach().float()
+    batch_size, token_count, _ = token_values.shape
+    if token_count < 1:
+        raise ValueError("token_count must be positive")
+
+    normalized = F.normalize(token_values, dim=-1, eps=1.0e-12)
+    cosine = normalized @ normalized.transpose(1, 2)
+    if token_count == 1:
+        mean_offdiag_cosine = token_values.new_zeros(())
+    else:
+        diagonal = torch.diagonal(cosine, dim1=1, dim2=2).sum(dim=1)
+        mean_offdiag_cosine = (
+            (cosine.sum(dim=(1, 2)) - diagonal) / float(token_count * (token_count - 1))
+        ).mean()
+
+    effective_ranks = []
+    for sample in token_values:
+        centered = sample - sample.mean(dim=0, keepdim=True)
+        gram = centered @ centered.transpose(0, 1)
+        eigenvalues = torch.linalg.eigvalsh(gram).clamp_min(0.0)
+        total = eigenvalues.sum()
+        if float(total.item()) <= 1.0e-12:
+            effective_ranks.append(eigenvalues.new_zeros(()))
+            continue
+        probabilities = eigenvalues / total
+        positive = probabilities > 0
+        entropy = -(probabilities[positive] * probabilities[positive].log()).sum()
+        effective_ranks.append(entropy.exp())
+
+    metrics = {
+        f"{prefix}/token_mean_offdiag_cosine": float(mean_offdiag_cosine.item()),
+        f"{prefix}/token_cov_effective_rank": float(torch.stack(effective_ranks).mean().item()),
+    }
+    if attention_weights is not None:
+        weights = attention_weights.detach().float()
+        if weights.shape != (batch_size, token_count):
+            raise ValueError(
+                f"attention_weights must have shape {(batch_size, token_count)}, got {tuple(weights.shape)}"
+            )
+        if bool((weights < 0).any()):
+            raise ValueError("attention_weights must be non-negative")
+        weights = weights / weights.sum(dim=-1, keepdim=True).clamp_min(1.0e-12)
+        entropy = -(weights * weights.clamp_min(1.0e-12).log()).sum(dim=-1)
+        normalized_entropy = (
+            entropy / math.log(token_count)
+            if token_count > 1
+            else torch.zeros_like(entropy)
+        )
+        metrics.update(
+            {
+                f"{prefix}/attention_entropy_nats": float(entropy.mean().item()),
+                f"{prefix}/attention_entropy_normalized": float(normalized_entropy.mean().item()),
+                f"{prefix}/attention_max_weight": float(weights.max(dim=-1).values.mean().item()),
+                f"{prefix}/attention_effective_token_count": float(entropy.exp().mean().item()),
+            }
+        )
+    return metrics
+
+
+def compute_decoder_reliance_metrics(
+    predictions: dict[str, Any],
+    examples: list[dict],
+    *,
+    depth_scale: float,
+) -> dict[str, float]:
+    """Compare decoder-only summary interventions with normal outputs and targets."""
+
+    interventions = predictions.get("decoder_interventions", {})
+    if not interventions:
+        return {}
+    device = predictions["depth_current"].device
+    targets = {
+        "depth_current": torch.as_tensor(
+            np.stack([example["depth_current"] for example in examples]),
+            device=device,
+        ),
+        "depth_future": torch.as_tensor(
+            np.stack([example["depth_future"] for example in examples]),
+            device=device,
+        ),
+    }
+    valid = {
+        "depth_current": torch.as_tensor(
+            np.stack([example["depth_current_valid"] for example in examples]),
+            device=device,
+        ),
+        "depth_future": torch.as_tensor(
+            np.stack([example["depth_future_valid"] for example in examples]),
+            device=device,
+        ),
+    }
+    metrics = {}
+    for variant_name, variant_predictions in interventions.items():
+        for depth_name in ("depth_current", "depth_future"):
+            variant = variant_predictions[depth_name]
+            normal = predictions[depth_name]
+            prefix = f"decoder_reliance/{variant_name}/{depth_name}"
+            metrics[f"{prefix}_delta_mae_m"] = float(
+                (_masked_abs_mean(variant, normal, valid[depth_name]) * depth_scale).item()
+            )
+            metrics[f"{prefix}_target_mae_m"] = float(
+                (_masked_abs_mean(variant, targets[depth_name], valid[depth_name]) * depth_scale).item()
+            )
+    return metrics
+
 
 def collect_batch_valid_ratios(examples: list[dict]) -> dict[str, float]:
     """Summarize label validity without retaining tensors or image data."""
@@ -224,6 +380,7 @@ def compute_geometry_metrics(
     image_size: int,
     uvd_hand_count: int = 1,
     uvd_order: str = "hand_major",
+    include_uvd_time_metrics: bool = False,
 ) -> dict[str, float]:
     """Compute fixed-sample depth/UVD metrics for a diagnostics checkpoint."""
     device = predictions["depth_current"].device
@@ -306,6 +463,31 @@ def compute_geometry_metrics(
         "pred/uvd_v_max": float(uvd[..., 1].max().item()),
         "pred/uvd_depth_mean": float(uvd[..., 2].mean().item()),
     }
+    if include_uvd_time_metrics:
+        for time_index in range(points_per_hand):
+            time_valid = valid_tracks[:, time_index]
+            pred_time = uvd_tracks[:, time_index]
+            target_time = target_tracks[:, time_index]
+            valid_count = int(time_valid.sum().item())
+            metrics[f"uvd/time_{time_index}/valid_count"] = float(valid_count)
+            metrics[f"uvd/time_{time_index}/valid_ratio"] = float(
+                time_valid.float().mean().item()
+            )
+            if valid_count == 0:
+                continue
+            metrics.update(
+                {
+                    f"uvd/time_{time_index}/u_mae_pixel": float(
+                        (_masked_abs_mean(pred_time[..., 0], target_time[..., 0], time_valid) * pixel_scale).item()
+                    ),
+                    f"uvd/time_{time_index}/v_mae_pixel": float(
+                        (_masked_abs_mean(pred_time[..., 1], target_time[..., 1], time_valid) * pixel_scale).item()
+                    ),
+                    f"uvd/time_{time_index}/depth_mae_m": float(
+                        (_masked_abs_mean(pred_time[..., 2], target_time[..., 2], time_valid) * depth_scale).item()
+                    ),
+                }
+            )
     metrics.update(collect_batch_valid_ratios(examples))
     return metrics
 
