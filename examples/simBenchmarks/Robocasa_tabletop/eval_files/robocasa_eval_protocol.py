@@ -38,14 +38,18 @@ def build_manifest(
     save_video: bool,
 ) -> dict[str, Any]:
     """Describe every task and output path before evaluation starts."""
-    if len(gpus) != 4:
-        raise ValueError(f"RoboCasa evaluation requires exactly 4 GPUs, got {len(gpus)}")
+    if not 1 <= len(gpus) <= 24:
+        raise ValueError(
+            f"RoboCasa evaluation requires between 1 and 24 GPUs, got {len(gpus)}"
+        )
     if len(env_names) != 24:
         raise ValueError(f"RoboCasa evaluation requires exactly 24 tasks, got {len(env_names)}")
     if num_episodes <= 0:
         raise ValueError("num_episodes must be positive")
 
     gpu_values = [int(gpu) for gpu in gpus]
+    if len(set(gpu_values)) != len(gpu_values):
+        raise ValueError("RoboCasa evaluation requires unique GPU identifiers")
     tasks = []
     for task_index, env_name in enumerate(env_names):
         worker_id = task_index % len(gpu_values)
