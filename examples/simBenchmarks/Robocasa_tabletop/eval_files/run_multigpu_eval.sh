@@ -18,7 +18,7 @@ export PYTHONUNBUFFERED=1
 POLICY_PYTHON="${POLICY_PYTHON:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python}"
 MANIFEST_PYTHON="${MANIFEST_PYTHON:-${POLICY_PYTHON}}"
 ROBOCASA_PYTHON="${ROBOCASA_PYTHON:-/root/data/yxz/miniforge3/envs/robocasa/bin/python}"
-GPUS="${GPUS:-4,5,6,7}"
+GPUS="${GPUS-4,5,6,7}"
 BASE_PORT="${BASE_PORT:-6398}"
 NUM_EPISODES="${NUM_EPISODES:-50}"
 N_ENVS="${N_ENVS:-1}"
@@ -43,7 +43,18 @@ fi
 
 IFS=',' read -r -a GPU_LIST <<< "${GPUS}"
 NUM_WORKERS="${#GPU_LIST[@]}"
-(( NUM_WORKERS == 4 )) || { echo "RoboCasa evaluation requires exactly 4 GPUs; got ${NUM_WORKERS}" >&2; exit 2; }
+if (( NUM_WORKERS < 1 || NUM_WORKERS > 24 )); then
+  echo "RoboCasa evaluation requires between 1 and 24 GPUs; got ${NUM_WORKERS}" >&2
+  exit 2
+fi
+declare -A SEEN_GPUS=()
+for gpu in "${GPU_LIST[@]}"; do
+  if [[ -n "${SEEN_GPUS[$gpu]:-}" ]]; then
+    echo "RoboCasa evaluation requires unique GPU identifiers; duplicate ${gpu}" >&2
+    exit 2
+  fi
+  SEEN_GPUS[$gpu]=1
+done
 
 ENV_NAMES=(
   gr1_unified/PnPCupToDrawerClose_GR1ArmsAndWaistFourierHands_Env

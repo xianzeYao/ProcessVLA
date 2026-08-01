@@ -1,9 +1,20 @@
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.robocasa_eval_protocol import (
     build_manifest,
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LAUNCHER = (
+    REPO_ROOT
+    / "examples/simBenchmarks/Robocasa_tabletop/eval_files/run_multigpu_eval.sh"
 )
 
 
@@ -45,3 +56,62 @@ def test_build_manifest_supports_eight_unique_gpus():
 def test_build_manifest_rejects_invalid_gpu_lists(gpus, message):
     with pytest.raises(ValueError, match=message):
         _manifest(gpus)
+
+
+def _run_launcher(tmp_path: Path, *, gpus: str, run_timestamp: str):
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.touch()
+    output_dir = tmp_path / "outputs"
+    env = os.environ.copy()
+    env.update(
+        {
+            "CHECKPOINT": str(checkpoint),
+            "GPUS": gpus,
+            "DRY_RUN": "1",
+            "NUM_EPISODES": "1",
+            "OUTPUT_DIR": str(output_dir),
+            "RUN_TIMESTAMP": run_timestamp,
+            "POLICY_PYTHON": sys.executable,
+            "MANIFEST_PYTHON": sys.executable,
+            "ROBOCASA_PYTHON": sys.executable,
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(LAUNCHER)],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, output_dir / "robocasa" / run_timestamp
+
+
+def test_launcher_dry_run_supports_eight_unique_gpus(tmp_path):
+    result, run_dir = _run_launcher(
+        tmp_path, gpus="0,1,2,3,4,5,6,7", run_timestamp="eight-gpus"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("[robocasa] plan task=") == 24
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    worker_ids = [task["worker_id"] for task in manifest["tasks"]]
+    assert {worker: worker_ids.count(worker) for worker in range(8)} == {
+        worker: 3 for worker in range(8)
+    }
+
+
+def test_launcher_rejects_duplicate_gpus(tmp_path):
+    result, _ = _run_launcher(
+        tmp_path, gpus="0,1,1", run_timestamp="duplicate-gpus"
+    )
+
+    assert result.returncode != 0
+    assert "unique GPU" in result.stderr
+
+
+def test_launcher_rejects_empty_gpu_list(tmp_path):
+    result, _ = _run_launcher(tmp_path, gpus="", run_timestamp="empty-gpus")
+
+    assert result.returncode != 0
+    assert "between 1 and 24" in result.stderr
