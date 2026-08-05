@@ -279,8 +279,11 @@ class FlowmatchingActionHead(nn.Module):
         #   sequence so the DiT has dedicated "planning" slots.
         #   num_target_vision_tokens controls how many such tokens are added.
         # ------------------------------------------------------------------
-        self.future_tokens = nn.Embedding(config.num_target_vision_tokens, self.input_embedding_dim)
-        nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
+        if config.num_target_vision_tokens > 0:
+            self.future_tokens = nn.Embedding(config.num_target_vision_tokens, self.input_embedding_dim)
+            nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
+        else:
+            self.future_tokens = None
 
         # ------------------------------------------------------------------
         # Positional embedding over the action sequence
@@ -340,12 +343,13 @@ class FlowmatchingActionHead(nn.Module):
             action_features = action_features + pos_embs
 
         # state and action embedding along sequence dimension.
-        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-        sa_embs = (
-            torch.cat((state_features, future_tokens, action_features), dim=1)
-            if state_features is not None
-            else torch.cat((future_tokens, action_features), dim=1)
-        )
+        sa_features = [action_features]
+        if self.future_tokens is not None:
+            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
+            sa_features.insert(0, future_tokens)
+        if state_features is not None:
+            sa_features.insert(0, state_features)
+        sa_embs = torch.cat(sa_features, dim=1) if len(sa_features) > 1 else action_features
 
         # Join VLM features with state and action embedding along sequence dimension.
         model_output = self.model(
@@ -398,12 +402,13 @@ class FlowmatchingActionHead(nn.Module):
                 action_features = action_features + pos_embs
 
             # Join vision, language, state and action embedding along sequence dimension.
-            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-            sa_embs = (
-                torch.cat((state_features, future_tokens, action_features), dim=1)
-                if state_features is not None
-                else torch.cat((future_tokens, action_features), dim=1)
-            )
+            sa_features = [action_features]
+            if self.future_tokens is not None:
+                future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
+                sa_features.insert(0, future_tokens)
+            if state_features is not None:
+                sa_features.insert(0, state_features)
+            sa_embs = torch.cat(sa_features, dim=1) if len(sa_features) > 1 else action_features
 
             # Run model forward.
             model_output = self.model(

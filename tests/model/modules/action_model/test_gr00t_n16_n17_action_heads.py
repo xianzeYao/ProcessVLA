@@ -414,5 +414,37 @@ def test_legacy_action_head_zero_future_tokens_uses_only_action_slots(monkeypatc
     )
 
     assert loss.ndim == 0
-    assert head.future_tokens.weight.shape == (0, 768)
+    assert capture_model.hidden_states.shape == (2, 3, 768)
+
+
+def test_legacy_action_head_zero_future_tokens_registers_no_empty_parameters():
+    config = _tiny_full_config(
+        action_model_type="DiT-B",
+        state_dim=0,
+        num_target_vision_tokens=0,
+    )
+
+    head = LegacyActionHead(config)
+
+    assert all(parameter.numel() > 0 for parameter in head.parameters())
+
+
+def test_legacy_action_head_zero_future_tokens_predicts_with_only_action_slots():
+    config = _tiny_full_config(
+        action_model_type="DiT-B",
+        state_dim=0,
+        num_target_vision_tokens=0,
+    )
+    head = LegacyActionHead(config)
+    capture_model = _CaptureActionModel(output_dim=8)
+    head.model = capture_model
+    batch = _n16_batch()
+
+    actions = head.predict_action(
+        batch["vl_embs"],
+        state=None,
+        encoder_attention_mask=batch["encoder_attention_mask"],
+    )
+
+    assert actions.shape == batch["actions"].shape
     assert capture_model.hidden_states.shape == (2, 3, 768)
