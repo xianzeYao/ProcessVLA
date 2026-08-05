@@ -331,6 +331,93 @@ class DiT(ModelMixin, ConfigMixin):
             return self.proj_out_2(hidden_states)
 
 
+class AlternateVLDiT(DiT):
+    """DiT with alternating text-cross, self, image-cross, self attention.
+
+    Cross-attention blocks see the complete VLM sequence but receive a mask
+    selecting either non-image or image tokens. Self-attention blocks operate
+    only on the state/action sequence. This keeps the parameter layout close
+    to :class:`DiT` while matching the N1.6/N1.7 attention schedule.
+    """
+
+    def __init__(self, attend_text_every_n_blocks: int = 2, **kwargs):
+        if attend_text_every_n_blocks <= 0:
+            raise ValueError("attend_text_every_n_blocks must be positive")
+        kwargs["interleave_self_attention"] = True
+        kwargs["use_canonical_forward"] = True
+        super().__init__(**kwargs)
+        self.attend_text_every_n_blocks = attend_text_every_n_blocks
+
+    @staticmethod
+    def _validate_mask(mask, reference, name):
+        if mask is None:
+            raise ValueError(f"{name} is required")
+        if mask.shape != reference.shape[:2]:
+            raise ValueError(
+                f"{name} must have shape {tuple(reference.shape[:2])}, got {tuple(mask.shape)}"
+            )
+        return mask.to(device=reference.device, dtype=torch.bool)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        timestep: Optional[torch.LongTensor] = None,
+        return_all_hidden_states: bool = False,
+        encoder_attention_mask=None,
+        image_mask=None,
+        backbone_attention_mask=None,
+        return_pre_output: bool = False,
+    ):
+        if isinstance(encoder_hidden_states, (list, tuple)):
+            raise TypeError("AlternateVLDiT expects one final VLM hidden-state tensor")
+
+        image_mask = self._validate_mask(image_mask, encoder_hidden_states, "image_mask")
+        valid_mask = backbone_attention_mask if backbone_attention_mask is not None else encoder_attention_mask
+        if valid_mask is None:
+            valid_mask = torch.ones_like(image_mask)
+        else:
+            valid_mask = self._validate_mask(valid_mask, encoder_hidden_states, "encoder_attention_mask")
+
+        text_mask = valid_mask & ~image_mask
+        image_mask = valid_mask & image_mask
+        temb = self.timestep_encoder(timestep)
+        hidden_states = hidden_states.contiguous()
+        encoder_hidden_states = encoder_hidden_states.contiguous()
+        all_hidden_states = [hidden_states]
+
+        for idx, block in enumerate(self.transformer_blocks):
+            if idx % 2 == 1:
+                block_encoder_hidden_states = None
+                block_encoder_attention_mask = None
+            else:
+                cross_attention_slot = idx // 2
+                attends_text = cross_attention_slot % self.attend_text_every_n_blocks == 0
+                block_encoder_hidden_states = encoder_hidden_states
+                block_encoder_attention_mask = text_mask if attends_text else image_mask
+
+            hidden_states = block(
+                hidden_states,
+                attention_mask=None,
+                encoder_hidden_states=block_encoder_hidden_states,
+                encoder_attention_mask=block_encoder_attention_mask,
+                temb=temb,
+            )
+            all_hidden_states.append(hidden_states)
+
+        if return_pre_output:
+            if return_all_hidden_states:
+                return hidden_states, all_hidden_states
+            return hidden_states
+
+        shift, scale = self.proj_out_1(F.silu(temb)).chunk(2, dim=1)
+        hidden_states = self.norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]
+        output = self.proj_out_2(hidden_states)
+        if return_all_hidden_states:
+            return output, all_hidden_states
+        return output
+
+
 class SelfAttentionTransformer(ModelMixin, ConfigMixin):
     _supports_gradient_checkpointing = True
 
@@ -384,14 +471,19 @@ class SelfAttentionTransformer(ModelMixin, ConfigMixin):
         self,
         hidden_states: torch.Tensor,  # Shape: (B, T, D)
         return_all_hidden_states: bool = False,
+        attention_mask: Optional[torch.Tensor] = None,
     ):
         # Process through transformer blocks - single pass through the blocks
         hidden_states = hidden_states.contiguous()
         all_hidden_states = [hidden_states]
 
         # Process through transformer blocks
-        for idx, block in enumerate(self.transformer_blocks):
-            hidden_states = block(hidden_states)
+        for block in self.transformer_blocks:
+            hidden_states = block(
+                hidden_states,
+                attention_mask=attention_mask,
+                encoder_attention_mask=attention_mask,
+            )
             all_hidden_states.append(hidden_states)
 
         if return_all_hidden_states:
