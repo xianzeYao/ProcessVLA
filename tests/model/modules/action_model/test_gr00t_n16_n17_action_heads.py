@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+import yaml
 from torch import nn
 
 from starVLA.model.modules.action_model.flow_matching_head.cross_attention_dit import AlternateVLDiT, DiT
+from starVLA.model.modules.action_model.GR00T_ActionHeader import FlowmatchingActionHead as LegacyActionHead
 from starVLA.model.modules.action_model.GR00T_N16_ActionHeader import N16FlowmatchingActionHead
 from starVLA.model.modules.action_model.GR00T_N17_ActionHeader import N17FlowmatchingActionHead
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_ROBOCASA_COT_V2_CONFIG = (
+    _REPO_ROOT / "examples/modelExtensions/CoT/configs/qwen35_gr00t_robocasa_fourier_CoT_v2.yaml"
+)
+_ROBOCASA_COT_V2_Q0_CONFIG = (
+    _REPO_ROOT / "examples/modelExtensions/CoT/configs/qwen35_gr00t_robocasa_fourier_CoT_v2_q0.yaml"
+)
 
 
 @dataclass
@@ -359,3 +371,48 @@ def test_n17_vlm_refinement_ignores_padded_token_values():
     changed_features, _, _ = head._normalize_vlm_inputs(changed_padding_vlm, valid_mask, image_mask)
 
     assert torch.allclose(base_features[:, :3], changed_features[:, :3], atol=1e-6, rtol=1e-5)
+
+
+def test_robocasa_cot_v2_q0_config_changes_only_run_id_and_future_tokens():
+    with _ROBOCASA_COT_V2_CONFIG.open() as source_file:
+        source = yaml.safe_load(source_file)
+    with _ROBOCASA_COT_V2_Q0_CONFIG.open() as q0_file:
+        q0 = yaml.safe_load(q0_file)
+
+    assert q0["run_id"] == "qwen35_gr00t_robocasa_fourier_CoT_v2_q0_8gpu_bs16"
+    assert q0["framework"]["action_model"]["num_target_vision_tokens"] == 0
+
+    normalized_q0 = deepcopy(q0)
+    normalized_q0["run_id"] = source["run_id"]
+    normalized_q0["framework"]["action_model"]["num_target_vision_tokens"] = source["framework"][
+        "action_model"
+    ]["num_target_vision_tokens"]
+    assert normalized_q0 == source
+
+
+def test_legacy_action_head_zero_future_tokens_uses_only_action_slots(monkeypatch):
+    config = _tiny_full_config(
+        action_model_type="DiT-B",
+        state_dim=0,
+        num_target_vision_tokens=0,
+    )
+    head = LegacyActionHead(config)
+    capture_model = _CaptureActionModel(output_dim=8)
+    head.model = capture_model
+    monkeypatch.setattr(
+        head,
+        "sample_time",
+        lambda batch_size, device, dtype: torch.full((batch_size,), 0.5, device=device, dtype=dtype),
+    )
+    batch = _n16_batch()
+
+    loss = head(
+        batch["vl_embs"],
+        batch["actions"],
+        state=None,
+        encoder_attention_mask=batch["encoder_attention_mask"],
+    )
+
+    assert loss.ndim == 0
+    assert head.future_tokens.weight.shape == (0, 768)
+    assert capture_model.hidden_states.shape == (2, 3, 768)
