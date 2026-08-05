@@ -162,7 +162,7 @@ trap cleanup EXIT INT TERM
 wait_for_port() {
   local port="$1"
   local pid="$2"
-  local deadline=$((SECONDS + 120))
+  local deadline=$((SECONDS + ${SERVER_STARTUP_TIMEOUT:-600}))
   while ((SECONDS < deadline)); do
     if ! kill -0 "${pid}" 2>/dev/null; then
       echo "policy server pid=${pid} exited before port ${port} became ready" >&2

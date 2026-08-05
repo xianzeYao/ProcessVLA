@@ -113,7 +113,6 @@ class CalvinPolicyClient:
         unnorm_key: str = "",
     ):
         self.client = ModelClient(
-            policy_ckpt_path=pretrained_path,
             host=host,
             port=port,
             image_size=[resize_size, resize_size],
@@ -121,6 +120,7 @@ class CalvinPolicyClient:
             action_stride=action_stride,
         )
         self.resize_size = resize_size
+        self.action_chunk_size = int(self.client.action_chunk_size)
         self.action_stride = int(self.client.action_stride)
         self.step_count = 0
 
@@ -179,6 +179,9 @@ def make_env(dataset_path: str):
 
     config_path = val_folder / ".hydra" / "merged_config.yaml"
     cfg = OmegaConf.load(config_path)
+    render_backend = os.environ.get("CALVIN_RENDER_BACKEND", "egl").lower()
+    cfg.env.use_egl = render_backend == "egl"
+
 
     # Remove tactile sensor from camera list if it exists
     if hasattr(cfg.env, "cameras") and "tactile" in cfg.env.cameras:

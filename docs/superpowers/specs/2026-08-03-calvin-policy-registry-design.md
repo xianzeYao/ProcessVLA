@@ -22,7 +22,7 @@ ports with `data_mix='calvin_task_ABC_D' not in DATASET_NAMED_MIXTURES`.
 2. Add a CALVIN benchmark registry that reuses the existing
    `CalvinDataConfig` class and registers both training mixtures:
    `calvin_task_ABC_D` and `calvin_task_ABCD_D`.
-3. Map both mixtures to the `franka` robot type so policy serving selects the
+3. Map both mixtures to the benchmark-scoped `calvin_franka` robot type so policy serving selects the
    same action/state keys and tensor-only relative-action transform used during
    training.
 4. Do not change checkpoint files, saved statistics, training configs, CALVIN
@@ -36,8 +36,8 @@ the fix by asserting:
 
 - nested benchmark registry directories are discovered;
 - both CALVIN mixture names exist;
-- both resolve uniquely to robot type `franka`;
-- `ROBOT_TYPE_CONFIG_MAP['franka']` is `CalvinDataConfig`;
+- both resolve uniquely to robot type `calvin_franka`;
+- `ROBOT_TYPE_CONFIG_MAP['calvin_franka']` is `CalvinDataConfig`;
 - constructing `PolicyNormProcessor` from the trained 80k checkpoint succeeds.
 
 Finally, launch one policy server on a free GPU/port and verify that it reaches

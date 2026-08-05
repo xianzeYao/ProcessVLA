@@ -80,7 +80,7 @@ trap cleanup EXIT INT TERM
 
 wait_for_port() {
   local port="$1"
-  for _ in $(seq 1 120); do
+  for _ in $(seq 1 600); do
     if (echo > "/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1; then
       return 0
     fi

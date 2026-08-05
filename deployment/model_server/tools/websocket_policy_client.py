@@ -15,11 +15,24 @@ from . import msgpack_numpy
 
 def _connect_with_header_compat(connect_fn, uri: str, headers=None, **kwargs):
     """Call a websockets connector across old/new header keyword APIs."""
-    variants = [
-        {**kwargs, "additional_headers": headers},
-        {**kwargs, "extra_headers": headers},
-        dict(kwargs),
-    ]
+    option_sets = [dict(kwargs)]
+    without_ping = {
+        key: value
+        for key, value in kwargs.items()
+        if key not in {"ping_interval", "ping_timeout"}
+    }
+    if without_ping != kwargs:
+        option_sets.append(without_ping)
+
+    variants = []
+    for options in option_sets:
+        variants.extend(
+            [
+                {**options, "additional_headers": headers},
+                {**options, "extra_headers": headers},
+                dict(options),
+            ]
+        )
     last_type_error = None
     for connect_kwargs in variants:
         try:
