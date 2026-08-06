@@ -88,7 +88,7 @@ trainer:
   gradient_clipping: 1.0
   gradient_accumulation_steps: 1
   test_diagnostics:
-    enabled: false
+    enabled: true
     log_module_gradients: true
     module_gradient_interval: 100
     log_token_utilization: true

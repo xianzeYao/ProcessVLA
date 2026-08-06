@@ -373,7 +373,7 @@ def test_n17_vlm_refinement_ignores_padded_token_values():
     assert torch.allclose(base_features[:, :3], changed_features[:, :3], atol=1e-6, rtol=1e-5)
 
 
-def test_robocasa_cot_v2_q0_config_changes_only_run_id_and_future_tokens():
+def test_robocasa_cot_v2_q0_config_changes_only_run_id_future_tokens_and_diagnostics():
     with _ROBOCASA_COT_V2_CONFIG.open() as source_file:
         source = yaml.safe_load(source_file)
     with _ROBOCASA_COT_V2_Q0_CONFIG.open() as q0_file:
@@ -381,12 +381,16 @@ def test_robocasa_cot_v2_q0_config_changes_only_run_id_and_future_tokens():
 
     assert q0["run_id"] == "qwen35_gr00t_robocasa_fourier_CoT_v2_q0_8gpu_bs16"
     assert q0["framework"]["action_model"]["num_target_vision_tokens"] == 0
+    assert q0["trainer"]["test_diagnostics"]["enabled"] is True
 
     normalized_q0 = deepcopy(q0)
     normalized_q0["run_id"] = source["run_id"]
     normalized_q0["framework"]["action_model"]["num_target_vision_tokens"] = source["framework"][
         "action_model"
     ]["num_target_vision_tokens"]
+    normalized_q0["trainer"]["test_diagnostics"]["enabled"] = source["trainer"]["test_diagnostics"][
+        "enabled"
+    ]
     assert normalized_q0 == source
 
 
