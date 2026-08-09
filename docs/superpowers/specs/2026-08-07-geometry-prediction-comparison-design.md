@@ -29,8 +29,8 @@ These are the normal 100k runs. Dataset statistics and the saved run configurati
 
 Create stable JSON manifests containing dataset name, trajectory ID, and base-frame index. Both versions must consume exactly the same manifest.
 
-- LIBERO: 256 samples, 64 from each of spatial, object, goal, and LIBERO-10.
-- RoboCasa: 256 samples distributed as evenly as possible over the 24 training tasks.
+- LIBERO: 240 samples, 60 from each of spatial, object, goal, and LIBERO-10.
+- RoboCasa: 240 samples, exactly 10 from each of the 24 training tasks.
 - Prefer different episodes over adjacent frames from the same episode.
 - Use seed 42 only to create the manifest; subsequent runs read the saved manifest and perform no sampling.
 

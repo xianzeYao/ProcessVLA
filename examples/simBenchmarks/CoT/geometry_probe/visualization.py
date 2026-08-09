@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -161,6 +161,236 @@ def save_sample_figure(
     fig.savefig(path, dpi=120)
     plt.close(fig)
     return path
+
+
+def _build_paired_sample_figure(
+    *,
+    sample: dict[str, Any],
+    predictions: dict[str, dict[str, np.ndarray]],
+    labels: Sequence[str],
+    metrics: dict[str, Any],
+    figsize: tuple[float, float] = (22.0, 13.0),
+    dpi: float | None = None,
+) -> Any:
+    """Build the shared GT/v1/v2 comparison figure."""
+
+    import matplotlib.pyplot as plt
+
+    labels = [str(label) for label in labels]
+    if len(labels) != 2 or any(label not in predictions for label in labels):
+        raise ValueError(f"two available prediction labels are required, got {labels}")
+
+    rgb = np.asarray(sample["images"][0])
+    gt_depths = [
+        np.asarray(sample["depth_current"], dtype=np.float32),
+        np.asarray(sample["depth_future"], dtype=np.float32),
+    ]
+    prediction_depths = {
+        label: [
+            np.asarray(predictions[label]["depth_current"], dtype=np.float32),
+            np.asarray(predictions[label]["depth_future"], dtype=np.float32),
+        ]
+        for label in labels
+    }
+    finite = [
+        depth[np.isfinite(depth)]
+        for depth in gt_depths + [depth for label in labels for depth in prediction_depths[label]]
+    ]
+    finite = [values for values in finite if values.size]
+    values = np.concatenate(finite) if finite else np.asarray([], dtype=np.float32)
+    if values.size:
+        vmin, vmax = np.percentile(values, [2, 98])
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+            vmin, vmax = float(values.min()), float(values.max() + 1e-3)
+    else:
+        vmin, vmax = 0.0, 1.0
+
+    fig, axes = plt.subplots(
+        3, 5, figsize=figsize, dpi=dpi, constrained_layout=True
+    )
+    depth_names = ("Current", "Future")
+    for row, (gt_depth, depth_name) in enumerate(zip(gt_depths, depth_names)):
+        panels = [(gt_depth, f"{depth_name} GT")]
+        panels.extend(
+            (prediction_depths[label][row], f"{depth_name} {label}") for label in labels
+        )
+        panels.extend(
+            (np.abs(prediction_depths[label][row] - gt_depth), f"|{label} - GT|")
+            for label in labels
+        )
+        error_arrays = [panel[0][np.isfinite(panel[0])] for panel in panels[3:]]
+        error_arrays = [values for values in error_arrays if values.size]
+        error_values = np.concatenate(error_arrays) if error_arrays else np.asarray([])
+        error_max = float(np.percentile(error_values, 98)) if error_values.size else 1.0
+        error_max = max(error_max, 1e-6)
+        for column, (depth, title) in enumerate(panels):
+            is_error = column >= 3
+            image = axes[row, column].imshow(
+                depth,
+                cmap="magma" if is_error else "turbo",
+                vmin=0.0 if is_error else vmin,
+                vmax=error_max if is_error else vmax,
+            )
+            axes[row, column].set_title(title)
+            axes[row, column].axis("off")
+            fig.colorbar(image, ax=axes[row, column], fraction=0.046, pad=0.02)
+
+    gt_uvd = np.asarray(sample["uvd"], dtype=np.float32)
+    valid = np.asarray(sample["uvd_valid_mask"], dtype=np.bool_)
+    if gt_uvd.ndim == 2:
+        gt_uvd = gt_uvd[:, None, :]
+        valid = valid[:, None]
+    time = np.asarray(sample["uvd_time"], dtype=np.float32)
+    height, width = rgb.shape[:2]
+    colors = {"gt": "lime", labels[0]: "cyan", labels[1]: "red"}
+    line_styles = ("-", "--", ":", "-.")
+
+    axis = axes[2, 0]
+    axis.imshow(rgb)
+    trajectories = {"GT": gt_uvd}
+    trajectories.update(
+        {label: np.asarray(predictions[label]["uvd"], dtype=np.float32) for label in labels}
+    )
+    for name, trajectory in trajectories.items():
+        if trajectory.ndim == 2:
+            trajectory = trajectory[:, None, :]
+        color = colors["gt"] if name == "GT" else colors[name]
+        for hand in range(trajectory.shape[1]):
+            hand_valid = valid[:, hand]
+            if hand_valid.any():
+                xy = trajectory[hand_valid, hand, :2].copy()
+                xy[:, 0] *= width - 1
+                xy[:, 1] *= height - 1
+                axis.plot(
+                    xy[:, 0], xy[:, 1], marker="o", color=color,
+                    linestyle=line_styles[hand % len(line_styles)], linewidth=2,
+                    label=f"{name} hand {hand}",
+                )
+    axis.set_title("UVD over current RGB")
+    axis.set_xlim(0, width - 1)
+    axis.set_ylim(height - 1, 0)
+    if axis.get_legend_handles_labels()[0]:
+        axis.legend(fontsize=7)
+
+    for hand in range(min(gt_uvd.shape[1], 2)):
+        axis = axes[2, 1 + hand]
+        hand_valid = valid[:, hand]
+        if not hand_valid.any():
+            continue
+        axis.plot(
+            time[hand_valid], gt_uvd[hand_valid, hand, 2],
+            "o-", color=colors["gt"], label="GT",
+        )
+        for label in labels:
+            trajectory = np.asarray(predictions[label]["uvd"], dtype=np.float32)
+            if trajectory.ndim == 2:
+                trajectory = trajectory[:, None, :]
+            axis.plot(
+                time[hand_valid], trajectory[hand_valid, hand, 2],
+                "o-", color=colors[label], label=label,
+            )
+        axis.set_title(f"Hand {hand} depth over time")
+        axis.set_xlabel("normalized time")
+        axis.set_ylabel("camera depth (m)")
+        axis.legend(fontsize=7)
+    if gt_uvd.shape[1] == 1:
+        axes[2, 2].axis("off")
+
+    axis = axes[2, 3]
+    for name, trajectory in trajectories.items():
+        if trajectory.ndim == 2:
+            trajectory = trajectory[:, None, :]
+        color = colors["gt"] if name == "GT" else colors[name]
+        for hand in range(trajectory.shape[1]):
+            hand_valid = valid[:, hand]
+            if hand_valid.any():
+                axis.plot(
+                    trajectory[hand_valid, hand, 0], trajectory[hand_valid, hand, 1],
+                    marker="o", color=color, linestyle=line_styles[hand % len(line_styles)],
+                    label=f"{name} h{hand}",
+                )
+    axis.set_title("Normalized UV paths")
+    axis.set_xlabel("u")
+    axis.set_ylabel("v")
+    axis.invert_yaxis()
+    if axis.get_legend_handles_labels()[0]:
+        axis.legend(fontsize=7)
+
+    axes[2, 4].axis("off")
+    metric_lines = []
+    for label in labels:
+        label_metrics = metrics.get(label, {})
+        metric_lines.append(
+            f"{label}: UV ADE={label_metrics.get('uvd_uv_ade_px', float('nan')):.3f}px, "
+            f"Z MAE={label_metrics.get('uvd_z_mae_m', float('nan')):.4f}m\n"
+            f"  depth now MAE={label_metrics.get('depth_current_mae', float('nan')):.4f}m, "
+            f"future MAE={label_metrics.get('depth_future_mae', float('nan')):.4f}m"
+        )
+    axes[2, 4].text(
+        0.0, 1.0, "\n\n".join(metric_lines), va="top", family="monospace", fontsize=9
+    )
+    metadata = sample.get("metadata", {})
+    fig.suptitle(
+        f"{metadata.get('suite', '?')} / episode {metadata.get('episode_id', '?')} / "
+        f"frame {metadata.get('frame_index', '?')}\n{sample.get('language', '')}",
+        fontsize=11,
+    )
+    return fig
+
+
+def save_paired_sample_figure(
+    path: str | Path,
+    *,
+    sample: dict[str, Any],
+    predictions: dict[str, dict[str, np.ndarray]],
+    labels: Sequence[str],
+    metrics: dict[str, Any],
+) -> Path:
+    """Render GT geometry beside two predictions for one paired sample."""
+
+    import matplotlib.pyplot as plt
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig = _build_paired_sample_figure(
+        sample=sample,
+        predictions=predictions,
+        labels=labels,
+        metrics=metrics,
+    )
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return path
+
+
+def render_paired_sample_frame(
+    *,
+    sample: dict[str, Any],
+    predictions: dict[str, dict[str, np.ndarray]],
+    labels: Sequence[str],
+    metrics: dict[str, Any],
+) -> np.ndarray:
+    """Render the paired static layout into an even-sized RGB video frame."""
+
+    import matplotlib.pyplot as plt
+
+    fig = _build_paired_sample_figure(
+        sample=sample,
+        predictions=predictions,
+        labels=labels,
+        metrics=metrics,
+        figsize=(16.5, 9.75),
+        dpi=80,
+    )
+    try:
+        fig.canvas.draw()
+        rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        rgb = np.ascontiguousarray(rgba[..., :3])
+        height = rgb.shape[0] - rgb.shape[0] % 2
+        width = rgb.shape[1] - rgb.shape[1] % 2
+        return rgb[:height, :width]
+    finally:
+        plt.close(fig)
 
 
 def save_summary(
