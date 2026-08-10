@@ -8,6 +8,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from examples.simBenchmarks.CoT.geometry_probe.episode_curves import EpisodeCurveContext
+
 
 def _json_default(value: Any) -> Any:
     if isinstance(value, np.ndarray):
@@ -163,7 +165,42 @@ def save_sample_figure(
     return path
 
 
-def _build_paired_sample_figure(
+def _create_paired_figure(
+    *,
+    figsize: tuple[float, float],
+    dpi: float | None,
+) -> tuple[Any, np.ndarray, np.ndarray]:
+    """Create deterministic paired panel and colorbar slots."""
+
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    grid = fig.add_gridspec(
+        3,
+        10,
+        width_ratios=(1.0, 0.045) * 5,
+        height_ratios=(1.0, 1.0, 1.08),
+        left=0.035,
+        right=0.985,
+        bottom=0.065,
+        top=0.875,
+        wspace=0.28,
+        hspace=0.38,
+    )
+    axes = np.empty((3, 5), dtype=object)
+    for row in range(2):
+        for column in range(5):
+            axes[row, column] = fig.add_subplot(grid[row, 2 * column])
+    for column in range(5):
+        axes[2, column] = fig.add_subplot(grid[2, 2 * column : 2 * column + 2])
+    colorbar_axes = np.empty((2, 5), dtype=object)
+    for row in range(2):
+        for column in range(5):
+            colorbar_axes[row, column] = fig.add_subplot(grid[row, 2 * column + 1])
+    return fig, axes, colorbar_axes
+
+
+def _build_paired_figure(
     *,
     sample: dict[str, Any],
     predictions: dict[str, dict[str, np.ndarray]],
@@ -171,10 +208,10 @@ def _build_paired_sample_figure(
     metrics: dict[str, Any],
     figsize: tuple[float, float] = (22.0, 13.0),
     dpi: float | None = None,
+    episode_context: EpisodeCurveContext | None = None,
+    episode_index: int | None = None,
 ) -> Any:
-    """Build the shared GT/v1/v2 comparison figure."""
-
-    import matplotlib.pyplot as plt
+    """Build fixed paired panels for either one sample or an episode frame."""
 
     labels = [str(label) for label in labels]
     if len(labels) != 2 or any(label not in predictions for label in labels):
@@ -198,16 +235,16 @@ def _build_paired_sample_figure(
     ]
     finite = [values for values in finite if values.size]
     values = np.concatenate(finite) if finite else np.asarray([], dtype=np.float32)
-    if values.size:
+    if episode_context is not None:
+        vmin, vmax = episode_context.depth_image_limits
+    elif values.size:
         vmin, vmax = np.percentile(values, [2, 98])
         if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
             vmin, vmax = float(values.min()), float(values.max() + 1e-3)
     else:
         vmin, vmax = 0.0, 1.0
 
-    fig, axes = plt.subplots(
-        3, 5, figsize=figsize, dpi=dpi, constrained_layout=True
-    )
+    fig, axes, colorbar_axes = _create_paired_figure(figsize=figsize, dpi=dpi)
     depth_names = ("Current", "Future")
     for row, (gt_depth, depth_name) in enumerate(zip(gt_depths, depth_names)):
         panels = [(gt_depth, f"{depth_name} GT")]
@@ -221,8 +258,11 @@ def _build_paired_sample_figure(
         error_arrays = [panel[0][np.isfinite(panel[0])] for panel in panels[3:]]
         error_arrays = [values for values in error_arrays if values.size]
         error_values = np.concatenate(error_arrays) if error_arrays else np.asarray([])
-        error_max = float(np.percentile(error_values, 98)) if error_values.size else 1.0
-        error_max = max(error_max, 1e-6)
+        if episode_context is not None:
+            error_max = episode_context.depth_error_limit
+        else:
+            error_max = float(np.percentile(error_values, 98)) if error_values.size else 1.0
+            error_max = max(error_max, 1e-6)
         for column, (depth, title) in enumerate(panels):
             is_error = column >= 3
             image = axes[row, column].imshow(
@@ -233,7 +273,7 @@ def _build_paired_sample_figure(
             )
             axes[row, column].set_title(title)
             axes[row, column].axis("off")
-            fig.colorbar(image, ax=axes[row, column], fraction=0.046, pad=0.02)
+            fig.colorbar(image, cax=colorbar_axes[row, column])
 
     gt_uvd = np.asarray(sample["uvd"], dtype=np.float32)
     valid = np.asarray(sample["uvd_valid_mask"], dtype=np.bool_)
@@ -272,49 +312,124 @@ def _build_paired_sample_figure(
     if axis.get_legend_handles_labels()[0]:
         axis.legend(fontsize=7)
 
-    for hand in range(min(gt_uvd.shape[1], 2)):
-        axis = axes[2, 1 + hand]
-        hand_valid = valid[:, hand]
-        if not hand_valid.any():
-            continue
-        axis.plot(
-            time[hand_valid], gt_uvd[hand_valid, hand, 2],
-            "o-", color=colors["gt"], label="GT",
-        )
-        for label in labels:
-            trajectory = np.asarray(predictions[label]["uvd"], dtype=np.float32)
+    if episode_context is None:
+        for hand in range(min(gt_uvd.shape[1], 2)):
+            axis = axes[2, 1 + hand]
+            hand_valid = valid[:, hand]
+            if not hand_valid.any():
+                continue
+            axis.plot(
+                time[hand_valid], gt_uvd[hand_valid, hand, 2],
+                "o-", color=colors["gt"], label="GT",
+            )
+            for label in labels:
+                trajectory = np.asarray(predictions[label]["uvd"], dtype=np.float32)
+                if trajectory.ndim == 2:
+                    trajectory = trajectory[:, None, :]
+                axis.plot(
+                    time[hand_valid], trajectory[hand_valid, hand, 2],
+                    "o-", color=colors[label], label=label,
+                )
+            axis.set_title(f"Hand {hand} depth over time")
+            axis.set_xlabel("normalized time")
+            axis.set_ylabel("camera depth (m)")
+            axis.legend(loc="upper right", fontsize=7)
+        if gt_uvd.shape[1] == 1:
+            axes[2, 2].axis("off")
+
+        axis = axes[2, 3]
+        for name, trajectory in trajectories.items():
             if trajectory.ndim == 2:
                 trajectory = trajectory[:, None, :]
-            axis.plot(
-                time[hand_valid], trajectory[hand_valid, hand, 2],
-                "o-", color=colors[label], label=label,
-            )
-        axis.set_title(f"Hand {hand} depth over time")
-        axis.set_xlabel("normalized time")
-        axis.set_ylabel("camera depth (m)")
-        axis.legend(fontsize=7)
-    if gt_uvd.shape[1] == 1:
-        axes[2, 2].axis("off")
-
-    axis = axes[2, 3]
-    for name, trajectory in trajectories.items():
-        if trajectory.ndim == 2:
-            trajectory = trajectory[:, None, :]
-        color = colors["gt"] if name == "GT" else colors[name]
-        for hand in range(trajectory.shape[1]):
-            hand_valid = valid[:, hand]
-            if hand_valid.any():
+            color = colors["gt"] if name == "GT" else colors[name]
+            for hand in range(trajectory.shape[1]):
+                hand_valid = valid[:, hand]
+                if hand_valid.any():
+                    axis.plot(
+                        trajectory[hand_valid, hand, 0], trajectory[hand_valid, hand, 1],
+                        marker="o", color=color,
+                        linestyle=line_styles[hand % len(line_styles)],
+                        label=f"{name} h{hand}",
+                    )
+        axis.set_title("Normalized UV paths")
+        axis.set_xlabel("u")
+        axis.set_ylabel("v")
+        axis.invert_yaxis()
+        if axis.get_legend_handles_labels()[0]:
+            axis.legend(loc="upper right", fontsize=7)
+    else:
+        if episode_index is None or not 0 <= int(episode_index) < len(episode_context.timestamps):
+            raise ValueError(f"invalid episode index: {episode_index}")
+        episode_index = int(episode_index)
+        episode_trajectories = {"GT": episode_context.gt, **episode_context.predictions}
+        episode_time = episode_context.timestamps
+        time_span = max(float(episode_time.max() - episode_time.min()), 1e-3)
+        time_limits = (
+            float(episode_time.min() - 0.02 * time_span),
+            float(episode_time.max() + 0.02 * time_span),
+        )
+        current_time = float(episode_time[episode_index])
+        for hand in range(min(episode_context.gt.shape[1], 2)):
+            axis = axes[2, 1 + hand]
+            for name, trajectory in episode_trajectories.items():
+                color = colors["gt"] if name == "GT" else colors[name]
                 axis.plot(
-                    trajectory[hand_valid, hand, 0], trajectory[hand_valid, hand, 1],
-                    marker="o", color=color, linestyle=line_styles[hand % len(line_styles)],
-                    label=f"{name} h{hand}",
+                    episode_time,
+                    trajectory[:, hand, 2],
+                    color=color,
+                    linewidth=1.8,
+                    label=f"{name} episode",
                 )
-    axis.set_title("Normalized UV paths")
-    axis.set_xlabel("u")
-    axis.set_ylabel("v")
-    axis.invert_yaxis()
-    if axis.get_legend_handles_labels()[0]:
-        axis.legend(fontsize=7)
+                axis.plot(
+                    [current_time],
+                    [trajectory[episode_index, hand, 2]],
+                    marker="o",
+                    markersize=7,
+                    color=color,
+                    linestyle="None",
+                    label="current GT" if name == "GT" else "_nolegend_",
+                )
+            axis.axvline(current_time, color="white", alpha=0.65, linewidth=1.0)
+            axis.set_xlim(*time_limits)
+            axis.set_ylim(*episode_context.depth_limits[hand])
+            axis.set_title(f"Hand {hand} depth over episode")
+            axis.set_xlabel("episode time (s)")
+            axis.set_ylabel("camera depth (m)")
+            axis.legend(loc="upper right", fontsize=7)
+        if episode_context.gt.shape[1] == 1:
+            axes[2, 2].axis("off")
+
+        axis = axes[2, 3]
+        for name, trajectory in episode_trajectories.items():
+            color = colors["gt"] if name == "GT" else colors[name]
+            for hand in range(trajectory.shape[1]):
+                line_label = f"{name} episode" if hand == 0 else f"{name} episode h{hand}"
+                axis.plot(
+                    trajectory[:, hand, 0],
+                    trajectory[:, hand, 1],
+                    color=color,
+                    linewidth=1.8,
+                    linestyle=line_styles[hand % len(line_styles)],
+                    label=line_label,
+                )
+                axis.plot(
+                    [trajectory[episode_index, hand, 0]],
+                    [trajectory[episode_index, hand, 1]],
+                    marker="o",
+                    markersize=7,
+                    color=color,
+                    linestyle="None",
+                    label="current GT" if name == "GT" and hand == 0 else "_nolegend_",
+                )
+        axis.set_title("Normalized UV path over episode")
+        axis.set_xlabel("u")
+        axis.set_ylabel("v")
+        axis.set_xlim(*episode_context.uv_limits[0])
+        axis.set_ylim(
+            episode_context.uv_limits[1][1],
+            episode_context.uv_limits[1][0],
+        )
+        axis.legend(loc="upper right", fontsize=7)
 
     axes[2, 4].axis("off")
     metric_lines = []
@@ -336,6 +451,52 @@ def _build_paired_sample_figure(
         fontsize=11,
     )
     return fig
+
+
+def _build_paired_sample_figure(
+    *,
+    sample: dict[str, Any],
+    predictions: dict[str, dict[str, np.ndarray]],
+    labels: Sequence[str],
+    metrics: dict[str, Any],
+    figsize: tuple[float, float] = (22.0, 13.0),
+    dpi: float | None = None,
+) -> Any:
+    """Build a fixed-layout single-sample GT/v1/v2 figure."""
+
+    return _build_paired_figure(
+        sample=sample,
+        predictions=predictions,
+        labels=labels,
+        metrics=metrics,
+        figsize=figsize,
+        dpi=dpi,
+    )
+
+
+def _build_paired_episode_figure(
+    *,
+    sample: dict[str, Any],
+    predictions: dict[str, dict[str, np.ndarray]],
+    labels: Sequence[str],
+    metrics: dict[str, Any],
+    episode_context: EpisodeCurveContext,
+    episode_index: int,
+    figsize: tuple[float, float] = (22.0, 13.0),
+    dpi: float | None = None,
+) -> Any:
+    """Build a fixed-layout frame with immutable full-episode curves."""
+
+    return _build_paired_figure(
+        sample=sample,
+        predictions=predictions,
+        labels=labels,
+        metrics=metrics,
+        figsize=figsize,
+        dpi=dpi,
+        episode_context=episode_context,
+        episode_index=episode_index,
+    )
 
 
 def save_paired_sample_figure(
@@ -379,6 +540,40 @@ def render_paired_sample_frame(
         predictions=predictions,
         labels=labels,
         metrics=metrics,
+        figsize=(16.5, 9.75),
+        dpi=80,
+    )
+    try:
+        fig.canvas.draw()
+        rgba = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        rgb = np.ascontiguousarray(rgba[..., :3])
+        height = rgb.shape[0] - rgb.shape[0] % 2
+        width = rgb.shape[1] - rgb.shape[1] % 2
+        return rgb[:height, :width]
+    finally:
+        plt.close(fig)
+
+
+def render_paired_episode_frame(
+    *,
+    sample: dict[str, Any],
+    predictions: dict[str, dict[str, np.ndarray]],
+    labels: Sequence[str],
+    metrics: dict[str, Any],
+    episode_context: EpisodeCurveContext,
+    episode_index: int,
+) -> np.ndarray:
+    """Render one fixed-layout frame with persistent full-episode curves."""
+
+    import matplotlib.pyplot as plt
+
+    fig = _build_paired_episode_figure(
+        sample=sample,
+        predictions=predictions,
+        labels=labels,
+        metrics=metrics,
+        episode_context=episode_context,
+        episode_index=episode_index,
         figsize=(16.5, 9.75),
         dpi=80,
     )

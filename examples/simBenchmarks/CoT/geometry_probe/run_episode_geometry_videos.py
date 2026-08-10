@@ -10,6 +10,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
+from examples.simBenchmarks.CoT.geometry_probe.episode_curves import (
+    build_episode_curve_context,
+)
 from examples.simBenchmarks.CoT.geometry_probe.episode_video import (
     build_episode_anchor_plan,
     infer_video_fps,
@@ -30,7 +33,7 @@ from examples.simBenchmarks.CoT.geometry_probe.run_paired_geometry_probe import 
     benchmark_spec,
 )
 from examples.simBenchmarks.CoT.geometry_probe.visualization import (
-    render_paired_sample_frame,
+    render_paired_episode_frame,
 )
 
 
@@ -112,6 +115,17 @@ def _render_episode_videos(
             if ref.suite == episode.suite and ref.episode_id == episode.episode_id
         ]
         samples = [load_materialized_sample(sample_paths[index]) for index in indices]
+        predictions_by_label = {
+            label: [
+                load_prediction(prediction_paths[label][index]) for index in indices
+            ]
+            for label in labels
+        }
+        episode_context = build_episode_curve_context(
+            samples,
+            predictions_by_label,
+            labels=labels,
+        )
         timestamps = [sample["metadata"].get("timestamp", float("nan")) for sample in samples]
         fps = infer_video_fps(timestamps, fallback_fps=fallback_fps)
         path = video_dir / (
@@ -127,16 +141,18 @@ def _render_episode_videos(
                 )
         else:
             def frames():
-                for index, sample in zip(indices, samples):
+                for local_index, (index, sample) in enumerate(zip(indices, samples)):
                     predictions = {
-                        label: load_prediction(prediction_paths[label][index])
+                        label: predictions_by_label[label][local_index]
                         for label in labels
                     }
-                    yield render_paired_sample_frame(
+                    yield render_paired_episode_frame(
                         sample=sample,
                         predictions=predictions,
                         labels=labels,
                         metrics=row_by_index[index]["metrics"],
+                        episode_context=episode_context,
+                        episode_index=local_index,
                     )
 
             info = write_video_frames(path, frames(), fps=fps, codec=codec)
