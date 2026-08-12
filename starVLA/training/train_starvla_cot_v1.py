@@ -44,6 +44,12 @@ class CotV1Trainer(VLATrainer):
     def _diagnostic_config(self):
         return self.config.trainer.get("test_diagnostics", {})
 
+    @staticmethod
+    def _uvd_track_count(model) -> int:
+        """Resolve V3 landmarks before the V1/V2 hand-count compatibility field."""
+
+        return int(getattr(model, "landmark_count", getattr(model, "uvd_hand_count", 1)))
+
 
     def _log_metrics(self, metrics):
         super()._log_metrics(metrics)
@@ -127,6 +133,20 @@ class CotV1Trainer(VLATrainer):
                 * float(getattr(self.model, "lambda_uvd_relative", 0.0))
                 * metrics["uvd_relative_loss"]
             )
+        if "uvd_temporal_loss" in output_dict:
+            metrics["uvd_temporal_loss"] = output_dict["uvd_temporal_loss"].item()
+            metrics["weighted_uvd_temporal_loss"] = (
+                self.model.lambda_uvd
+                * float(getattr(self.model, "lambda_uvd_temporal", 0.0))
+                * metrics["uvd_temporal_loss"]
+            )
+        if "uvd_shape_loss" in output_dict:
+            metrics["uvd_shape_loss"] = output_dict["uvd_shape_loss"].item()
+            metrics["weighted_uvd_shape_loss"] = (
+                self.model.lambda_uvd
+                * float(getattr(self.model, "lambda_uvd_shape", 0.0))
+                * metrics["uvd_shape_loss"]
+            )
         weighted_aux_loss = (
             metrics["weighted_depth_current_loss"]
             + metrics["weighted_depth_future_loss"]
@@ -191,7 +211,7 @@ class CotV1Trainer(VLATrainer):
             self._diagnostic_examples,
             depth_scale=float(model.uvd_depth_scale),
             image_size=int(model.depth_output_size),
-            uvd_hand_count=int(getattr(model, "uvd_hand_count", 1)),
+            uvd_hand_count=self._uvd_track_count(model),
             uvd_order=str(getattr(model, "uvd_token_order", "hand_major")),
             include_uvd_time_metrics=bool(
                 diagnostic_config.get("log_uvd_time_metrics", False)
@@ -241,7 +261,7 @@ class CotV1Trainer(VLATrainer):
                         self.completed_steps,
                         predictions,
                         self._diagnostic_examples,
-                        uvd_hand_count=int(getattr(model, "uvd_hand_count", 1)),
+                        uvd_hand_count=self._uvd_track_count(model),
                         uvd_order=str(getattr(model, "uvd_token_order", "hand_major")),
                     )
                     step_metrics["diagnostic/prediction_save_failed"] = 0.0

@@ -66,6 +66,40 @@ class _V2LossModel(_FourLossModel):
         }
 
 
+class _V3LossModel(_FourLossModel):
+    lambda_uvd_temporal = 0.1
+    lambda_uvd_shape = 0.2
+
+    def forward(self, examples):
+        action = self.scale.square()
+        depth_current = 0.5 * self.scale.square()
+        depth_future = 0.25 * self.scale.square()
+        uvd_absolute = 0.125 * self.scale.square()
+        uvd_temporal = 0.25 * self.scale.square()
+        uvd_shape = 0.5 * self.scale.square()
+        uvd = (
+            uvd_absolute
+            + self.lambda_uvd_temporal * uvd_temporal
+            + self.lambda_uvd_shape * uvd_shape
+        )
+        total = (
+            self.lambda_action * action
+            + self.lambda_depth_current * depth_current
+            + self.lambda_depth_future * depth_future
+            + self.lambda_uvd * uvd
+        )
+        return {
+            "action_loss": action,
+            "depth_current_loss": depth_current,
+            "depth_future_loss": depth_future,
+            "uvd_loss": uvd,
+            "uvd_absolute_loss": uvd_absolute,
+            "uvd_temporal_loss": uvd_temporal,
+            "uvd_shape_loss": uvd_shape,
+            "total_loss": total,
+        }
+
+
 class _Accelerator:
     sync_gradients = True
     num_processes = 1
@@ -137,6 +171,31 @@ def test_cot_trainer_logs_v2_uvd_absolute_and_relative_components():
     assert metrics["uvd_loss"] == pytest.approx(0.15)
     assert metrics["weighted_uvd_absolute_loss"] == pytest.approx(0.62 * 0.125)
     assert metrics["weighted_uvd_relative_loss"] == pytest.approx(0.62 * 0.1 * 0.25)
+
+
+def test_cot_trainer_logs_v3_uvd_temporal_and_shape_components():
+    model = _V3LossModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    config = OmegaConf.create(
+        {
+            "datasets": {"vla_data": {"per_device_batch_size": 1}},
+            "trainer": {
+                "gradient_clipping": 1.0,
+                "test_diagnostics": {"enabled": False, "log_module_gradients": False},
+            },
+        }
+    )
+    trainer = CotV1Trainer(config, model, [], optimizer, _Scheduler(), _Accelerator())
+
+    metrics = trainer._train_step([])
+
+    assert metrics["uvd_absolute_loss"] == 0.125
+    assert metrics["uvd_temporal_loss"] == 0.25
+    assert metrics["uvd_shape_loss"] == 0.5
+    assert metrics["uvd_loss"] == pytest.approx(0.25)
+    assert metrics["weighted_uvd_absolute_loss"] == pytest.approx(0.62 * 0.125)
+    assert metrics["weighted_uvd_temporal_loss"] == pytest.approx(0.62 * 0.1 * 0.25)
+    assert metrics["weighted_uvd_shape_loss"] == pytest.approx(0.62 * 0.2 * 0.5)
 
 
 def test_disabled_diagnostics_never_install_module_gradient_hooks(monkeypatch):

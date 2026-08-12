@@ -14,6 +14,7 @@ from starVLA.training.cot_test_diagnostics import (
     install_module_grad_norm_hooks,
     resolve_post_step_gradient_norm,
 )
+from starVLA.training.train_starvla_cot_v1 import CotV1Trainer
 
 
 class _ToyCotModel(nn.Module):
@@ -34,6 +35,15 @@ class _DeepSpeedLikeWrapper(nn.Module):
 
 
 class CotDiagnosticsTest(unittest.TestCase):
+    def test_v3_landmark_count_takes_precedence_for_diagnostic_tracks(self):
+        model = type(
+            "V3Model",
+            (),
+            {"landmark_count": 3, "uvd_hand_count": 1},
+        )()
+
+        self.assertEqual(CotV1Trainer._uvd_track_count(model), 3)
+
     def test_module_grad_norms_survive_model_wrapper(self):
         model = _ToyCotModel()
         wrapper = _DeepSpeedLikeWrapper(model)
