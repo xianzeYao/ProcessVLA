@@ -92,3 +92,46 @@ def uvd_adjacent_relative_loss(
         dtype=values.dtype,
     ).view(1, 1, 1, 3)
     return _masked_mean(values * weights, segment_valid)
+
+
+def uvd_triangle_shape_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid: torch.Tensor,
+    *,
+    coordinate_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> torch.Tensor:
+    """Match translation-invariant grasp and midpoint-to-wrist vectors."""
+    if pred.shape != target.shape or pred.ndim != 3 or pred.shape[-1] != 3:
+        raise ValueError(
+            f"pred/target must share shape [B,K,3], got {tuple(pred.shape)}/{tuple(target.shape)}"
+        )
+    if valid.shape != pred.shape[:2]:
+        raise ValueError(
+            f"valid must have shape {tuple(pred.shape[:2])}, got {tuple(valid.shape)}"
+        )
+    if pred.shape[1] % 3 != 0:
+        raise ValueError(
+            f"triangle shape loss requires a token count divisible by 3, got {pred.shape[1]}"
+        )
+    time_points = pred.shape[1] // 3
+    pred_triangle = pred.float().reshape(pred.shape[0], time_points, 3, 3)
+    target_triangle = target.float().reshape(target.shape[0], time_points, 3, 3)
+    valid_triangle = valid.to(dtype=torch.bool).reshape(valid.shape[0], time_points, 3)
+    complete = torch.all(valid_triangle, dim=-1)
+    if not torch.any(complete):
+        return pred.sum() * 0.0
+
+    def vectors(triangle: torch.Tensor) -> torch.Tensor:
+        left, right, wrist = triangle.unbind(dim=2)
+        grasp_axis = right - left
+        wrist_axis = wrist - 0.5 * (left + right)
+        return torch.stack([grasp_axis, wrist_axis], dim=2)
+
+    values = F.smooth_l1_loss(
+        vectors(pred_triangle), vectors(target_triangle), reduction="none"
+    )
+    weights = torch.as_tensor(
+        coordinate_weights, device=values.device, dtype=values.dtype
+    ).view(1, 1, 1, 3)
+    return _masked_mean(values * weights, complete)
