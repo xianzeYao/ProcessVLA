@@ -46,6 +46,12 @@ class GeometryHiddenSplit:
     uvd: torch.Tensor
 
 
+def _require_boolean_option(value: Any, *, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean, got {value!r}")
+    return value
+
+
 def _extract_contiguous_runs(input_ids: torch.Tensor, token_id: int) -> list[torch.Tensor]:
     positions = torch.nonzero(input_ids == int(token_id), as_tuple=False).flatten()
     if positions.numel() == 0:
@@ -77,6 +83,10 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
     def __init__(self, config=None, **kwargs) -> None:
         super().__init__(config=config, **kwargs)
         geometry = self.config.framework.get("geometry", {})
+        self.include_depth_in_action_condition = _require_boolean_option(
+            geometry.get("include_depth_in_action_condition", False),
+            name="include_depth_in_action_condition",
+        )
         hidden_dim = int(self.qwen_vl_interface.model.config.hidden_size)
         points_per_hand = geometry.get("uvd_num_points", None)
         if points_per_hand is None:
@@ -200,17 +210,25 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         *,
         native_attention_mask: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        condition = torch.cat([split.native, split.uvd], dim=1)
+        include_depth = _require_boolean_option(
+            self.include_depth_in_action_condition,
+            name="include_depth_in_action_condition",
+        )
+        geometry_condition = []
+        if include_depth:
+            geometry_condition.extend([split.depth_current, split.depth_future])
+        geometry_condition.append(split.uvd)
+        condition = torch.cat([split.native, *geometry_condition], dim=1)
         if native_attention_mask is None:
             return condition, None
         native_attention_mask = native_attention_mask.to(device=condition.device, dtype=torch.bool)
-        uvd_attention_mask = torch.ones(
+        geometry_attention_mask = torch.ones(
             condition.shape[0],
-            self.geometry_layout.uvd_token_count,
+            sum(tokens.shape[1] for tokens in geometry_condition),
             device=condition.device,
             dtype=torch.bool,
         )
-        return condition, torch.cat([native_attention_mask, uvd_attention_mask], dim=1)
+        return condition, torch.cat([native_attention_mask, geometry_attention_mask], dim=1)
 
     def _build_native_inputs(self, examples: List[dict], *, inference: bool) -> tuple[dict, torch.Tensor]:
         if inference:

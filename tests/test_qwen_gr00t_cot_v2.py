@@ -14,13 +14,14 @@ from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils
 
 
-def make_uninitialized_model(*, depth_queries=2, points=3, hands=2):
+def make_uninitialized_model(*, depth_queries=2, points=3, hands=2, include_depth=False):
     model = Qwen_GR00T_CoT_V2.__new__(Qwen_GR00T_CoT_V2)
     model.geometry_layout = GeometryTokenLayout(
         depth_query_count=depth_queries,
         uvd_points_per_hand=points,
         hand_count=hands,
     )
+    model.include_depth_in_action_condition = include_depth
     return model
 
 
@@ -98,6 +99,44 @@ def test_action_condition_contains_all_fixed_uvd_slots_and_excludes_depth_tokens
     assert split.uvd.flatten().tolist() == [4.0, 5.0]
     assert condition.flatten().tolist() == [0.0, 1.0, 4.0, 5.0]
     assert condition_mask.tolist() == [[True, True, True, True]]
+
+
+def test_action_condition_includes_both_depth_groups_when_enabled():
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=True,
+    )
+    # Sequence values: V0,V1,Dc,Df,U0,U1.
+    all_hidden = torch.arange(6, dtype=torch.float32).view(1, 6, 1)
+    native_mask = torch.tensor([[True, False]])
+    split = model._split_geometry_hidden(all_hidden, native_token_count=2)
+
+    condition, condition_mask = model._build_action_condition(
+        split,
+        native_attention_mask=native_mask,
+    )
+
+    assert condition.flatten().tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    assert condition_mask.tolist() == [[True, False, True, True, True, True]]
+
+
+@pytest.mark.parametrize("value", ["false", 1, None])
+def test_action_condition_rejects_non_boolean_depth_condition_flag(value):
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=value,
+    )
+    split = model._split_geometry_hidden(
+        torch.arange(6, dtype=torch.float32).view(1, 6, 1),
+        native_token_count=2,
+    )
+
+    with pytest.raises(ValueError, match="include_depth_in_action_condition must be a boolean"):
+        model._build_action_condition(split, native_attention_mask=None)
 
 
 def test_geometry_backbone_api_cannot_accept_ground_truth_times_or_validity():
