@@ -74,3 +74,53 @@ def test_v2_gradient_probe_cli_exposes_reproducibility_arguments():
     assert "--checkpoint" in result.stdout
     assert "--sample_indices" in result.stdout
     assert "--qwen_tail_layers" in result.stdout
+
+
+def test_robocasa_q0_depth_condition_config_changes_only_the_condition_inputs():
+    config_root = ROOT / "examples/modelExtensions/CoT/configs"
+    baseline_path = config_root / "qwen35_gr00t_robocasa_fourier_CoT_v2_q0.yaml"
+    depth_condition_path = (
+        config_root / "qwen35_gr00t_robocasa_fourier_CoT_v2_q0_depthcond.yaml"
+    )
+    assert depth_condition_path.exists(), "depth-condition experiment YAML is missing"
+
+    baseline = OmegaConf.to_container(OmegaConf.load(baseline_path), resolve=True)
+    depth_condition = OmegaConf.to_container(
+        OmegaConf.load(depth_condition_path),
+        resolve=True,
+    )
+
+    assert depth_condition["run_id"] == (
+        "qwen35_gr00t_robocasa_fourier_CoT_v2_q0_depthcond_8gpu_bs16"
+    )
+    assert depth_condition["framework"]["geometry"].pop(
+        "include_depth_in_action_condition"
+    ) is True
+
+    depth_condition["run_id"] = baseline["run_id"]
+    assert depth_condition == baseline
+
+
+def test_libero_q0_depth_condition_config_changes_only_the_condition_inputs():
+    config_root = ROOT / "examples/modelExtensions/CoT/configs"
+    baseline_path = config_root / "qwen35_gr00t_libero_CoT_v2_q0.yaml"
+    depth_condition_path = (
+        config_root / "qwen35_gr00t_libero_CoT_v2_q0_depthcond.yaml"
+    )
+    assert depth_condition_path.exists(), "depth-condition experiment YAML is missing"
+
+    baseline = OmegaConf.to_container(OmegaConf.load(baseline_path), resolve=True)
+    depth_condition = OmegaConf.to_container(
+        OmegaConf.load(depth_condition_path),
+        resolve=True,
+    )
+
+    assert depth_condition["run_id"] == (
+        "qwen35_gr00t_libero_CoT_v2_q0_depthcond_8gpu_bs16"
+    )
+    assert depth_condition["framework"]["geometry"].pop(
+        "include_depth_in_action_condition"
+    ) is True
+
+    depth_condition["run_id"] = baseline["run_id"]
+    assert depth_condition == baseline
