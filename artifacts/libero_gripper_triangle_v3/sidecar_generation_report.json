@@ -1,0 +1,48 @@
+{
+  "status": "success",
+  "mode": "generate",
+  "dataset_root": "/root/data/yxz/datasets/libero_rerender",
+  "totals": {
+    "selected_episodes": 1693,
+    "selected_frames": 273465,
+    "validated_episodes": 1693,
+    "written_episodes": 1683,
+    "skipped_episodes": 10
+  },
+  "missing": [],
+  "corrupt": [],
+  "suites": {
+    "libero_10": {
+      "episode_count": 379,
+      "frame_count": 101469,
+      "min_finger_distance_m": 0.018073523716722446,
+      "min_triangle_area_m2": 0.0009795850566697356,
+      "projection_valid_point_ratio": 1.0,
+      "in_frame_point_ratio": 0.9636670641608112
+    },
+    "libero_goal": {
+      "episode_count": 428,
+      "frame_count": 52042,
+      "min_finger_distance_m": 0.018407394050476287,
+      "min_triangle_area_m2": 0.0009976809406348963,
+      "projection_valid_point_ratio": 1.0,
+      "in_frame_point_ratio": 0.9990968832865762
+    },
+    "libero_object": {
+      "episode_count": 454,
+      "frame_count": 66984,
+      "min_finger_distance_m": 0.01857364536108229,
+      "min_triangle_area_m2": 0.0010066917480688721,
+      "projection_valid_point_ratio": 1.0,
+      "in_frame_point_ratio": 1.0
+    },
+    "libero_spatial": {
+      "episode_count": 432,
+      "frame_count": 52970,
+      "min_finger_distance_m": 0.017999537715730554,
+      "min_triangle_area_m2": 0.0009755741079574383,
+      "projection_valid_point_ratio": 1.0,
+      "in_frame_point_ratio": 0.9979044742306966
+    }
+  }
+}

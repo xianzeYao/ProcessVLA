@@ -1,0 +1,100 @@
+{
+  "status": "success",
+  "dataset_root": "/root/data/yxz/datasets/libero_rerender",
+  "split": {
+    "rule": "episode-local frame_index % 5 == 0",
+    "calibration_frames": 55361,
+    "held_out_frames": 218104
+  },
+  "totals": {
+    "episodes": 1693,
+    "frames": 273465,
+    "degenerate_triangle_frames": 0
+  },
+  "suites": {
+    "libero_10": {
+      "episodes": 379,
+      "frames": 101469
+    },
+    "libero_goal": {
+      "episodes": 428,
+      "frames": 52042
+    },
+    "libero_object": {
+      "episodes": 454,
+      "frames": 66984
+    },
+    "libero_spatial": {
+      "episodes": 432,
+      "frames": 52970
+    }
+  },
+  "aperture_recovery": {
+    "gripper_aperture_definition": "observation.state[6] - observation.state[7] (meters)",
+    "finger_distance_definition": "norm(right_finger_tip - left_finger_tip) (meters)",
+    "linear_model": {
+      "slope": 0.9999999980459565,
+      "intercept": -0.0169999998750926
+    },
+    "all_frame_pearson_r": 0.9999999999999689,
+    "all_frame_spearman_rho": 0.9999999629072828,
+    "held_out_r2": 0.9999999999999374,
+    "held_out_mae_m": 4.980987777743295e-09,
+    "held_out_rmse_m": 6.92128283551271e-09
+  },
+  "orientation_recovery": {
+    "triangle_frame": "x=normalize(R-L), y=orthogonalized(W-(L+R)/2), z=x cross y",
+    "eef_rotation_source": "Rotation.from_rotvec(observation.state[3:6])",
+    "constant_triangle_to_eef_rotation_matrix": [
+      [
+        1.0094142743888312e-09,
+        -1.0,
+        4.673451015069219e-09
+      ],
+      [
+        6.475808778105829e-11,
+        -4.673451015069219e-09,
+        -1.0
+      ],
+      [
+        1.0000000000000002,
+        1.00941421887768e-09,
+        6.475814329220952e-11
+      ]
+    ],
+    "held_out_geodesic_error_deg": {
+      "mean": 2.81121299062427e-05,
+      "median": 1.5401406646617167e-05,
+      "p90": 6.512137057958887e-05,
+      "p95": 0.00010075765566797309,
+      "p99": 0.00019047870749017696,
+      "max": 0.00034370017395147855
+    },
+    "held_out_abs_rpy_error_deg_xyz": {
+      "roll": {
+        "mean": 2.8621646849431084e-05,
+        "median": 1.4045088387298035e-05,
+        "p90": 7.052229204608652e-05,
+        "p95": 0.00010842601369554807,
+        "p99": 0.000202090394737733,
+        "max": 0.014794005762273292
+      },
+      "pitch": {
+        "mean": 3.366127488678346e-06,
+        "median": 1.6617319112054548e-06,
+        "p90": 8.120026491268133e-06,
+        "p95": 1.308609481812446e-05,
+        "p99": 2.5831291228458206e-05,
+        "max": 0.00013387245769177713
+      },
+      "yaw": {
+        "mean": 8.09671711052817e-06,
+        "median": 2.802305320359878e-06,
+        "p90": 1.908643890280396e-05,
+        "p95": 3.274536384256774e-05,
+        "p99": 7.94094906484197e-05,
+        "max": 0.014800018913916068
+      }
+    }
+  }
+}

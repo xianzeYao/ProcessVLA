@@ -1,0 +1,25 @@
+{
+  "suite": "libero_object",
+  "episode_id": 0,
+  "base_index": 0,
+  "before_sha256": "372619c057b70e4046fadcce263a3b90dd752b6f2c0e8448624e64da396c1855",
+  "after_sha256": "372619c057b70e4046fadcce263a3b90dd752b6f2c0e8448624e64da396c1855",
+  "exact_match": true,
+  "keys": [
+    "depth_current",
+    "depth_current_valid",
+    "depth_future",
+    "depth_future_valid",
+    "uvd",
+    "uvd_boundary_clamp_mask",
+    "uvd_endpoint_indices",
+    "uvd_frame_indices",
+    "uvd_out_of_frame_mask",
+    "uvd_time",
+    "uvd_valid_mask"
+  ],
+  "uvd_shape": [
+    4,
+    3
+  ]
+}
