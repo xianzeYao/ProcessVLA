@@ -272,32 +272,21 @@ def test_v2_return_geometry_has_stable_v3_only_error() -> None:
     model.config = SimpleNamespace(
         framework=SimpleNamespace(action_model={"state_dim": 0})
     )
-    model._build_native_inputs = MethodType(
-        lambda self, examples, inference: (
-            {"input_ids": torch.ones(1, 2, dtype=torch.long)},
-            torch.ones(1, 2, dtype=torch.bool),
-        ),
-        model,
-    )
-    model._run_geometry_backbone = MethodType(
-        lambda self, inputs: GeometryHiddenSplit(
-            native=torch.zeros(1, 2, 4),
-            depth_current=torch.zeros(1, 1, 4),
-            depth_future=torch.zeros(1, 1, 4),
-            uvd=torch.zeros(1, 2, 4),
-        ),
-        model,
-    )
-    model._build_action_condition = MethodType(
-        lambda self, hidden, native_attention_mask: (
-            torch.zeros(1, 2, 4),
-            torch.ones(1, 2, dtype=torch.bool),
-        ),
-        model,
-    )
-    model.action_model = SimpleNamespace(
-        predict_action=lambda condition, state, encoder_attention_mask: torch.zeros(1, 2, 7)
-    )
+    calls: list[str] = []
+
+    def unexpected(name: str):
+        def fail(*args, **kwargs):
+            calls.append(name)
+            pytest.fail(f"{name} must not run for a V2 geometry request")
+
+        return fail
+
+    model._build_native_inputs = MethodType(unexpected("preprocess"), model)
+    model._run_geometry_backbone = MethodType(unexpected("backbone"), model)
+    model._build_action_condition = MethodType(unexpected("action_condition"), model)
+    model.action_model = SimpleNamespace(predict_action=unexpected("action_expert"))
 
     with pytest.raises(ValueError, match="supported only by QwenGR00TCoTV3"):
         model.predict_action([{"image": [], "lang": "move"}], return_geometry=True)
+
+    assert calls == []
