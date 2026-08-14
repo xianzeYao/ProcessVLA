@@ -26,7 +26,11 @@ from .libero_trace_audit_metrics import (
 )
 
 
-RECORD_VERSION = 2
+RECORD_VERSION = 3
+RECORD_SCHEMA = "state_timeline_v3"
+CAMERA_CONVENTION = (
+    "libero_agentview_display_horizontal_mirror_from_robosuite_opencv"
+)
 LIBERO_DUMMY_ACTION = np.asarray([0.0] * 6 + [-1.0], np.float32)
 SUITE_MAX_STEPS = {
     "libero_spatial": 220,
@@ -183,14 +187,18 @@ def build_geometry_request(
 def flip_camera_intrinsics(
     camera_k: np.ndarray, *, image_size: tuple[int, int]
 ) -> np.ndarray:
-    """Return ``H_180 @ K`` for the stored 180-degree-rotated image."""
+    """Map robosuite OpenCV projection K to the displayed LIBERO agentview.
+
+    LIBERO displayed agentview mapping from robosuite OpenCV projection is
+    horizontal-only, so this returns ``H_x @ K``.
+    """
 
     height, width = image_size
     camera_k = np.asarray(camera_k, np.float32)
     if camera_k.shape != (3, 3) or height < 2 or width < 2:
         raise ValueError("camera K/image size invalid")
     transform = np.asarray(
-        [[-1, 0, width - 1], [0, -1, height - 1], [0, 0, 1]], np.float32
+        [[-1, 0, width - 1], [0, 1, 0], [0, 0, 1]], np.float32
     )
     return transform @ camera_k
 
@@ -461,7 +469,6 @@ def _frame(
     pixels = np.asarray(pixels[0], np.float32)
     projection_valid = np.asarray(projection_valid[0], np.bool_)
     pixels[:, 0] = width - 1 - pixels[:, 0]
-    pixels[:, 1] = height - 1 - pixels[:, 1]
     uvd = pixels.copy()
     uvd[:, 0] /= width - 1
     uvd[:, 1] /= height - 1
@@ -653,7 +660,8 @@ def collect_rollout(case: object, client: object, args: object) -> RolloutRecord
                 "action_horizon": horizon,
                 "image_size": image_size,
                 "metrics": metrics,
-                "schema": "state_timeline_v2",
+                "camera_convention": CAMERA_CONVENTION,
+                "schema": RECORD_SCHEMA,
             },
         )
         validate_rollout_record(record)
@@ -716,7 +724,7 @@ def _validate_camera_convention(
         raise ValueError("invalid flipped camera convention")
     if not np.allclose(camera_k[2], [0.0, 0.0, 1.0], rtol=0.0, atol=1e-6):
         raise ValueError("invalid flipped camera convention")
-    if camera_k[0, 0] >= 0 or camera_k[1, 1] >= 0:
+    if camera_k[0, 0] >= 0 or camera_k[1, 1] <= 0:
         raise ValueError("invalid flipped camera convention")
     if not (0 <= camera_k[0, 2] <= width - 1 and 0 <= camera_k[1, 2] <= height - 1):
         raise ValueError("invalid flipped camera convention")
@@ -768,12 +776,16 @@ def validate_rollout_record(record: RolloutRecord) -> None:
         "action_horizon",
         "image_size",
         "metrics",
+        "camera_convention",
         "schema",
     }
     if not isinstance(metadata, dict) or required_metadata - set(metadata):
         raise ValueError("invalid metadata schema")
-    if metadata["schema"] != "state_timeline_v2":
-        raise ValueError("invalid metadata schema")
+    if (
+        metadata["schema"] != RECORD_SCHEMA
+        or metadata["camera_convention"] != CAMERA_CONVENTION
+    ):
+        raise ValueError("invalid metadata schema or camera convention")
     _validate_case_metadata(metadata["case"])
     _validate_outcome_metadata(metadata["outcome"])
     horizon = _strict_positive_integer(metadata["action_horizon"], "action_horizon")

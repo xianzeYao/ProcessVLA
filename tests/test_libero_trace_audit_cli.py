@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 
 from examples.simBenchmarks.CoT.geometry_probe.libero_trace_audit_rollout import (
+    CAMERA_CONVENTION,
+    RECORD_SCHEMA,
     RolloutRecord,
     save_rollout_record,
 )
@@ -105,7 +107,7 @@ def _record(case: AuditCase, config_identity: str) -> RolloutRecord:
         dense_depth_future_target=np.ones((anchors, height, width), np.float32),
         latency_ms=np.asarray([1.0], np.float64),
         camera_k_agentview_flipped=np.asarray(
-            [[-10, 0, 2], [0, -11, 1], [0, 0, 1]], np.float32
+            [[-10, 0, 2], [0, 11, 1], [0, 0, 1]], np.float32
         ),
         metadata={
             "case": {
@@ -141,7 +143,8 @@ def _record(case: AuditCase, config_identity: str) -> RolloutRecord:
                     "camera": {"center_mae_mm": 4.0, "center_valid_count": 2},
                 },
             },
-            "schema": "state_timeline_v2",
+            "camera_convention": CAMERA_CONVENTION,
+            "schema": RECORD_SCHEMA,
             "audit_config_identity": config_identity,
         },
     )

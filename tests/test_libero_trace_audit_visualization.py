@@ -8,6 +8,8 @@ import pytest
 
 from examples.simBenchmarks.CoT.geometry_probe import libero_trace_audit_visualization as visualization
 from examples.simBenchmarks.CoT.geometry_probe.libero_trace_audit_rollout import (
+    CAMERA_CONVENTION,
+    RECORD_SCHEMA,
     RolloutRecord,
     validate_rollout_record,
 )
@@ -66,7 +68,7 @@ def _record(seed: int = 7) -> RolloutRecord:
         dense_depth_future_target=np.full((anchors, 6, 8), 0.9, np.float32),
         latency_ms=np.asarray([12.0, 18.0], np.float64),
         camera_k_agentview_flipped=np.asarray(
-            [[-10.0, 0.0, 7.0], [0.0, -10.0, 5.0], [0.0, 0.0, 1.0]], np.float32
+            [[-10.0, 0.0, 7.0], [0.0, 10.0, 5.0], [0.0, 0.0, 1.0]], np.float32
         ),
         metadata={
             "case": {
@@ -82,7 +84,8 @@ def _record(seed: int = 7) -> RolloutRecord:
             "action_horizon": 2,
             "image_size": [height, width],
             "metrics": {},
-            "schema": "state_timeline_v2",
+            "camera_convention": CAMERA_CONVENTION,
+            "schema": RECORD_SCHEMA,
         },
     )
     validate_rollout_record(record)

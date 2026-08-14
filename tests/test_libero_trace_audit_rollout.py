@@ -28,6 +28,11 @@ from examples.simBenchmarks.CoT.geometry_probe.libero_trace_audit_rollout import
 )
 
 
+EXPECTED_CAMERA_CONVENTION = (
+    "libero_agentview_display_horizontal_mirror_from_robosuite_opencv"
+)
+
+
 def _case(suite: str = "libero_goal") -> AuditCase:
     return AuditCase(suite, 1, "move", "best", 0, 7, True)
 
@@ -65,7 +70,7 @@ def _record() -> RolloutRecord:
         dense_depth_future_target=np.ones((anchors, height, width), np.float32),
         latency_ms=np.asarray([1.0], np.float64),
         camera_k_agentview_flipped=np.asarray(
-            [[-10, 0, 2], [0, -11, 1], [0, 0, 1]], np.float32
+            [[-10, 0, 2], [0, 11, 1], [0, 0, 1]], np.float32
         ),
         metadata={
             "case": {
@@ -81,7 +86,8 @@ def _record() -> RolloutRecord:
             "action_horizon": horizon,
             "image_size": [height, width],
             "metrics": {},
-            "schema": "state_timeline_v2",
+            "camera_convention": EXPECTED_CAMERA_CONVENTION,
+            "schema": "state_timeline_v3",
         },
     )
 
@@ -131,7 +137,7 @@ def test_state_timeline_and_camera_endpoint() -> None:
             np.asarray([[10, 0, 3], [0, 11, 2], [0, 0, 1]], np.float32),
             image_size=(7, 13),
         ),
-        [[-10, 0, 9], [0, -11, 4], [0, 0, 1]],
+        [[-10, 0, 9], [0, 11, 2], [0, 0, 1]],
     )
 
 
@@ -222,7 +228,7 @@ def test_v3_grid_requires_strictly_unique_action_offsets() -> None:
 def test_flipped_rectangular_camera_intrinsics_and_camera_metrics_are_real() -> None:
     camera_k = np.asarray([[10, 0, 3], [0, 11, 2], [0, 0, 1]], np.float32)
     flipped = flip_camera_intrinsics(camera_k, image_size=(7, 13))
-    np.testing.assert_allclose(flipped, [[-10, 0, 9], [0, -11, 4], [0, 0, 1]])
+    np.testing.assert_allclose(flipped, [[-10, 0, 9], [0, 11, 2], [0, 0, 1]])
 
 
 def test_frame_converts_raw_sim_depth_to_metric_before_180_flip(
@@ -280,6 +286,11 @@ def test_frame_converts_raw_sim_depth_to_metric_before_180_flip(
     assert frame["depth"].shape == (2, 3)
     assert frame["depth"].dtype == np.float32
     np.testing.assert_array_equal(frame["depth"], metric_depth[::-1, ::-1, 0])
+    np.testing.assert_allclose(frame["uvd"][:, 0], [0.5, 0.45, 0.5], atol=1e-6)
+    np.testing.assert_allclose(frame["uvd"][:, 1], [1.0, 1.0, 1.1], atol=1e-6)
+    np.testing.assert_allclose(
+        frame["k"], [[-10, 0, 1], [0, 10, 1], [0, 0, 1]]
+    )
 
     camera_utils.get_real_depth_map = (  # type: ignore[attr-defined]
         lambda *_: np.repeat(metric_depth, 2, axis=-1)
@@ -300,7 +311,7 @@ def test_generation_manifest_identity_and_interruption(
     old = _record()
     save_rollout_record(path, old)
     assert load_rollout_record(path, expected_case=old.metadata["case"]).agent_rgb.shape[0] == 3
-    original_files = set(tmp_path.glob("rollout.v2.*"))
+    original_files = set(tmp_path.glob("rollout.v3.*"))
     real_replace = rollout.os.replace
 
     def fail(source: str | Path, destination: str | Path) -> None:
@@ -312,7 +323,7 @@ def test_generation_manifest_identity_and_interruption(
     with pytest.raises(OSError, match="interrupted"):
         save_rollout_record(path, replace(old, latency_ms=np.asarray([2.0], np.float64)))
     assert load_rollout_record(path).latency_ms.tolist() == [1.0]
-    assert set(tmp_path.glob("rollout.v2.*")) == original_files
+    assert set(tmp_path.glob("rollout.v3.*")) == original_files
 
 
 def test_generation_manifest_roundtrip_rejects_case_and_config_mismatch(tmp_path: Path) -> None:
@@ -325,14 +336,28 @@ def test_generation_manifest_roundtrip_rejects_case_and_config_mismatch(tmp_path
         expected_config_identity={
             "action_horizon": 2,
             "image_size": [3, 5],
-            "schema": "state_timeline_v2",
+            "schema": "state_timeline_v3",
         },
     )
+    assert RECORD_VERSION == 3
+    assert loaded.metadata["camera_convention"] == EXPECTED_CAMERA_CONVENTION
+    assert loaded.metadata["schema"] == "state_timeline_v3"
     assert loaded.executed_actions.shape[0] + 1 == loaded.agent_rgb.shape[0]
     with pytest.raises(ValueError, match="expected_case"):
         load_rollout_record(path, expected_case={**record.metadata["case"], "seed": 8})
     with pytest.raises(ValueError, match="expected_config_identity"):
         load_rollout_record(path, expected_config_identity={"action_horizon": 8})
+
+
+def test_loader_rejects_v2_manifest_to_force_projection_rerun(tmp_path: Path) -> None:
+    path = tmp_path / "rollout"
+    save_rollout_record(path, _record())
+    manifest = path.with_suffix(".manifest.json")
+    pointer = json.loads(manifest.read_text())
+    pointer["version"] = 2
+    manifest.write_text(json.dumps(pointer), encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported.*manifest"):
+        load_rollout_record(path)
 
 
 def test_failed_manifest_publish_leaves_previous_generation_resumable(
@@ -341,7 +366,7 @@ def test_failed_manifest_publish_leaves_previous_generation_resumable(
     path = tmp_path / "rollout"
     old = _record()
     save_rollout_record(path, old)
-    original_files = set(tmp_path.glob("rollout.v2.*"))
+    original_files = set(tmp_path.glob("rollout.v3.*"))
     real_replace = rollout.os.replace
 
     def fail_manifest(source: str | Path, destination: str | Path) -> None:
@@ -354,7 +379,7 @@ def test_failed_manifest_publish_leaves_previous_generation_resumable(
         save_rollout_record(path, replace(old, latency_ms=np.asarray([2.0], np.float64)))
     assert load_rollout_record(path).latency_ms.tolist() == [1.0]
     assert json.loads(path.with_suffix(".manifest.json").read_text())["version"] == RECORD_VERSION
-    assert set(tmp_path.glob("rollout.v2.*")) == original_files
+    assert set(tmp_path.glob("rollout.v3.*")) == original_files
 
 
 def test_loader_rejects_undeclared_npz_keys_and_incomplete_array_manifest(tmp_path: Path) -> None:
@@ -442,6 +467,33 @@ def test_corrupt_generation_boundaries_raise_value_error(
         (
             lambda record: replace(
                 record,
+                camera_k_agentview_flipped=np.asarray(
+                    [[-10, 0, 2], [0, -11, 1], [0, 0, 1]], np.float32
+                ),
+            ),
+            "camera convention",
+        ),
+        (
+            lambda record: replace(
+                record,
+                metadata={**record.metadata, "schema": "state_timeline_v2"},
+            ),
+            "metadata schema",
+        ),
+        (
+            lambda record: replace(
+                record,
+                metadata={
+                    key: value
+                    for key, value in record.metadata.items()
+                    if key != "camera_convention"
+                },
+            ),
+            "metadata schema",
+        ),
+        (
+            lambda record: replace(
+                record,
                 metadata={**record.metadata, "image_size": [5, 3]},
             ),
             "config metadata",
@@ -523,7 +575,7 @@ def _capture(env: _Env, obs: dict[str, np.ndarray], resolution: int) -> dict[str
         "uvd": np.asarray([[0.2, 0.2, 1], [0.5, 0.2, 1], [0.35, 0.5, 1]], np.float32),
         "valid": np.ones(3, np.bool_),
         "in_frame": np.ones(3, np.bool_),
-        "k": np.asarray([[-10, 0, 4], [0, -10, 2], [0, 0, 1]], np.float32),
+        "k": np.asarray([[-10, 0, 4], [0, 10, 2], [0, 0, 1]], np.float32),
     }
 
 
