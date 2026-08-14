@@ -196,6 +196,23 @@ def _finite_mask(prediction: np.ndarray, target: np.ndarray, valid: np.ndarray |
     return mask
 
 
+def uvd_pixel_scale(image_size: int | tuple[int, int]) -> np.ndarray:
+    """Return normalized-UVD pixel scales in [u, v] order.
+
+    The repository-wide image_size convention is a scalar or
+    (height, width) tuple. Normalized U/V map to pixel-center ranges
+    [0, width - 1] and [0, height - 1] respectively.
+    """
+
+    if isinstance(image_size, int):
+        height = width = int(image_size)
+    else:
+        height, width = (int(value) for value in image_size)
+    if height < 2 or width < 2:
+        raise ValueError(f"image size must be at least 2x2, got {(height, width)}")
+    return np.asarray([width - 1, height - 1], dtype=np.float32)
+
+
 def canonicalize_uvd_prediction(
     prediction: np.ndarray,
     *,
@@ -273,13 +290,7 @@ def uvd_trajectory_metrics(
         if valid_array.shape != prediction.shape[:2]:
             raise ValueError(f"valid mask shape mismatch: {valid_array.shape} vs {prediction.shape[:2]}")
 
-    if isinstance(image_size, int):
-        height = width = int(image_size)
-    else:
-        height, width = (int(value) for value in image_size)
-    if height < 2 or width < 2:
-        raise ValueError(f"image size must be at least 2x2, got {(height, width)}")
-    uv_scale = np.asarray([width - 1, height - 1], dtype=np.float32)
+    uv_scale = uvd_pixel_scale(image_size)
 
     per_hand = {
         f"hand_{hand_index}": _uvd_hand_metrics(
