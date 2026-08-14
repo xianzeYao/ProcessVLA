@@ -237,6 +237,28 @@ def test_long_language_wraps_inside_summary_and_clear_of_wrist_inset(
         visualization.plt.close(figure)
 
 
+def test_fixed_width_wrap_hard_splits_and_ellipsizes_long_unbroken_token() -> None:
+    wrapped = visualization._wrap_fixed_width("abcdefghijklmnopqrstuvwx", width=8, max_lines=2)
+    lines = wrapped.splitlines()
+
+    assert lines == ["abcdefgh", "ijklmno…"]
+    assert len(lines) <= 2
+    assert all(len(line) <= 8 for line in lines)
+    assert lines[-1].endswith("…")
+
+
+def test_fixed_width_wrap_ellipsizes_text_that_would_need_three_plus_lines() -> None:
+    wrapped = visualization._wrap_fixed_width(
+        "one two three four five six", width=8, max_lines=2
+    )
+    lines = wrapped.splitlines()
+
+    assert lines == ["one two", "three…"]
+    assert len(lines) <= 2
+    assert all(len(line) <= 8 for line in lines)
+    assert lines[-1].endswith("…")
+
+
 def test_video_default_streams_states_then_one_cached_twenty_frame_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     record = _record()
     appended, rendered, cards = [], [], []

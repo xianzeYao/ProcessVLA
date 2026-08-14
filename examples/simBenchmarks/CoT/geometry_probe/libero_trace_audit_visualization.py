@@ -38,7 +38,7 @@ def _wrap_fixed_width(text: object, *, width: int, max_lines: int = 2) -> str:
     lines = textwrap.wrap(
         normalized,
         width=width,
-        break_long_words=False,
+        break_long_words=True,
         break_on_hyphens=False,
     ) or [""]
     if len(lines) <= max_lines:
