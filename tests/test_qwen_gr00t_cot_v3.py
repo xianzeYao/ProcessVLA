@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import MethodType
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -186,3 +187,76 @@ def test_v3_forward_returns_three_uvd_components_and_existing_losses() -> None:
     assert torch.isclose(
         output["total_loss"], 2.0 + 0.62 * output["uvd_loss"]
     )
+
+
+def test_v3_predict_action_with_return_geometry_reuses_its_action_forward() -> None:
+    """A missing geometry decode or a second backbone pass must fail this contract."""
+    model = make_model(points=4)
+    model.config = SimpleNamespace(
+        framework=SimpleNamespace(action_model={"state_dim": 0})
+    )
+    qwen_inputs = {"input_ids": torch.ones(1, 2, dtype=torch.long)}
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 4),
+        depth_current=torch.zeros(1, 1, 4),
+        depth_future=torch.zeros(1, 1, 4),
+        uvd=torch.zeros(1, 12, 4),
+    )
+    backbone_calls = 0
+    decode_calls = 0
+
+    def run_backbone(self, inputs):
+        nonlocal backbone_calls
+        backbone_calls += 1
+        return split
+
+    def decode_geometry(self, hidden, inputs, *, timing_callback=None):
+        nonlocal decode_calls
+        decode_calls += 1
+        return (
+            torch.ones(1, 1, 2, 2),
+            torch.full((1, 1, 2, 2), 2.0),
+            torch.arange(36, dtype=torch.float32).reshape(1, 12, 3),
+        )
+
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            qwen_inputs,
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._run_geometry_backbone = MethodType(run_backbone, model)
+    model._decode_geometry = MethodType(decode_geometry, model)
+    model._build_action_condition = MethodType(
+        lambda self, hidden, native_attention_mask: (
+            torch.zeros(1, 2, 4),
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model.action_model = SimpleNamespace(
+        predict_action=lambda condition, state, encoder_attention_mask: torch.zeros(1, 2, 7)
+    )
+    example = {"image": [], "lang": "move"}
+
+    result = model.predict_action([example], return_geometry=True)
+
+    assert backbone_calls == 1
+    assert decode_calls == 1
+    assert set(result["geometry"]) == {
+        "depth_current",
+        "depth_future",
+        "uvd",
+        "uvd_time",
+        "uvd_landmark_ids",
+    }
+    assert result["geometry"]["uvd"].shape == (1, 12, 3)
+    assert result["geometry"]["uvd_time"].shape == (1, 12)
+    assert result["geometry"]["uvd_landmark_ids"].tolist()[0] == [0, 1, 2] * 4
+
+    action_only = model.predict_action([example])
+
+    assert set(action_only) == {"normalized_actions"}
+    assert backbone_calls == 2
+    assert decode_calls == 1

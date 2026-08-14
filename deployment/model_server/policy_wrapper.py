@@ -125,7 +125,15 @@ class PolicyServerWrapper:
                 )
         proc = self._get_processor(effective_key)
 
-        out = self._framework.predict_action(examples=examples, **kwargs)
+        inference_seed = kwargs.pop("inference_seed", None)
+        if inference_seed is None:
+            out = self._framework.predict_action(examples=examples, **kwargs)
+        else:
+            device = self._framework_device()
+            devices = [device.index if device.index is not None else 0] if device.type == "cuda" else []
+            with torch.random.fork_rng(devices=devices):
+                torch.manual_seed(inference_seed)
+                out = self._framework.predict_action(examples=examples, **kwargs)
         normalized = np.asarray(out["normalized_actions"])
         unnorm = np.stack(
             [proc.unapply_actions(normalized[b]) for b in range(normalized.shape[0])],
@@ -139,6 +147,15 @@ class PolicyServerWrapper:
                 for key, value in auxiliary.items()
             }
         return result
+
+    def _framework_device(self) -> torch.device:
+        device = getattr(self._framework, "device", None)
+        if device is not None:
+            return torch.device(device)
+        try:
+            return next(self._framework.parameters()).device
+        except (AttributeError, StopIteration):
+            return torch.device("cpu")
 
     @staticmethod
     def _to_numpy(value: Any) -> np.ndarray:

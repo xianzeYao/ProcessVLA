@@ -498,6 +498,10 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         if not isinstance(examples, list):
             examples = [examples]
         timing_callback = kwargs.pop("timing_callback", None)
+        return_geometry = _require_boolean_option(
+            kwargs.pop("return_geometry", False),
+            name="return_geometry",
+        )
         timing: dict[str, float] = {}
 
         def timed(name: str, fn: Callable[[], Any]) -> Any:
@@ -538,6 +542,33 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         normalized_actions = actions.detach().float().cpu().numpy()
         timing["output_transfer_ms"] = (time.perf_counter() - output_start) * 1000.0
         result = {"normalized_actions": normalized_actions}
+        if return_geometry:
+            depth_current, depth_future, uvd = self._decode_geometry(
+                split,
+                qwen_inputs,
+                timing_callback=timing_callback,
+            )
+            time_points = int(self.geometry_layout.uvd_time_points)
+            landmark_count = int(self.geometry_layout.landmark_count)
+            uvd_time = torch.linspace(
+                0.0,
+                1.0,
+                time_points,
+                device=uvd.device,
+                dtype=uvd.dtype,
+            ).repeat_interleave(landmark_count)
+            uvd_landmark_ids = torch.arange(
+                landmark_count,
+                device=uvd.device,
+                dtype=torch.long,
+            ).repeat(time_points)
+            result["geometry"] = {
+                "depth_current": depth_current,
+                "depth_future": depth_future,
+                "uvd": uvd,
+                "uvd_time": uvd_time.unsqueeze(0).expand(uvd.shape[0], -1),
+                "uvd_landmark_ids": uvd_landmark_ids.unsqueeze(0).expand(uvd.shape[0], -1),
+            }
         if timing_callback is not None:
             result["timing"] = timing
         return result
