@@ -95,7 +95,12 @@ def test_metrics_separate_projection_validity_from_in_frame_and_backproject_inva
     assert np.isnan(xyz[0, 2]).all()
 
     target = np.asarray([[[0.5, 0.5, 2.0], [0.5, 0.5, 1.0], [0.5, 0.5, 1.0]]], dtype=np.float32)
-    metrics = compute_anchor_metrics(uvd, target, np.ones((1, 3), dtype=np.bool_), image_size=11)
+    metrics = compute_anchor_metrics(
+        np.repeat(uvd, 2, axis=0),
+        np.repeat(target, 2, axis=0),
+        np.asarray([[True, True, True], [False, False, False]]),
+        image_size=11,
+    )
     assert metrics["aggregate"]["projection_valid_count"] == 2
     assert metrics["aggregate"]["in_frame_count"] == 1
     assert metrics["aggregate"]["valid_count"] == 2
@@ -185,3 +190,21 @@ def test_align_rejects_negative_anchor_before_it_can_map_to_step_zero():
 
     with pytest.raises(ValueError, match="anchor must be non-negative"):
         align_realized_trace(steps, anchor=-1, offsets=[1])
+
+
+def test_direct_anchor_metrics_rejects_single_timepoint_with_or_without_metadata():
+    trace = np.zeros((1, 3, 3), dtype=np.float32)
+    trace[..., 2] = 1.0
+    valid = np.ones((1, 3), dtype=np.bool_)
+
+    with pytest.raises(ValueError, match="at least 2"):
+        compute_anchor_metrics(trace, trace, valid, image_size=11)
+    with pytest.raises(ValueError, match="at least 2"):
+        compute_anchor_metrics(
+            trace,
+            trace,
+            valid,
+            image_size=11,
+            uvd_time=np.zeros(3, dtype=np.float32),
+            uvd_landmark_ids=np.arange(3, dtype=np.int64),
+        )

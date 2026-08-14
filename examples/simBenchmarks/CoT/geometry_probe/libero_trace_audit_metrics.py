@@ -183,6 +183,8 @@ def _validated_arrays(
             "prediction and target must share canonical [time, landmark, 3] shape, "
             f"got {prediction.shape} and {target.shape}"
         )
+    if prediction.shape[0] < 2:
+        raise ValueError(f"V3 time_points must be at least 2, got {prediction.shape[0]}")
     if prediction.shape[1] != len(LANDMARK_NAMES):
         raise ValueError(f"expected three V3 landmarks, got {prediction.shape[1]}")
     if valid.shape != prediction.shape[:2]:
