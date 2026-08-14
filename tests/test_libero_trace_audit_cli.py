@@ -234,6 +234,109 @@ def test_plan_records_nonempty_runtime_environment_defaults(
     assert config_payload["pyopengl_platform"] == "osmesa"
 
 
+@pytest.mark.parametrize("phase", ("plan", "run"))
+@pytest.mark.parametrize("configured", ("home-only", "config-only"))
+def test_plan_and_run_reject_one_sided_runtime_paths_before_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    configured: str,
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    home, config = _libero_runtime(tmp_path)
+    monkeypatch.delenv("LIBERO_HOME", raising=False)
+    monkeypatch.delenv("LIBERO_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(
+        cli,
+        "_apply_runtime_environment",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("runtime reached")),
+    )
+    args = [
+        "--phase",
+        phase,
+        "--checkpoint",
+        str(_checkpoint(tmp_path / "model.pt")),
+        "--source-log-dir",
+        str(logs),
+        "--output-dir",
+        str(output),
+        "--max-cases",
+        "1",
+    ]
+    if configured == "home-only":
+        args.extend(("--libero-home", str(home)))
+    else:
+        args.extend(("--libero-config-path", str(config)))
+
+    with pytest.raises(ValueError, match="configured together"):
+        cli.main(args)
+    assert not output.exists()
+    assert not (output / "selection.json").exists()
+    assert not (output / "run_manifest.json").exists()
+
+
+@pytest.mark.parametrize("configured", ("both-none", "both-set"))
+def test_plan_allows_runtime_paths_both_unset_or_both_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / configured
+    _write_logs(logs)
+    monkeypatch.delenv("LIBERO_HOME", raising=False)
+    monkeypatch.delenv("LIBERO_CONFIG_PATH", raising=False)
+    extra: tuple[str, ...] = ()
+    expected: tuple[str | None, str | None] = (None, None)
+    if configured == "both-set":
+        home, config = _libero_runtime(tmp_path)
+        extra = (
+            "--libero-home", str(home),
+            "--libero-config-path", str(config),
+        )
+        expected = (str(home.resolve()), str(config.resolve()))
+
+    cli.main(
+        _plan_args(
+            _checkpoint(tmp_path / "model.pt"), logs, output, "--max-cases", "1", *extra
+        )
+    )
+
+    config_payload = _read_json(output / "run_manifest.json")["config"]
+    assert (
+        config_payload["libero_home"], config_payload["libero_config_path"]
+    ) == expected
+
+
+@pytest.mark.parametrize("missing_key", ("libero_home", "libero_config_path"))
+def test_manifest_rejects_one_sided_runtime_paths_after_digest_recomputed(
+    tmp_path: Path, missing_key: str,
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    home, config = _libero_runtime(tmp_path)
+    cli.main(
+        _plan_args(
+            _checkpoint(tmp_path / "model.pt"),
+            logs,
+            output,
+            "--max-cases",
+            "1",
+            "--libero-home",
+            str(home),
+            "--libero-config-path",
+            str(config),
+        )
+    )
+    selection = _read_json(output / "selection.json")
+    manifest = _read_json(output / "run_manifest.json")
+    manifest["config"][missing_key] = None
+    cli._finalize_manifest(manifest)
+
+    with pytest.raises(ValueError, match="configured together"):
+        cli._validate_manifest(manifest, selection)
+
+
 def test_direct_worker_applies_manifest_runtime_environment_before_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

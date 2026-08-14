@@ -485,6 +485,12 @@ def _validate_manifest(value: object, selection: Mapping[str, object]) -> dict[s
     config = manifest["config"]
     if not isinstance(config, dict) or set(config) != CONFIG_KEYS:
         raise ValueError("manifest config has an invalid exact schema")
+    if (config["libero_home"] is None) != (
+        config["libero_config_path"] is None
+    ):
+        raise ValueError(
+            "LIBERO_HOME and LIBERO_CONFIG_PATH must be configured together"
+        )
     filtered = _validate_suite_list(config["suite_filter"], "suite filter")
     task_filter = config["task_filter"]
     if task_filter is not None and (
@@ -643,6 +649,10 @@ def prepare_plan(
     mujoco_gl: str = "egl",
     pyopengl_platform: str = "egl",
 ) -> dict[str, object]:
+    if (libero_home is None) != (libero_config_path is None):
+        raise ValueError(
+            "LIBERO_HOME and LIBERO_CONFIG_PATH must be configured together"
+        )
     suites = _validate_suite_list(list(suites), "suites")
     seeds = tuple(seeds)
     if (
@@ -1345,11 +1355,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         seeds = _integers(args.seeds, "seeds")
         suite_filter = _csv_values(args.suite_filter) if args.suite_filter else None
         task_filter = _integers(args.task_filter, "task-filter") if args.task_filter else None
-        libero_config_path = args.libero_config_path
-        if args.libero_home and not libero_config_path:
-            libero_config_path = str(
-                Path(args.libero_home).expanduser() / "libero"
-            )
         manifest = prepare_plan(
             checkpoint=args.checkpoint,
             source_log_dir=args.source_log_dir,
@@ -1367,7 +1372,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dummy_steps=args.dummy_steps,
             unnorm_key=args.unnorm_key,
             libero_home=args.libero_home,
-            libero_config_path=libero_config_path,
+            libero_config_path=args.libero_config_path,
             mujoco_gl=args.mujoco_gl,
             pyopengl_platform=args.pyopengl_platform,
         )
