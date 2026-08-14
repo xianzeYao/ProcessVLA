@@ -416,17 +416,35 @@ def _frame(
     rgb = np.ascontiguousarray(
         np.asarray(observation["agentview_image"], np.uint8)[::-1, ::-1]
     )
-    wrist = np.ascontiguousarray(
-        np.asarray(observation["robot0_eye_in_hand_image"], np.uint8)[::-1, ::-1]
-    )
-    raw_depth = np.asarray(observation["agentview_depth"])
-    metric_depth = camera_utils.get_real_depth_map(env.sim, raw_depth)
-    depth = np.ascontiguousarray(np.asarray(metric_depth, np.float32)[::-1, ::-1])
     if rgb.ndim != 3 or rgb.shape[-1] != 3:
         raise ValueError("invalid agentview RGB frame")
     height, width = rgb.shape[:2]
-    if wrist.shape != rgb.shape or depth.shape != (height, width):
-        raise ValueError("camera frames must share one HxW")
+
+    wrist = np.ascontiguousarray(
+        np.asarray(observation["robot0_eye_in_hand_image"], np.uint8)[::-1, ::-1]
+    )
+    if wrist.ndim != 3 or wrist.shape[-1] != 3:
+        raise ValueError("invalid wrist RGB frame")
+    if wrist.shape != rgb.shape:
+        raise ValueError("wrist RGB shape must match agentview RGB shape")
+
+    raw_depth = np.asarray(observation["agentview_depth"])
+    metric_depth = np.asarray(
+        camera_utils.get_real_depth_map(env.sim, raw_depth), np.float32
+    )
+    if metric_depth.ndim == 3:
+        if metric_depth.shape[-1] != 1:
+            raise ValueError(
+                "metric agentview depth must be 2D or have one trailing singleton channel"
+            )
+        metric_depth = metric_depth[..., 0]
+    elif metric_depth.ndim != 2:
+        raise ValueError(
+            "metric agentview depth must be 2D or have one trailing singleton channel"
+        )
+    depth = np.ascontiguousarray(metric_depth[::-1, ::-1])
+    if depth.shape != (height, width):
+        raise ValueError("metric agentview depth HxW must match agentview RGB HxW")
     body_ids = [env.sim.model.body_name2id(name) for name in LANDMARK_BODY_NAMES]
     world_xyz = np.asarray(env.sim.data.body_xpos[body_ids], np.float32)
     camera_k = camera_utils.get_camera_intrinsic_matrix(

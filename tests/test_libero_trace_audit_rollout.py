@@ -228,8 +228,10 @@ def test_flipped_rectangular_camera_intrinsics_and_camera_metrics_are_real() -> 
 def test_frame_converts_raw_sim_depth_to_metric_before_180_flip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_depth = np.asarray([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], np.float32)
-    metric_depth = np.asarray([[1, 2, 3], [4, 5, 6]], np.float32)
+    raw_depth = np.asarray(
+        [[[0.1], [0.2], [0.3]], [[0.4], [0.5], [0.6]]], np.float32
+    )
+    metric_depth = np.asarray([[[1], [2], [3]], [[4], [5], [6]]], np.float32)
     calls: list[tuple[object, np.ndarray]] = []
     camera_utils = ModuleType("robosuite.utils.camera_utils")
 
@@ -275,7 +277,20 @@ def test_frame_converts_raw_sim_depth_to_metric_before_180_flip(
     frame = _frame(env, obs, 3, None)
     assert len(calls) == 1 and calls[0][0] is sim
     np.testing.assert_array_equal(calls[0][1], raw_depth)
-    np.testing.assert_array_equal(frame["depth"], metric_depth[::-1, ::-1])
+    assert frame["depth"].shape == (2, 3)
+    assert frame["depth"].dtype == np.float32
+    np.testing.assert_array_equal(frame["depth"], metric_depth[::-1, ::-1, 0])
+
+    camera_utils.get_real_depth_map = (  # type: ignore[attr-defined]
+        lambda *_: np.repeat(metric_depth, 2, axis=-1)
+    )
+    with pytest.raises(ValueError, match="metric agentview depth.*singleton channel"):
+        _frame(env, obs, 3, None)
+
+    camera_utils.get_real_depth_map = lambda *_: metric_depth  # type: ignore[attr-defined]
+    bad_wrist = {**obs, "robot0_eye_in_hand_image": np.zeros((2, 4, 3), np.uint8)}
+    with pytest.raises(ValueError, match="wrist RGB.*agentview RGB"):
+        _frame(env, bad_wrist, 3, None)
 
 
 def test_generation_manifest_identity_and_interruption(
@@ -531,6 +546,7 @@ def test_collect_rollout_fake_env_state_timeline_and_requests(
     assert record.anchor_steps.tolist() == [0, 2]
     assert len(record.executed_actions) == 4
     assert record.agent_rgb.shape[0] == 5
+    assert record.agent_depth.shape == (5, 3, 5)
     assert record.realized_uvd.shape[0] == 5
     np.testing.assert_array_equal(np.asarray(env.received[10:]), record.executed_actions)
     np.testing.assert_array_equal(record.executed_actions[:, 6], [1, -1, 1, -1])
