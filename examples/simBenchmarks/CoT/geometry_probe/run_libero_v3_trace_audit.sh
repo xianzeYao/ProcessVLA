@@ -134,7 +134,7 @@ for index in "${!SUITES[@]}"; do
   suite="${SUITES[index]}"
   gpu="${GPU_LIST[index]}"
   port=$((BASE_PORT + index))
-  SERVER_CMD=(env "CUDA_VISIBLE_DEVICES=${gpu}" "${POLICY_PYTHON}"
+  SERVER_CMD=(env -u DEBUG "CUDA_VISIBLE_DEVICES=${gpu}" "${POLICY_PYTHON}"
     "${REPO_ROOT}/deployment/model_server/server_policy.py" --ckpt_path "${CHECKPOINT}" --port "${port}")
   [[ "${USE_BF16}" == "1" ]] && SERVER_CMD+=(--use_bf16)
   WORKER_CMD=(env "CUDA_VISIBLE_DEVICES=${gpu}" "${SIM_PYTHON}" -m
@@ -235,10 +235,11 @@ wait_for_workers_fail_fast() {
 
 for index in "${!SUITES[@]}"; do
   suite="${SUITES[index]}"; gpu="${GPU_LIST[index]}"; port=$((BASE_PORT + index))
-  SERVER_CMD=("${POLICY_PYTHON}" "${REPO_ROOT}/deployment/model_server/server_policy.py"
+  SERVER_CMD=(env -u DEBUG "CUDA_VISIBLE_DEVICES=${gpu}" "${POLICY_PYTHON}"
+    "${REPO_ROOT}/deployment/model_server/server_policy.py"
     --ckpt_path "${CHECKPOINT}" --port "${port}")
   [[ "${USE_BF16}" == "1" ]] && SERVER_CMD+=(--use_bf16)
-  CUDA_VISIBLE_DEVICES="${gpu}" setsid "${SERVER_CMD[@]}" >"${LOG_DIR}/${suite}.server.log" 2>&1 &
+  setsid "${SERVER_CMD[@]}" >"${LOG_DIR}/${suite}.server.log" 2>&1 &
   SERVER_PIDS+=("$!")
 done
 wait_for_all_servers

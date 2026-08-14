@@ -877,6 +877,7 @@ def test_launcher_dry_run_prints_four_suites_and_eighty_cases_without_starting(
         cwd=Path(__file__).parents[1],
         env={
             "PATH": "/usr/bin:/bin",
+            "DEBUG": "release",
             "DRY_RUN": "1",
             "MODEL_DIR": str(model_dir),
             "CKPT_NAME": "model.pt",
@@ -894,6 +895,12 @@ def test_launcher_dry_run_prints_four_suites_and_eighty_cases_without_starting(
     assert result.returncode == 0, result.stderr
     assert result.stdout.count("suite=libero_") == 4
     assert "80 cases" in result.stdout
+    server_commands = [
+        line for line in result.stdout.splitlines()
+        if line.startswith("[trace-audit] server command:")
+    ]
+    assert len(server_commands) == 4
+    assert all(" env -u DEBUG CUDA_VISIBLE_DEVICES=" in line for line in server_commands)
     assert "no server or worker was started" in result.stdout
     assert str(libero_home).replace(" ", r"\ ") in result.stdout
     assert str(config_path).replace(" ", r"\ ") in result.stdout
@@ -914,4 +921,5 @@ def test_launcher_contains_fail_fast_all_server_and_worker_process_safety() -> N
     assert "terminate_group" in script
     assert "LIBERO_HOME" in script and "LIBERO_CONFIG_PATH" in script
     assert "PYOPENGL_PLATFORM" in script and "MUJOCO_GL" in script
+    assert script.count("SERVER_CMD=(env -u DEBUG") == 2
     assert "pkill" not in script and "killall" not in script
