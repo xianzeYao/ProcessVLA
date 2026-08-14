@@ -191,6 +191,52 @@ def test_action_axis_covers_negative_executed_actions() -> None:
     assert low < -2.5 and high > 3.0
 
 
+def test_long_language_wraps_inside_summary_and_clear_of_wrist_inset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    language = "put both the cream cheese box and the butter in the basket"
+    record = _record()
+    record = replace(
+        record,
+        metadata={
+            **record.metadata,
+            "case": {**record.metadata["case"], "language": language},
+        },
+    )
+    captured: dict[str, object] = {}
+
+    def inspect_summary(figure):
+        figure.canvas.draw()
+        axis = figure.axes[0]
+        text = next(item for item in axis.texts if "cream cheese" in item.get_text())
+        lines = text.get_text().splitlines()
+        renderer = figure.canvas.get_renderer()
+        captured["summary_lines"] = lines
+        captured["summary_right"] = text.get_window_extent(renderer).x1
+        captured["summary_axis_right"] = axis.get_window_extent(renderer).x1
+        return np.zeros((*visualization.FRAME_SIZE, 3), np.uint8)
+
+    monkeypatch.setattr(visualization, "_figure_to_rgb", inspect_summary)
+    card = visualization._summary_card(record, len(record.agent_rgb) - 1)
+    assert card.shape == (1440, 2560, 3)
+    summary_lines = captured["summary_lines"]
+    assert len(summary_lines) == 2
+    assert language in " ".join(summary_lines)
+    assert captured["summary_right"] <= captured["summary_axis_right"]
+
+    view = prepare_dashboard_view_model(record, 0)
+    figure = visualization._build_dashboard_figure(record, view)
+    try:
+        figure.canvas.draw()
+        agent, wrist = figure.axes[:2]
+        text = next(item for item in agent.texts if "cream cheese" in item.get_text())
+        assert language in " ".join(text.get_text().splitlines())
+        renderer = figure.canvas.get_renderer()
+        assert text.get_window_extent(renderer).x1 < wrist.get_window_extent(renderer).x0
+    finally:
+        visualization.plt.close(figure)
+
+
 def test_video_default_streams_states_then_one_cached_twenty_frame_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     record = _record()
     appended, rendered, cards = [], [], []

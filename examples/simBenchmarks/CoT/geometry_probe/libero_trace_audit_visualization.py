@@ -8,6 +8,7 @@ ground truth: dashed triangles are explicitly self-consistency observations.
 from __future__ import annotations
 
 from pathlib import Path
+import textwrap
 from typing import Mapping, Sequence
 
 import matplotlib
@@ -24,6 +25,30 @@ from .libero_trace_audit_rollout import RolloutRecord, validate_rollout_record
 LANDMARKS = ("left", "right", "wrist")
 LANDMARK_COLORS = {"left": "#e45756", "right": "#4c9f70", "wrist": "#4c78a8"}
 FRAME_SIZE = (1440, 2560)
+
+
+def _wrap_fixed_width(text: object, *, width: int, max_lines: int = 2) -> str:
+    """Wrap normalized text deterministically, truncating only beyond max_lines."""
+
+    if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+        raise ValueError("width must be a positive integer")
+    if isinstance(max_lines, bool) or not isinstance(max_lines, int) or max_lines < 1:
+        raise ValueError("max_lines must be a positive integer")
+    normalized = " ".join(str(text).split())
+    lines = textwrap.wrap(
+        normalized,
+        width=width,
+        break_long_words=False,
+        break_on_hyphens=False,
+    ) or [""]
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    visible = lines[:max_lines]
+    final = visible[-1].rstrip(" .…")
+    if len(final) >= width:
+        final = final[: width - 1].rstrip()
+    visible[-1] = f"{final}…"
+    return "\n".join(visible)
 
 
 def _finite_limit(values: Sequence[np.ndarray], *, floor: float = 1.0) -> tuple[float, float]:
@@ -198,7 +223,11 @@ def _build_dashboard_figure(record: RolloutRecord, view: Mapping[str, object]) -
     agent.text(0.01, 0.01, "solid: predicted • dashed: simulator-realized (self-consistency), not expert GT", transform=agent.transAxes, color="white", fontsize=6.8, bbox={"facecolor": "black", "alpha": 0.72, "pad": 2})
     case = record.metadata["case"]
     outcome = record.metadata["outcome"]
-    agent.text(0.01, 0.985, f"{case['suite']} / task {case['task_id']}  |  {case['language']}\nrank={case['rank_group']} seed={case['seed']} outcome={outcome['success']} ({outcome['end_reason']})\nstate={state} anchor={view['anchor_step']} latency={record.latency_ms[int(view['anchor_index'])]:.1f} ms", transform=agent.transAxes, va="top", color="white", fontsize=7, bbox={"facecolor": "black", "alpha": 0.72, "pad": 2})
+    episode_heading = _wrap_fixed_width(
+        f"{case['suite']} / task {case['task_id']}  |  {case['language']}",
+        width=48,
+    )
+    agent.text(0.01, 0.985, f"{episode_heading}\nrank={case['rank_group']} seed={case['seed']} outcome={outcome['success']} ({outcome['end_reason']})\nstate={state} anchor={view['anchor_step']} latency={record.latency_ms[int(view['anchor_index'])]:.1f} ms", transform=agent.transAxes, va="top", color="white", fontsize=7, bbox={"facecolor": "black", "alpha": 0.72, "pad": 2})
     wrist.imshow(record.wrist_rgb[state], origin="upper")
     wrist.set_title("wrist RGB", fontsize=7)
     wrist.set_axis_off()
@@ -262,7 +291,11 @@ def _summary_card(record: RolloutRecord, frame_index: int) -> np.ndarray:
     view = prepare_dashboard_view_model(record, frame_index)
     aggregate = {key: float(np.nanmean(np.concatenate(list(view["error_panels"][key]["curves"].values())))) for key in ("uv_ade", "d_mae", "delta_d_mae")}
     axis.text(0.0, 0.85, "LIBERO landmark trace audit", fontsize=34, color="white", fontweight="bold")
-    axis.text(0.0, 0.62, f"{case['suite']} • task {case['task_id']} • seed {case['seed']} • {case['language']}", fontsize=20, color="#d8e2ea")
+    summary_heading = _wrap_fixed_width(
+        f"{case['suite']} • task {case['task_id']} • seed {case['seed']} • {case['language']}",
+        width=64,
+    )
+    axis.text(0.0, 0.62, summary_heading, fontsize=20, color="#d8e2ea", va="center")
     axis.text(0.0, 0.42, f"Outcome: {outcome['success']} ({outcome['end_reason']})", fontsize=25, color="#f4b183" if not outcome["success"] else "#8fd19e")
     axis.text(0.0, 0.21, f"mean anchor metrics — UV ADE {aggregate['uv_ade']:.2f} px | d MAE {aggregate['d_mae']:.2f} mm | Δd MAE {aggregate['delta_d_mae']:.2f} mm", fontsize=17, color="white")
     axis.text(0.0, 0.04, "Dashed traces are simulator-realized self-consistency observations, not expert ground truth.", fontsize=13, color="#b8c5cf")
