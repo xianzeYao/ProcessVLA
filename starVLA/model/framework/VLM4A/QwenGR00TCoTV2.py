@@ -558,7 +558,7 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 1.0,
                 time_points,
                 device=uvd.device,
-                dtype=uvd.dtype,
+                dtype=torch.float32,
             ).repeat_interleave(landmark_count)
             uvd_landmark_ids = torch.arange(
                 landmark_count,

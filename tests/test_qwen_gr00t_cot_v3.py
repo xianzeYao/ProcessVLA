@@ -217,7 +217,7 @@ def test_v3_predict_action_with_return_geometry_reuses_its_action_forward() -> N
         return (
             torch.ones(1, 1, 2, 2),
             torch.full((1, 1, 2, 2), 2.0),
-            torch.arange(36, dtype=torch.float32).reshape(1, 12, 3),
+            torch.arange(36, dtype=torch.bfloat16).reshape(1, 12, 3),
         )
 
     model._build_native_inputs = MethodType(
@@ -254,6 +254,13 @@ def test_v3_predict_action_with_return_geometry_reuses_its_action_forward() -> N
     }
     assert result["geometry"]["uvd"].shape == (1, 12, 3)
     assert result["geometry"]["uvd_time"].shape == (1, 12)
+    assert result["geometry"]["uvd_time"].dtype == torch.float32
+    torch.testing.assert_close(
+        result["geometry"]["uvd_time"],
+        torch.linspace(0.0, 1.0, 4, dtype=torch.float32).repeat_interleave(3).unsqueeze(0),
+        rtol=0.0,
+        atol=0.0,
+    )
     assert result["geometry"]["uvd_landmark_ids"].tolist()[0] == [0, 1, 2] * 4
 
     action_only = model.predict_action([example])
