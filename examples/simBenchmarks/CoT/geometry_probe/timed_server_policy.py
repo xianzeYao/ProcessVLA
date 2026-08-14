@@ -29,8 +29,8 @@ class TimedPolicyServerWrapper(PolicyServerWrapper):
 
         server_start = time.perf_counter()
         stage_timer = _StageTimer()
-        output = self._framework.predict_action(
-            examples=examples,
+        output = self._predict_with_scoped_seed(
+            examples,
             timing_callback=stage_timer.time_gpu,
             **kwargs,
         )

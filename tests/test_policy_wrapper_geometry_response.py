@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import numpy as np
 import torch
+
+from examples.simBenchmarks.CoT.geometry_probe.timed_server_policy import TimedPolicyServerWrapper
 
 from deployment.model_server.policy_wrapper import PolicyServerWrapper
 
@@ -68,4 +72,45 @@ def test_policy_wrapper_scopes_seed_and_forwards_geometry_as_numpy() -> None:
     }
     assert all(isinstance(value, np.ndarray) for value in first["geometry"].values())
     assert first["geometry"]["uvd_landmark_ids"].tolist() == [[0, 1, 2]]
+    assert np.issubdtype(first["geometry"]["uvd_landmark_ids"].dtype, np.integer)
+    assert first["geometry"]["depth_current"].dtype == np.float32
     assert unseeded["actions"].shape == (1, 2, 3)
+
+def test_scoped_cuda_seed_touches_only_framework_device(monkeypatch) -> None:
+    framework = _RandomFramework()
+    wrapper = _make_wrapper(framework)
+    wrapper._framework_device = lambda: torch.device("cuda:1")
+    fork_devices = []
+    cuda_devices = []
+    cuda_seeds = []
+    monkeypatch.setattr(
+        torch.random, "fork_rng", lambda *, devices: (fork_devices.append(devices) or nullcontext())
+    )
+    monkeypatch.setattr(torch.cuda, "device", lambda index: (cuda_devices.append(index) or nullcontext()))
+    monkeypatch.setattr(torch.cuda, "manual_seed", lambda seed: cuda_seeds.append(seed))
+
+    wrapper._predict_with_scoped_seed([{"image": [], "lang": "move"}], inference_seed=19)
+
+    assert fork_devices == [[1]]
+    assert cuda_devices == [1]
+    assert cuda_seeds == [19]
+    assert framework.request_kwargs == [{}]
+
+
+def test_timed_wrapper_scopes_seed_without_forwarding_it() -> None:
+    framework = _RandomFramework()
+    wrapper = TimedPolicyServerWrapper.__new__(TimedPolicyServerWrapper)
+    wrapper._framework = framework
+    wrapper._default_unnorm_key = "libero"
+    wrapper._available_unnorm_keys = ["libero"]
+    wrapper._get_processor = lambda key: _IdentityProcessor()
+
+    output = wrapper.predict_action(
+        [{"image": [], "lang": "move"}],
+        return_timing=True,
+        inference_seed=23,
+    )
+
+    assert output["actions"].shape == (1, 2, 3)
+    assert "timing" in output
+    assert "inference_seed" not in framework.request_kwargs[0]

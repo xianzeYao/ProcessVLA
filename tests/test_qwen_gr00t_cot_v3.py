@@ -12,6 +12,7 @@ from starVLA.model.framework.VLM4A.QwenGR00TCoTV2 import (
     Qwen_GR00T_CoT_V2,
 )
 from starVLA.model.framework.VLM4A.QwenGR00TCoTV3 import Qwen_GR00T_CoT_V3
+from starVLA.model.modules.geometric_cot_v2 import GeometryTokenLayout
 from starVLA.model.modules.geometric_cot_v3 import (
     LandmarkGeometryTokenLayout,
     PackedLandmarkUVDTargets,
@@ -260,3 +261,43 @@ def test_v3_predict_action_with_return_geometry_reuses_its_action_forward() -> N
     assert set(action_only) == {"normalized_actions"}
     assert backbone_calls == 2
     assert decode_calls == 1
+
+def test_v2_return_geometry_has_stable_v3_only_error() -> None:
+    model = Qwen_GR00T_CoT_V2.__new__(Qwen_GR00T_CoT_V2)
+    model.geometry_layout = GeometryTokenLayout(
+        depth_query_count=1,
+        uvd_points_per_hand=2,
+        hand_count=1,
+    )
+    model.config = SimpleNamespace(
+        framework=SimpleNamespace(action_model={"state_dim": 0})
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._run_geometry_backbone = MethodType(
+        lambda self, inputs: GeometryHiddenSplit(
+            native=torch.zeros(1, 2, 4),
+            depth_current=torch.zeros(1, 1, 4),
+            depth_future=torch.zeros(1, 1, 4),
+            uvd=torch.zeros(1, 2, 4),
+        ),
+        model,
+    )
+    model._build_action_condition = MethodType(
+        lambda self, hidden, native_attention_mask: (
+            torch.zeros(1, 2, 4),
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model.action_model = SimpleNamespace(
+        predict_action=lambda condition, state, encoder_attention_mask: torch.zeros(1, 2, 7)
+    )
+
+    with pytest.raises(ValueError, match="supported only by QwenGR00TCoTV3"):
+        model.predict_action([{"image": [], "lang": "move"}], return_geometry=True)
