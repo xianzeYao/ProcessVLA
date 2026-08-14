@@ -4,7 +4,9 @@ from pathlib import Path
 import av
 import cv2
 import numpy as np
+import pytest
 
+from examples.simBenchmarks.CoT.geometry_probe import libero_trace_audit_visualization as visualization
 from examples.simBenchmarks.CoT.geometry_probe.libero_trace_audit_rollout import (
     RolloutRecord,
     validate_rollout_record,
@@ -134,7 +136,82 @@ def test_rollout_task_and_suite_pngs_are_nonempty(tmp_path: Path) -> None:
     records = [replace(record, metadata={**record.metadata, "case": {**record.metadata["case"], "seed": seed}}) for seed in range(7, 12)]
     task = render_task_seed_summary(records, tmp_path / "task.png")
     sheets = [render_task_seed_summary(records, tmp_path / f"task_{index}.png") for index in range(4)]
-    suite = render_suite_contact_sheet(sheets, tmp_path / "suite.png")
+    suite = render_suite_contact_sheet(
+        list(zip(sheets, ("best", "best", "worst", "worst"))), tmp_path / "suite.png"
+    )
     for path in (rollout, task, suite):
         image = cv2.imread(str(path))
         assert image is not None and image.size > 0
+
+
+
+def test_overlay_maps_normalized_uv_to_pixels_and_leaves_invalid_breaks() -> None:
+    record = _record()
+    record = replace(record, predicted_uvd=record.predicted_uvd.copy(), anchor_target_uvd=record.anchor_target_uvd.copy(), anchor_target_valid=record.anchor_target_valid.copy())
+    record.predicted_uvd[0, 0] = np.asarray([[0.5, 0.5, 1.0], [0.0, 0.0, 1.0], [1.0, 1.0, 1.0]], np.float32)
+    record.anchor_target_valid[0, 0, 1] = False
+    view = prepare_dashboard_view_model(record, frame_index=0)
+    width, height = record.agent_rgb.shape[2], record.agent_rgb.shape[1]
+    np.testing.assert_allclose(view["overlay"]["predicted_xy_px"][0], [0.5 * (width - 1), 0.5 * (height - 1)])
+    np.testing.assert_allclose(view["overlay"]["predicted_xy_px"][2], [width - 1, height - 1])
+    assert np.isnan(view["overlay"]["realized_xy_px"][1]).all()
+    figure = visualization._build_dashboard_figure(record, view)
+    try:
+        predicted = next(line for line in figure.axes[0].lines if line.get_label() == "predicted")
+        np.testing.assert_allclose(predicted.get_xdata()[:3], [0.5 * (width - 1), 0.0, width - 1])
+        realized = next(line for line in figure.axes[0].lines if line.get_label() == "simulator-realized")
+        assert np.isnan(realized.get_xdata()).any()
+    finally:
+        visualization.plt.close(figure)
+
+
+def test_terminal_state_uses_final_anchor_endpoint_while_action_cursor_stays_last_action() -> None:
+    record = _record()
+    view = prepare_dashboard_view_model(record, frame_index=len(record.agent_rgb) - 1)
+    assert view["cursor"]["state_step"] == len(record.executed_actions)
+    assert view["cursor"]["action_step"] == len(record.executed_actions) - 1
+    assert view["anchor_step"] == 2
+    assert view["cursor"]["relative_step"] == 2
+    assert view["cursor"]["chunk_point"] == 2
+    np.testing.assert_allclose(view["overlay"]["realized_xy_px"], view["overlay"]["predicted_xy_px"])
+
+
+def test_action_axis_covers_negative_executed_actions() -> None:
+    record = _record()
+    raw = record.policy_actions_raw.copy()
+    raw[:, :6] = np.asarray([-2.5, -1.0, -0.2, 0.1, 0.7, 3.0], np.float32)
+    executed = raw.copy()
+    executed[:, 6] = 1.0
+    record = replace(record, policy_actions_raw=raw, executed_actions=executed)
+    view = prepare_dashboard_view_model(record, frame_index=0)
+    low, high = view["axis_limits"]["actions_y"]
+    assert low < -2.5 and high > 3.0
+
+
+def test_video_default_streams_states_then_one_cached_twenty_frame_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    record = _record()
+    appended, rendered, cards = [], [], []
+    class Writer:
+        def append_data(self, frame: np.ndarray) -> None: appended.append(frame)
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+    monkeypatch.setattr(visualization.imageio, "get_writer", lambda *_args, **_kwargs: Writer())
+    monkeypatch.setattr(visualization, "render_dashboard_frame", lambda _record, index: rendered.append(index) or np.full((2, 2, 3), index, np.uint8))
+    monkeypatch.setattr(visualization, "_summary_card", lambda *_args: cards.append(np.full((2, 2, 3), 99, np.uint8)) or cards[-1])
+    render_rollout_video(record, tmp_path / "stream.mp4", fps=10)
+    assert rendered == list(range(len(record.agent_rgb)))
+    assert len(cards) == 1
+    assert len(appended) == len(record.agent_rgb) + 20
+    assert [int(frame[0, 0, 0]) for frame in appended[:len(record.agent_rgb)]] == rendered
+
+
+def test_contact_sheet_requires_explicit_balanced_rank_groups(tmp_path: Path) -> None:
+    record = _record()
+    records = [replace(record, metadata={**record.metadata, "case": {**record.metadata["case"], "seed": seed}}) for seed in range(7, 12)]
+    summary = render_task_seed_summary(records, tmp_path / "unknown-name.png")
+    output = render_suite_contact_sheet([(summary, "best"), (summary, "worst"), (summary, "best"), (summary, "worst")], tmp_path / "sheet.png")
+    assert output.exists()
+    with pytest.raises(ValueError, match="two best and two worst"):
+        render_suite_contact_sheet([(summary, "best")] * 4, tmp_path / "bad.png")
+    with pytest.raises(ValueError, match="exactly four"):
+        render_suite_contact_sheet([(summary, "best")] * 3, tmp_path / "short.png")
