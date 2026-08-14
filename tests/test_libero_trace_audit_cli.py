@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -114,16 +114,38 @@ def _record(case: AuditCase, config_identity: str) -> RolloutRecord:
                 "anchor_0": {
                     name: {
                         "uv_ade_px": float(index + 1),
+                        "uv_fde_px": float(index + 1.5),
                         "d_mae_mm": float(index + 2),
                         "delta_d_mae_mm": float("nan"),
+                        "delta_d_direction_accuracy": 0.75,
+                        "valid_count": 6,
                     }
                     for index, name in enumerate(("left", "right", "wrist", "aggregate"))
-                }
+                } | {
+                    "persistence": {
+                        "aggregate": {
+                            "uv_fde_px": 9.0,
+                            "delta_d_direction_accuracy": 0.25,
+                        }
+                    },
+                    "camera": {"center_mae_mm": 4.0, "center_valid_count": 2},
+                },
             },
             "schema": "state_timeline_v2",
             "audit_config_identity": config_identity,
         },
     )
+
+
+def _materialize_raw_and_shards(output: Path, manifest: dict[str, object]) -> None:
+    for planned in manifest["cases"]:
+        case = AuditCase(**{key: planned[key] for key in cli.CASE_FIELDS})
+        save_rollout_record(
+            output / "raw" / planned["artifact_id"],
+            _record(case, manifest["config_identity"]),
+        )
+    for suite in manifest["config"]["suite_filter"]:
+        cli.execute_worker(output, suite)
 
 
 def test_dry_run_writes_stable_eighty_case_manifest_without_runtime_side_effects(
@@ -143,6 +165,8 @@ def test_dry_run_writes_stable_eighty_case_manifest_without_runtime_side_effects
     selection = _read_json(output / "selection.json")
     manifest = _read_json(output / "run_manifest.json")
     assert len(selection["tasks"]) == 16
+    assert len(selection["evaluations"]) == 24
+    assert selection["evaluations"][0]["outcomes"] == [True] * 5
     assert manifest["seeds"] == [7, 8, 9, 10, 11]
     assert len(manifest["cases"]) == 80
     ids = [case["artifact_id"] for case in manifest["cases"]]
@@ -192,6 +216,101 @@ def test_existing_manifest_rejects_checkpoint_or_selection_mismatch(tmp_path: Pa
     assert (output / "run_manifest.json").read_bytes() == original
 
 
+def test_checkpoint_identity_ignores_touch_but_rejects_same_size_content_change(
+    tmp_path: Path,
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    checkpoint = _checkpoint(tmp_path / "model.pt", b"abcdefgh")
+    cli.main(_plan_args(checkpoint, logs, output))
+    manifest = _read_json(output / "run_manifest.json")
+    original_identity = manifest["config_identity"]
+    original_bytes = (output / "run_manifest.json").read_bytes()
+
+    stat = checkpoint.stat()
+    os.utime(checkpoint, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    cli.main(_plan_args(checkpoint, logs, output))
+    assert _read_json(output / "run_manifest.json")["config_identity"] == original_identity
+    assert (output / "run_manifest.json").read_bytes() == original_bytes
+
+    checkpoint.write_bytes(b"ABCDEFGH")
+    with pytest.raises(ValueError, match="manifest conflict"):
+        cli.main(_plan_args(checkpoint, logs, output))
+
+
+@pytest.mark.parametrize(
+    "target,mutate",
+    [
+        ("run_manifest.json", lambda value: value["config"].__setitem__("resolution", 0)),
+        ("run_manifest.json", lambda value: value["ports"].__setitem__("libero_goal", 9999)),
+        ("run_manifest.json", lambda value: value["cases"][0].__setitem__("seed", 99)),
+        ("selection.json", lambda value: value["tasks"][0].__setitem__("task_id", 99)),
+    ],
+)
+def test_manifest_loader_rejects_any_selection_or_run_tamper(
+    tmp_path: Path, target: str, mutate: object
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    checkpoint = _checkpoint(tmp_path / "model.pt")
+    cli.main(_plan_args(checkpoint, logs, output, "--max-cases", "1"))
+    path = output / target
+    value = _read_json(path)
+    mutate(value)
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="manifest|selection"):
+        cli.execute_worker(output, "libero_10")
+
+
+def test_strict_schema_rejects_coerced_integer_and_boolean_types(tmp_path: Path) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    checkpoint = _checkpoint(tmp_path / "model.pt")
+    cli.main(_plan_args(checkpoint, logs, output, "--max-cases", "1"))
+
+    selection = _read_json(output / "selection.json")
+    selection["tasks"][0]["outcome_count"] = float(
+        selection["tasks"][0]["outcome_count"]
+    )
+    with pytest.raises(ValueError, match="selected task"):
+        cli._validate_selection(selection)
+
+    selection = _read_json(output / "selection.json")
+    manifest = _read_json(output / "run_manifest.json")
+    manifest["cases"][0]["seed"] = True
+    cli._finalize_manifest(manifest)
+    with pytest.raises(ValueError, match="case"):
+        cli._validate_manifest(manifest, selection)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [("--resolution", "0"), ("--action-horizon", "0"), ("--dummy-steps", "-1")],
+)
+def test_invalid_plan_ranges_fail_before_manifest_write(tmp_path: Path, extra: tuple[str, str]) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    checkpoint = _checkpoint(tmp_path / "model.pt")
+
+    with pytest.raises(ValueError):
+        cli.main(_plan_args(checkpoint, logs, output, *extra))
+    assert not (output / "run_manifest.json").exists()
+
+
+def test_suite_names_are_canonical_and_cannot_traverse_source_or_shards(tmp_path: Path) -> None:
+    logs = tmp_path / "logs"
+    _write_logs(logs)
+    with pytest.raises(ValueError, match="canonical"):
+        cli.prepare_plan(
+            checkpoint=_checkpoint(tmp_path / "model.pt"),
+            source_log_dir=logs,
+            output_dir=tmp_path / "audit",
+            suites=("../x",),
+            dry_run=True,
+        )
+
+
 def test_worker_skips_only_valid_identity_and_rebuilds_one_deduplicated_shard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -228,6 +347,37 @@ def test_worker_skips_only_valid_identity_and_rebuilds_one_deduplicated_shard(
     assert [row["artifact_id"] for row in rows] == [planned["artifact_id"]]
 
 
+def test_worker_dry_run_never_connects_collects_or_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    checkpoint = _checkpoint(tmp_path / "model.pt")
+    cli.main(_plan_args(checkpoint, logs, output, "--max-cases", "1"))
+    manifest = _read_json(output / "run_manifest.json")
+    suite = manifest["cases"][0]["suite"]
+    monkeypatch.setattr(cli, "_make_policy_client", lambda *_: pytest.fail("connected"))
+    monkeypatch.setattr(cli, "collect_rollout", lambda *_: pytest.fail("collected"))
+    monkeypatch.setattr(cli, "save_rollout_record", lambda *_: pytest.fail("saved"))
+
+    assert cli.main([
+        "--phase", "worker", "--output-dir", str(output), "--worker-suite", suite, "--dry-run"
+    ]) == 0
+    assert "would process 1 cases" in capsys.readouterr().out
+    assert not (output / "raw" / "workers" / f"{suite}.episodes.jsonl").exists()
+
+
+def test_aggregate_dry_run_does_not_load_raw_or_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    cli.main(_plan_args(_checkpoint(tmp_path / "model.pt"), logs, output, "--max-cases", "1"))
+    monkeypatch.setattr(cli, "load_rollout_record", lambda *_args, **_kwargs: pytest.fail("loaded raw"))
+    monkeypatch.setattr(cli, "render_rollout_video", lambda *_: pytest.fail("rendered"))
+    assert cli.main(["--phase", "aggregate", "--output-dir", str(output), "--dry-run"]) == 0
+
+
 def test_max_cases_worker_with_no_assigned_case_writes_an_empty_shard(tmp_path: Path) -> None:
     logs, output = tmp_path / "logs", tmp_path / "audit"
     _write_logs(logs)
@@ -248,6 +398,56 @@ def test_worker_rejects_port_that_differs_from_manifest(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="port.*manifest"):
         cli.execute_worker(output, "libero_spatial", port=7777)
+
+
+def test_normal_aggregate_requires_validated_worker_shards(tmp_path: Path) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    cli.main(_plan_args(
+        _checkpoint(tmp_path / "model.pt"), logs, output, "--max-cases", "1"
+    ))
+    manifest = _read_json(output / "run_manifest.json")
+    _materialize_raw_and_shards(output, manifest)
+
+    summary = cli.aggregate_run(output, render=False, source_mode="worker_shards")
+
+    assert summary["artifact_counts"] == {"episodes": 1}
+    assert len((output / "episodes.jsonl").read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "corruption", ["missing", "duplicate", "extra", "corrupt", "mismatch", "extra_file"]
+)
+def test_normal_aggregate_rejects_invalid_worker_shards(
+    tmp_path: Path, corruption: str
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    cli.main(_plan_args(
+        _checkpoint(tmp_path / "model.pt"), logs, output, "--max-cases", "1"
+    ))
+    manifest = _read_json(output / "run_manifest.json")
+    _materialize_raw_and_shards(output, manifest)
+    suite = manifest["cases"][0]["suite"]
+    shard = output / "raw" / "workers" / f"{suite}.episodes.jsonl"
+    lines = shard.read_text().splitlines()
+    if corruption == "missing":
+        shard.unlink()
+    elif corruption == "duplicate":
+        shard.write_text("\n".join([lines[0], lines[0]]) + "\n")
+    elif corruption == "extra":
+        row = json.loads(lines[0]); row["artifact_id"] = "extra"
+        shard.write_text(lines[0] + "\n" + json.dumps(row) + "\n")
+    elif corruption == "corrupt":
+        shard.write_text("{broken\n")
+    elif corruption == "mismatch":
+        row = json.loads(lines[0]); row["outcome"]["success"] = not row["outcome"]["success"]
+        shard.write_text(json.dumps(row) + "\n")
+    else:
+        (shard.parent / "unexpected.episodes.jsonl").write_text("")
+
+    with pytest.raises(ValueError, match="shard"):
+        cli.aggregate_run(output, render=False, source_mode="worker_shards")
 
 
 def test_aggregate_validates_counts_deduplicates_and_passes_explicit_rank_to_sheet(
@@ -299,6 +499,21 @@ def test_aggregate_validates_counts_deduplicates_and_passes_explicit_rank_to_she
     assert {group["group_type"] for group in summary["groups"]} >= {
         "landmark", "task", "rank", "suite", "seed"
     }
+    metric_paths = {item["metric_path"] for item in summary["observations"]}
+    assert {
+        "left.uv_fde_px",
+        "left.delta_d_direction_accuracy",
+        "persistence.aggregate.uv_fde_px",
+        "camera.center_mae_mm",
+    } <= metric_paths
+    assert all({"mean", "std", "count"} <= set(group) for group in summary["groups"])
+    episode = summary["episode_table"][0]
+    assert episode["success"] is False
+    assert episode["outcome_changed"] is True
+    assert episode["action_steps"] == 2
+    assert episode["state_steps"] == 3
+    assert episode["latency_mean_ms"] == 1.0
+    assert episode["latency_p95_ms"] == 1.0
     assert "NaN" not in (output / "summary.json").read_text()
 
 
@@ -323,6 +538,9 @@ def test_launcher_dry_run_prints_four_suites_and_eighty_cases_without_starting(
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     _checkpoint(model_dir / "model.pt")
+    libero_home = tmp_path / "LIBERO home"
+    libero_home.mkdir()
+    config_path = tmp_path / "config path"
     script = Path("examples/simBenchmarks/CoT/geometry_probe/run_libero_v3_trace_audit.sh")
     result = subprocess.run(
         ["bash", str(script)],
@@ -336,6 +554,8 @@ def test_launcher_dry_run_prints_four_suites_and_eighty_cases_without_starting(
             "OUTPUT_DIR": str(tmp_path / "audit"),
             "POLICY_PYTHON": "/bin/false",
             "SIM_PYTHON": str(Path("/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python")),
+            "LIBERO_HOME": str(libero_home),
+            "LIBERO_CONFIG_PATH": str(config_path),
         },
         text=True,
         capture_output=True,
@@ -345,3 +565,23 @@ def test_launcher_dry_run_prints_four_suites_and_eighty_cases_without_starting(
     assert result.stdout.count("suite=libero_") == 4
     assert "80 cases" in result.stdout
     assert "no server or worker was started" in result.stdout
+    assert str(libero_home).replace(" ", r"\ ") in result.stdout
+    assert str(config_path).replace(" ", r"\ ") in result.stdout
+    manifest = _read_json(tmp_path / "audit" / "run_manifest.json")
+    assert manifest["config"]["libero_home"] == str(libero_home)
+    assert manifest["config"]["libero_config_path"] == str(config_path)
+    assert manifest["config"]["mujoco_gl"] == "egl"
+    assert manifest["config"]["pyopengl_platform"] == "egl"
+
+
+def test_launcher_contains_fail_fast_all_server_and_worker_process_safety() -> None:
+    script = Path(
+        "examples/simBenchmarks/CoT/geometry_probe/run_libero_v3_trace_audit.sh"
+    ).read_text()
+    assert "wait_for_all_servers" in script
+    assert "wait_for_workers_fail_fast" in script
+    assert "SERVER_READY" in script
+    assert "terminate_group" in script
+    assert "LIBERO_HOME" in script and "LIBERO_CONFIG_PATH" in script
+    assert "PYOPENGL_PLATFORM" in script and "MUJOCO_GL" in script
+    assert "pkill" not in script and "killall" not in script

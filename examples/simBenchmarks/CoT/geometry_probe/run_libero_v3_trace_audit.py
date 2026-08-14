@@ -54,8 +54,42 @@ CASE_FIELDS = (
     "seed",
     "original_success",
 )
-METRIC_NAMES = ("uv_ade_px", "d_mae_mm", "delta_d_mae_mm")
 LANDMARKS = ("left", "right", "wrist", "aggregate")
+SELECTION_KEYS = {"schema", "schema_version", "selection_policy", "evaluations", "tasks"}
+EVALUATION_KEYS = {"suite", "task_id", "language", "outcomes", "success_rate"}
+SELECTED_TASK_KEYS = {
+    "suite", "task_id", "language", "rank_group", "success_rate", "outcome_count",
+    "initial_state_index", "original_success",
+}
+MANIFEST_KEYS = {
+    "schema", "schema_version", "tool_version", "checkpoint_identity",
+    "selection_digest", "config_identity", "manifest_digest", "suites", "seeds",
+    "config", "ports", "cases", "expected_artifacts", "full_audit",
+    "aggregation_sources",
+}
+CHECKPOINT_KEYS = {"resolved_path", "exists", "size", "mtime_ns", "content_sha256"}
+EXPECTED_KEYS = {
+    "episodes", "videos", "rollout_summaries", "task_seed_summaries",
+    "suite_contact_sheets",
+}
+CONFIG_KEYS = {
+    "suites", "seeds", "host", "base_port", "ports", "suite_filter", "task_filter",
+    "max_cases", "resolution", "action_horizon", "dummy_steps", "unnorm_key",
+    "libero_home", "libero_config_path", "mujoco_gl", "pyopengl_platform",
+}
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _contained(path: Path, root: Path, label: str) -> Path:
+    resolved = path.resolve(strict=False)
+    try:
+        resolved.relative_to(root.resolve(strict=False))
+    except ValueError as error:
+        raise ValueError(f"{label} escapes its configured root") from error
+    return resolved
 
 
 def _strict_load(path: Path) -> object:
@@ -146,18 +180,30 @@ def artifact_id(case: AuditCase | Mapping[str, object]) -> str:
     )
 
 
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _checkpoint_identity(path: str | Path, *, allow_missing: bool) -> dict[str, object]:
     checkpoint = Path(path).expanduser().resolve(strict=False)
     if not checkpoint.is_file():
         if not allow_missing:
             raise FileNotFoundError(f"checkpoint does not exist: {checkpoint}")
-        return {"resolved_path": str(checkpoint), "exists": False, "size": None, "mtime_ns": None}
+        return {
+            "resolved_path": str(checkpoint), "exists": False, "size": None,
+            "mtime_ns": None, "content_sha256": None,
+        }
     stat = checkpoint.stat()
     return {
         "resolved_path": str(checkpoint),
         "exists": True,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
+        "content_sha256": _file_sha256(checkpoint),
     }
 
 
@@ -169,13 +215,13 @@ def _worker_log(source: Path, suite: str, suite_index: int) -> Path:
     )
     existing = [path for path in candidates if path.is_file()]
     if len(existing) == 1:
-        return existing[0]
+        return _contained(existing[0], source, "worker log")
     if len(existing) > 1:
         raise ValueError(f"ambiguous worker logs for {suite}: {existing}")
     matches = sorted(source.glob(f"{suite}*.worker.log"))
     if len(matches) != 1:
         raise FileNotFoundError(f"expected exactly one worker log for {suite} in {source}")
-    return matches[0]
+    return _contained(matches[0], source, "worker log")
 
 
 def _selection_payload(rows: Sequence[TaskEvaluation]) -> dict[str, object]:
@@ -205,8 +251,279 @@ def _selection_payload(rows: Sequence[TaskEvaluation]) -> dict[str, object]:
         "schema": "libero-v3-trace-audit-selection",
         "schema_version": SCHEMA_VERSION,
         "selection_policy": "best-first-disjoint-v1",
+        "evaluations": [
+            {
+                "suite": row.suite,
+                "task_id": row.task_id,
+                "language": row.language,
+                "outcomes": list(row.outcomes),
+                "success_rate": row.success_rate,
+            }
+            for row in sorted(
+                rows, key=lambda item: (DEFAULT_SUITES.index(item.suite), item.task_id)
+            )
+        ],
         "tasks": tasks,
     }
+
+
+def _validate_suite_list(value: object, name: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value or any(not isinstance(item, str) for item in value):
+        raise ValueError(f"{name} must be a non-empty suite list")
+    suites = tuple(value)
+    if len(suites) != len(set(suites)) or any(suite not in DEFAULT_SUITES for suite in suites):
+        raise ValueError(f"{name} must contain unique canonical standard suites")
+    return suites
+
+
+def _validate_selection(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != SELECTION_KEYS:
+        raise ValueError("selection has an invalid exact schema")
+    if (
+        value["schema"] != "libero-v3-trace-audit-selection"
+        or value["schema_version"] != SCHEMA_VERSION
+        or value["selection_policy"] != "best-first-disjoint-v1"
+        or not isinstance(value["evaluations"], list)
+        or not isinstance(value["tasks"], list)
+    ):
+        raise ValueError("selection has an unsupported schema")
+    evaluations: dict[tuple[str, int], Mapping[str, object]] = {}
+    for row in value["evaluations"]:
+        if not isinstance(row, dict) or set(row) != EVALUATION_KEYS:
+            raise ValueError("selection evaluation has an invalid exact schema")
+        suite, task_id = row["suite"], row["task_id"]
+        outcomes = row["outcomes"]
+        if (
+            suite not in DEFAULT_SUITES
+            or not _is_int(task_id)
+            or task_id < 0
+            or not isinstance(row["language"], str)
+            or not row["language"].strip()
+            or not isinstance(outcomes, list)
+            or not outcomes
+            or any(not isinstance(outcome, bool) for outcome in outcomes)
+            or isinstance(row["success_rate"], bool)
+            or not isinstance(row["success_rate"], (int, float))
+            or not np.isfinite(row["success_rate"])
+            or not np.isclose(row["success_rate"], sum(outcomes) / len(outcomes))
+        ):
+            raise ValueError("selection evaluation values are invalid")
+        key = (str(suite), int(task_id))
+        if key in evaluations:
+            raise ValueError("selection evaluation task ids must be unique")
+        evaluations[key] = row
+    selected_keys: set[tuple[str, int]] = set()
+    for task in value["tasks"]:
+        if not isinstance(task, dict) or set(task) != SELECTED_TASK_KEYS:
+            raise ValueError("selection selected task has an invalid exact schema")
+        suite, task_id = task["suite"], task["task_id"]
+        if suite not in DEFAULT_SUITES or not _is_int(task_id) or task_id < 0:
+            raise ValueError("selection selected task identity is invalid")
+        key = (str(suite), int(task_id))
+        row = evaluations.get(key)
+        if row is None or key in selected_keys:
+            raise ValueError("selection selected task does not have unique parsed provenance")
+        initial = task["initial_state_index"]
+        if (
+            task["rank_group"] not in {"best", "worst"}
+            or not isinstance(task["language"], str)
+            or not task["language"].strip()
+            or isinstance(task["success_rate"], bool)
+            or not isinstance(task["success_rate"], (int, float))
+            or not np.isfinite(task["success_rate"])
+            or not _is_int(task["outcome_count"])
+            or task["outcome_count"] < 1
+            or not _is_int(initial)
+            or not 0 <= initial < len(row["outcomes"])
+            or not isinstance(task["original_success"], bool)
+            or task["language"] != row["language"]
+            or task["success_rate"] != row["success_rate"]
+            or task["outcome_count"] != len(row["outcomes"])
+            or task["original_success"] is not row["outcomes"][initial]
+        ):
+            raise ValueError("selection selected task provenance is inconsistent")
+        selected_keys.add(key)
+    return value
+
+
+def _manifest_identity_payload(manifest: Mapping[str, object]) -> dict[str, object]:
+    checkpoint = manifest["checkpoint_identity"]
+    return {
+        "schema": manifest["schema"],
+        "schema_version": manifest["schema_version"],
+        "tool_version": manifest["tool_version"],
+        "checkpoint_content_sha256": checkpoint["content_sha256"],
+        "selection_digest": manifest["selection_digest"],
+        "config": manifest["config"],
+        "suites": manifest["suites"],
+        "seeds": manifest["seeds"],
+        "ports": manifest["ports"],
+        "cases": manifest["cases"],
+        "expected_artifacts": manifest["expected_artifacts"],
+        "full_audit": manifest["full_audit"],
+        "aggregation_sources": manifest["aggregation_sources"],
+    }
+
+
+def _finalize_manifest(manifest: dict[str, object]) -> dict[str, object]:
+    manifest["config_identity"] = _digest(_manifest_identity_payload(manifest))
+    manifest["manifest_digest"] = _digest(
+        {key: item for key, item in manifest.items() if key != "manifest_digest"}
+    )
+    return manifest
+
+
+def _validate_manifest(value: object, selection: Mapping[str, object]) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != MANIFEST_KEYS:
+        raise ValueError("run manifest has an invalid exact schema")
+    manifest = value
+    if (
+        manifest["schema"] != "libero-v3-trace-audit-run"
+        or manifest["schema_version"] != SCHEMA_VERSION
+        or manifest["tool_version"] != TOOL_VERSION
+    ):
+        raise ValueError("run manifest version is unsupported")
+    checkpoint = manifest["checkpoint_identity"]
+    if not isinstance(checkpoint, dict) or set(checkpoint) != CHECKPOINT_KEYS:
+        raise ValueError("checkpoint identity has an invalid exact schema")
+    exists = checkpoint["exists"]
+    digest = checkpoint["content_sha256"]
+    if (
+        not isinstance(checkpoint["resolved_path"], str)
+        or not isinstance(exists, bool)
+        or (checkpoint["size"] is not None and (not _is_int(checkpoint["size"]) or checkpoint["size"] < 0))
+        or (checkpoint["mtime_ns"] is not None and (not _is_int(checkpoint["mtime_ns"]) or checkpoint["mtime_ns"] < 0))
+        or (digest is not None and (not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None))
+        or (exists and digest is None)
+        or (not exists and any(checkpoint[key] is not None for key in ("size", "mtime_ns", "content_sha256")))
+    ):
+        raise ValueError("checkpoint identity values are invalid")
+    if manifest["selection_digest"] != _digest(selection):
+        raise ValueError("selection digest does not match selection.json")
+    suites = _validate_suite_list(manifest["suites"], "manifest suites")
+    seeds = manifest["seeds"]
+    if (
+        not isinstance(seeds, list)
+        or not seeds
+        or any(not _is_int(seed) or seed < 0 for seed in seeds)
+        or len(seeds) != len(set(seeds))
+    ):
+        raise ValueError("manifest seeds are invalid")
+    ports = manifest["ports"]
+    if (
+        not isinstance(ports, dict)
+        or set(ports) != set(suites)
+        or any(not _is_int(port) or not 1 <= port <= 65535 for port in ports.values())
+        or len(set(ports.values())) != len(ports)
+    ):
+        raise ValueError("manifest ports are invalid")
+    config = manifest["config"]
+    if not isinstance(config, dict) or set(config) != CONFIG_KEYS:
+        raise ValueError("manifest config has an invalid exact schema")
+    filtered = _validate_suite_list(config["suite_filter"], "suite filter")
+    task_filter = config["task_filter"]
+    if task_filter is not None and (
+        not isinstance(task_filter, list)
+        or not task_filter
+        or any(not _is_int(task) or task < 0 for task in task_filter)
+        or len(task_filter) != len(set(task_filter))
+    ):
+        raise ValueError("task filter is invalid")
+    max_cases = config["max_cases"]
+    optional_strings = ("unnorm_key", "libero_home", "libero_config_path")
+    if (
+        config["suites"] != list(suites)
+        or config["seeds"] != seeds
+        or config["ports"] != ports
+        or any(suite not in suites for suite in filtered)
+        or not isinstance(config["host"], str)
+        or not config["host"].strip()
+        or not _is_int(config["base_port"])
+        or config["base_port"] != min(ports.values())
+        or ports != {suite: config["base_port"] + index for index, suite in enumerate(suites)}
+        or (max_cases is not None and (not _is_int(max_cases) or max_cases < 1))
+        or not _is_int(config["resolution"])
+        or config["resolution"] < 1
+        or not _is_int(config["action_horizon"])
+        or config["action_horizon"] < 1
+        or not _is_int(config["dummy_steps"])
+        or config["dummy_steps"] < 0
+        or any(config[key] is not None and not isinstance(config[key], str) for key in optional_strings)
+        or not isinstance(config["mujoco_gl"], str)
+        or not config["mujoco_gl"]
+        or not isinstance(config["pyopengl_platform"], str)
+        or not config["pyopengl_platform"]
+    ):
+        raise ValueError("manifest config values are invalid")
+    cases = manifest["cases"]
+    if not isinstance(cases, list):
+        raise ValueError("manifest cases must be a list")
+    selected = {
+        (task["suite"], task["task_id"]): task for task in selection["tasks"]
+    }
+    artifact_ids: set[str] = set()
+    for planned in cases:
+        if not isinstance(planned, dict) or set(planned) != set(CASE_FIELDS) | {"artifact_id"}:
+            raise ValueError("manifest case has an invalid exact schema")
+        if (
+            planned["suite"] not in DEFAULT_SUITES
+            or not _is_int(planned["task_id"])
+            or planned["task_id"] < 0
+            or not isinstance(planned["language"], str)
+            or not planned["language"].strip()
+            or planned["rank_group"] not in {"best", "worst"}
+            or not _is_int(planned["initial_state_index"])
+            or planned["initial_state_index"] < 0
+            or not _is_int(planned["seed"])
+            or planned["seed"] < 0
+            or not isinstance(planned["original_success"], bool)
+            or not isinstance(planned["artifact_id"], str)
+        ):
+            raise ValueError("manifest case values are invalid")
+        case = _case_from_plan(planned)
+        task = selected.get((case.suite, case.task_id))
+        if (
+            case.suite not in filtered
+            or case.seed not in seeds
+            or (task_filter is not None and case.task_id not in task_filter)
+            or task is None
+            or case.language != task["language"]
+            or case.rank_group != task["rank_group"]
+            or case.initial_state_index != task["initial_state_index"]
+            or case.original_success is not task["original_success"]
+            or planned["artifact_id"] in artifact_ids
+        ):
+            raise ValueError("manifest case provenance is invalid")
+        artifact_ids.add(planned["artifact_id"])
+    expected = manifest["expected_artifacts"]
+    if (
+        not isinstance(expected, dict)
+        or set(expected) != EXPECTED_KEYS
+        or any(not _is_int(count) or count < 0 for count in expected.values())
+        or expected != _expected_artifacts(cases, seeds)
+    ):
+        raise ValueError("expected artifact counts are invalid")
+    full = (
+        suites == DEFAULT_SUITES
+        and tuple(seeds) == DEFAULT_SEEDS
+        and filtered == DEFAULT_SUITES
+        and task_filter is None
+        and max_cases is None
+        and len(cases) == 80
+    )
+    if not isinstance(manifest["full_audit"], bool) or manifest["full_audit"] != full:
+        raise ValueError("full_audit flag is invalid")
+    if manifest["aggregation_sources"] != {
+        "normal": "worker_shards", "render_only": "validated_raw"
+    }:
+        raise ValueError("aggregation source modes are invalid")
+    if manifest["config_identity"] != _digest(_manifest_identity_payload(manifest)):
+        raise ValueError("run manifest canonical identity mismatch")
+    if manifest["manifest_digest"] != _digest(
+        {key: item for key, item in manifest.items() if key != "manifest_digest"}
+    ):
+        raise ValueError("run manifest integrity digest mismatch")
+    return manifest
 
 
 def _expected_artifacts(cases: Sequence[dict[str, object]], seeds: Sequence[int]) -> dict[str, int]:
@@ -256,20 +573,56 @@ def prepare_plan(
     action_horizon: int = 8,
     dummy_steps: int = 10,
     unnorm_key: str | None = None,
+    libero_home: str | None = None,
+    libero_config_path: str | None = None,
+    mujoco_gl: str = "egl",
+    pyopengl_platform: str = "egl",
 ) -> dict[str, object]:
-    suites = tuple(suites)
-    seeds = tuple(int(seed) for seed in seeds)
-    if not suites or len(suites) != len(set(suites)):
-        raise ValueError("suites must be unique and non-empty")
-    if not seeds or len(seeds) != len(set(seeds)) or any(seed < 0 for seed in seeds):
+    suites = _validate_suite_list(list(suites), "suites")
+    seeds = tuple(seeds)
+    if (
+        not seeds
+        or any(not _is_int(seed) or seed < 0 for seed in seeds)
+        or len(seeds) != len(set(seeds))
+    ):
         raise ValueError("seeds must be unique non-negative integers")
-    if not 1 <= int(base_port) <= 65535 or int(base_port) + len(suites) - 1 > 65535:
+    if (
+        not _is_int(base_port)
+        or not 1 <= base_port <= 65535
+        or base_port + len(suites) - 1 > 65535
+    ):
         raise ValueError("base port range is invalid")
-    if max_cases is not None and max_cases < 1:
+    if not _is_int(resolution) or resolution < 1:
+        raise ValueError("resolution must be positive")
+    if not _is_int(action_horizon) or action_horizon < 1:
+        raise ValueError("action horizon must be positive")
+    if not _is_int(dummy_steps) or dummy_steps < 0:
+        raise ValueError("dummy steps must be non-negative")
+    if max_cases is not None and (not _is_int(max_cases) or max_cases < 1):
         raise ValueError("max-cases must be positive")
-    selected_suites = tuple(suite_filter) if suite_filter else suites
-    if not selected_suites or any(suite not in suites for suite in selected_suites):
-        raise ValueError("suite filter must be a non-empty subset of suites")
+    if not isinstance(host, str) or not host.strip():
+        raise ValueError("host must be a non-empty string")
+    selected_suites = (
+        _validate_suite_list(list(suite_filter), "suite filter") if suite_filter else suites
+    )
+    if any(suite not in suites for suite in selected_suites):
+        raise ValueError("suite filter must be a subset of suites")
+    if task_filter is not None and (
+        any(not _is_int(task) or task < 0 for task in task_filter)
+        or len(task_filter) != len(set(task_filter))
+    ):
+        raise ValueError("task filter must contain unique non-negative integers")
+    for name, value in (
+        ("unnorm_key", unnorm_key),
+        ("libero_home", libero_home),
+        ("libero_config_path", libero_config_path),
+    ):
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{name} must be a string or null")
+    if not isinstance(mujoco_gl, str) or not mujoco_gl:
+        raise ValueError("mujoco_gl must be a non-empty string")
+    if not isinstance(pyopengl_platform, str) or not pyopengl_platform:
+        raise ValueError("pyopengl_platform must be a non-empty string")
     source = Path(source_log_dir).expanduser().resolve(strict=False)
     if not source.is_dir():
         raise FileNotFoundError(f"source log directory does not exist: {source}")
@@ -277,7 +630,7 @@ def prepare_plan(
     all_rows: list[TaskEvaluation] = []
     for index, suite in enumerate(suites):
         all_rows.extend(parse_worker_log(_worker_log(source, suite, index), suite))
-    selection = _selection_payload(all_rows)
+    selection = _validate_selection(_selection_payload(all_rows))
     cases = build_audit_cases(all_rows, seeds=seeds, extremes=2)
     if suites == DEFAULT_SUITES and seeds == DEFAULT_SEEDS:
         validate_audit_cases(cases)
@@ -293,62 +646,68 @@ def prepare_plan(
 
     checkpoint_id = _checkpoint_identity(checkpoint, allow_missing=dry_run)
     selection_digest = _digest(selection)
-    ports = {suite: int(base_port) + index for index, suite in enumerate(suites)}
+    ports = {suite: base_port + index for index, suite in enumerate(suites)}
     config = {
         "suites": list(suites),
         "seeds": list(seeds),
         "host": host,
-        "base_port": int(base_port),
+        "base_port": base_port,
         "ports": ports,
         "suite_filter": list(selected_suites),
         "task_filter": list(task_filter) if task_filter is not None else None,
         "max_cases": max_cases,
-        "resolution": int(resolution),
-        "action_horizon": int(action_horizon),
-        "dummy_steps": int(dummy_steps),
+        "resolution": resolution,
+        "action_horizon": action_horizon,
+        "dummy_steps": dummy_steps,
         "unnorm_key": unnorm_key,
+        "libero_home": libero_home,
+        "libero_config_path": libero_config_path,
+        "mujoco_gl": mujoco_gl,
+        "pyopengl_platform": pyopengl_platform,
     }
-    identity = {
-        "checkpoint_identity": checkpoint_id,
-        "selection_digest": selection_digest,
-        "config": config,
-        "tool_version": TOOL_VERSION,
-    }
-    manifest = {
+    full_audit = (
+        suites == DEFAULT_SUITES
+        and seeds == DEFAULT_SEEDS
+        and selected_suites == DEFAULT_SUITES
+        and task_filter is None
+        and max_cases is None
+        and len(planned_cases) == 80
+    )
+    manifest = _finalize_manifest({
         "schema": "libero-v3-trace-audit-run",
         "schema_version": SCHEMA_VERSION,
         "tool_version": TOOL_VERSION,
         "checkpoint_identity": checkpoint_id,
         "selection_digest": selection_digest,
-        "config_identity": _digest(identity),
+        "config_identity": "",
+        "manifest_digest": "",
         "suites": list(suites),
         "seeds": list(seeds),
         "config": config,
         "ports": ports,
         "cases": planned_cases,
         "expected_artifacts": _expected_artifacts(planned_cases, seeds),
-        "full_audit": suites == DEFAULT_SUITES
-        and seeds == DEFAULT_SEEDS
-        and tuple(selected_suites) == DEFAULT_SUITES
-        and task_filter is None
-        and max_cases is None
-        and len(planned_cases) == 80,
-    }
+        "full_audit": full_audit,
+        "aggregation_sources": {
+            "normal": "worker_shards", "render_only": "validated_raw",
+        },
+    })
+    _validate_manifest(manifest, selection)
     output = Path(output_dir).expanduser().resolve(strict=False)
     manifest_path = output / "run_manifest.json"
     selection_path = output / "selection.json"
     if manifest_path.exists():
-        current = _strict_load(manifest_path)
-        if current != manifest:
+        _, current = _load_manifest(output)
+        if current["config_identity"] != manifest["config_identity"]:
             raise ValueError("run manifest conflict: checkpoint, selection, or config differs")
-        if not selection_path.is_file() or _strict_load(selection_path) != selection:
-            raise ValueError("run manifest conflict: selection.json differs")
-    else:
-        if selection_path.exists() and _strict_load(selection_path) != selection:
+        return current
+    if selection_path.exists():
+        current_selection = _validate_selection(_strict_load(selection_path))
+        if current_selection != selection:
             raise ValueError("run manifest conflict: pre-existing selection.json differs")
-        output.mkdir(parents=True, exist_ok=True)
-        _atomic_json(selection_path, selection)
-        _atomic_json(manifest_path, manifest)
+    output.mkdir(parents=True, exist_ok=True)
+    _atomic_json(selection_path, selection)
+    _atomic_json(manifest_path, manifest)
     for name in ("raw", "raw/workers", "videos", "summaries", "contact_sheets"):
         (output / name).mkdir(parents=True, exist_ok=True)
     return manifest
@@ -356,15 +715,12 @@ def prepare_plan(
 
 def _load_manifest(output_dir: str | Path) -> tuple[Path, dict[str, object]]:
     output = Path(output_dir).expanduser().resolve(strict=False)
-    payload = _strict_load(output / "run_manifest.json")
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != "libero-v3-trace-audit-run"
-        or payload.get("schema_version") != SCHEMA_VERSION
-        or not isinstance(payload.get("cases"), list)
-        or not isinstance(payload.get("config_identity"), str)
-    ):
-        raise ValueError("unsupported or partial run manifest")
+    selection_path = _contained(output / "selection.json", output, "selection path")
+    manifest_path = _contained(output / "run_manifest.json", output, "manifest path")
+    if not selection_path.is_file() or not manifest_path.is_file():
+        raise FileNotFoundError("run manifest requires selection.json and run_manifest.json")
+    selection = _validate_selection(_strict_load(selection_path))
+    payload = _validate_manifest(_strict_load(manifest_path), selection)
     return output, payload
 
 
@@ -381,12 +737,25 @@ def _make_policy_client(host: str, port: int) -> object:
     return WebsocketClientPolicy(host, port)
 
 
-def _episode_row(artifact: str, record: RolloutRecord) -> dict[str, object]:
+def _raw_generation(base: Path) -> str:
+    pointer = _strict_load(base.with_suffix(".manifest.json"))
+    if (
+        not isinstance(pointer, dict)
+        or set(pointer) != {"version", "generation"}
+        or not _is_int(pointer["version"])
+        or not isinstance(pointer["generation"], str)
+    ):
+        raise ValueError("raw generation pointer has an invalid schema")
+    return pointer["generation"]
+
+
+def _episode_row(artifact: str, record: RolloutRecord, raw_generation: str) -> dict[str, object]:
     return {
         "artifact_id": artifact,
         "case": record.metadata["case"],
         "outcome": record.metadata["outcome"],
         "metrics": record.metadata["metrics"],
+        "raw_generation": raw_generation,
         "finalized": True,
     }
 
@@ -462,78 +831,202 @@ def execute_worker(
             )
             records.append((str(value["artifact_id"]), verified))
     order = {str(value["artifact_id"]): index for index, value in enumerate(planned)}
-    rows = [_episode_row(name, record) for name, record in sorted(records, key=lambda item: order[item[0]])]
+    rows = [
+        _episode_row(name, record, _raw_generation(output / "raw" / name))
+        for name, record in sorted(records, key=lambda item: order[item[0]])
+    ]
     if len(rows) != len(planned) or len({row["artifact_id"] for row in rows}) != len(planned):
         raise ValueError("worker did not finalize exactly one row per planned artifact")
     _atomic_jsonl(output / "raw" / "workers" / f"{suite}.episodes.jsonl", rows)
     return rows
 
 
-def _metric_observations(record: RolloutRecord) -> Iterable[tuple[str, str, float]]:
+SHARD_ROW_KEYS = {
+    "artifact_id", "case", "outcome", "metrics", "raw_generation", "finalized",
+}
+
+
+def _strict_json_line(line: str, path: Path, line_number: int) -> dict[str, object]:
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"non-finite shard JSON constant {value}")
+
+    try:
+        value = json.loads(line, parse_constant=reject_constant)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ValueError(f"corrupt worker shard {path}:{line_number}") from error
+    if not isinstance(value, dict) or set(value) != SHARD_ROW_KEYS:
+        raise ValueError(f"worker shard row has an invalid exact schema: {path}:{line_number}")
+    return value
+
+
+def _validated_shard_rows(
+    output: Path,
+    manifest: Mapping[str, object],
+    records: Sequence[tuple[str, RolloutRecord]],
+) -> list[dict[str, object]]:
+    worker_root = _contained(output / "raw" / "workers", output / "raw", "worker shard root")
+    suites = tuple(manifest["config"]["suite_filter"])
+    expected_paths = {
+        _contained(worker_root / f"{suite}.episodes.jsonl", worker_root, "worker shard").name
+        for suite in suites
+    }
+    actual_paths = {path.name for path in worker_root.glob("*.episodes.jsonl")}
+    if actual_paths != expected_paths:
+        raise ValueError("worker shard file set is missing or has extras")
+    record_map = {artifact: record for artifact, record in records}
+    expected_by_suite: dict[str, set[str]] = {suite: set() for suite in suites}
+    for planned in manifest["cases"]:
+        expected_by_suite[planned["suite"]].add(planned["artifact_id"])
+    observed: dict[str, dict[str, object]] = {}
+    for suite in suites:
+        path = _contained(worker_root / f"{suite}.episodes.jsonl", worker_root, "worker shard")
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as error:
+            raise ValueError(f"cannot read worker shard {path}") from error
+        for line_number, line in enumerate(lines, 1):
+            if not line.strip():
+                raise ValueError(f"worker shard contains an empty row: {path}:{line_number}")
+            row = _strict_json_line(line, path, line_number)
+            artifact = row["artifact_id"]
+            if not isinstance(artifact, str) or artifact in observed:
+                raise ValueError("worker shard contains a duplicate/invalid artifact id")
+            if artifact not in expected_by_suite[suite]:
+                raise ValueError("worker shard contains an extra or cross-suite artifact")
+            record = record_map.get(artifact)
+            if record is None:
+                raise ValueError("worker shard references an unplanned raw artifact")
+            expected = _episode_row(
+                artifact, record, _raw_generation(output / "raw" / artifact)
+            )
+            if row != metrics_to_jsonable(expected):
+                raise ValueError("worker shard row does not match validated raw generation")
+            observed[artifact] = row
+    expected_ids = {planned["artifact_id"] for planned in manifest["cases"]}
+    if set(observed) != expected_ids:
+        raise ValueError("worker shards are missing planned artifacts")
+    return [observed[planned["artifact_id"]] for planned in manifest["cases"]]
+
+
+def _walk_metric_scalars(value: object, path: tuple[str, ...] = ()) -> Iterable[tuple[tuple[str, ...], float]]:
+    if isinstance(value, Mapping):
+        for key in sorted(value):
+            yield from _walk_metric_scalars(value[key], (*path, str(key)))
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            yield from _walk_metric_scalars(item, (*path, f"[{index}]"))
+    elif isinstance(value, (int, float, np.number)) and not isinstance(value, (bool, np.bool_)):
+        scalar = float(value)
+        if np.isfinite(scalar):
+            yield path, scalar
+
+
+def _metric_observations(
+    artifact: str, record: RolloutRecord
+) -> list[dict[str, object]]:
     metrics = record.metadata.get("metrics")
     if not isinstance(metrics, Mapping):
         raise ValueError("record metrics must be a mapping")
-    for anchor in metrics.values():
-        if not isinstance(anchor, Mapping):
+    case = record.metadata["case"]
+    observations: list[dict[str, object]] = []
+    for anchor_name, anchor_metrics in metrics.items():
+        match = re.fullmatch(r"anchor_(\d+)", str(anchor_name))
+        if match is None or not isinstance(anchor_metrics, Mapping):
             continue
-        for landmark in LANDMARKS:
-            values = anchor.get(landmark)
-            if not isinstance(values, Mapping):
+        anchor_index = int(match.group(1))
+        if not 0 <= anchor_index < len(record.anchor_steps):
+            raise ValueError("metric anchor index is outside the rollout cadence")
+        for path, scalar in _walk_metric_scalars(anchor_metrics):
+            if not path:
                 continue
-            for metric in METRIC_NAMES:
-                value = values.get(metric)
-                if isinstance(value, (int, float, np.number)) and not isinstance(value, (bool, np.bool_)):
-                    yield landmark, metric, float(value)
+            if path[0] in LANDMARKS:
+                landmark, component = path[0], path[0]
+            elif path[0] == "persistence" and len(path) > 1 and path[1] in LANDMARKS:
+                landmark, component = path[1], "persistence"
+            else:
+                landmark, component = path[0], ".".join(path[:-1]) or path[0]
+            observations.append({
+                "artifact_id": artifact,
+                "suite": case["suite"],
+                "task_id": case["task_id"],
+                "rank_group": case["rank_group"],
+                "seed": case["seed"],
+                "anchor_index": anchor_index,
+                "anchor_step": int(record.anchor_steps[anchor_index]),
+                "metric_path": ".".join(path),
+                "landmark": landmark,
+                "component": component,
+                "value": scalar,
+            })
+    return observations
 
 
-def _summary_groups(records: Sequence[tuple[str, RolloutRecord]]) -> list[dict[str, object]]:
-    buckets: dict[tuple[str, str, str, str], list[float]] = {}
-    for _, record in records:
-        case = record.metadata["case"]
+def _summary_groups(observations: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    buckets: dict[tuple[str, str, str, str, str], list[float]] = {}
+    for item in observations:
         axes = {
-            "landmark": "all",
-            "task": f"{case['suite']}/task-{int(case['task_id']):03d}",
-            "rank": str(case["rank_group"]),
-            "suite": str(case["suite"]),
-            "seed": str(case["seed"]),
+            "landmark": str(item["landmark"]),
+            "task": f"{item['suite']}/task-{int(item['task_id']):03d}",
+            "rank": str(item["rank_group"]),
+            "suite": str(item["suite"]),
+            "seed": str(item["seed"]),
         }
-        for landmark, metric, value in _metric_observations(record):
-            for group_type, group_key in axes.items():
-                key = (group_type, group_key if group_type != "landmark" else landmark, landmark, metric)
-                buckets.setdefault(key, []).append(value)
-    grouped: dict[tuple[str, str, str], dict[str, object]] = {}
-    for (group_type, group_key, landmark, metric), values in sorted(buckets.items()):
-        finite = np.asarray(values, dtype=float)
-        finite = finite[np.isfinite(finite)]
-        item = grouped.setdefault(
-            (group_type, group_key, landmark),
-            {"group_type": group_type, "group_key": group_key, "landmark": landmark, "metrics": {}},
-        )
-        item["metrics"][metric] = {
-            "count": int(len(finite)),
-            "mean": float(np.mean(finite)) if len(finite) else float("nan"),
-        }
-    return list(grouped.values())
+        for group_type, group_key in axes.items():
+            key = (
+                group_type, group_key, str(item["metric_path"]),
+                str(item["landmark"]), str(item["component"]),
+            )
+            buckets.setdefault(key, []).append(float(item["value"]))
+    groups: list[dict[str, object]] = []
+    for (group_type, group_key, metric_path, landmark, component), values in sorted(buckets.items()):
+        array = np.asarray(values, dtype=np.float64)
+        groups.append({
+            "group_type": group_type,
+            "group_key": group_key,
+            "metric_path": metric_path,
+            "landmark": landmark,
+            "component": component,
+            "count": int(len(array)),
+            "mean": float(array.mean()),
+            "std": float(array.std()),
+        })
+    return groups
+
+
+def _episode_table(records: Sequence[tuple[str, RolloutRecord]]) -> list[dict[str, object]]:
+    table: list[dict[str, object]] = []
+    for artifact, record in records:
+        case, outcome = record.metadata["case"], record.metadata["outcome"]
+        latency = np.asarray(record.latency_ms, dtype=np.float64)
+        table.append({
+            "artifact_id": artifact,
+            "suite": case["suite"],
+            "task_id": case["task_id"],
+            "rank_group": case["rank_group"],
+            "seed": case["seed"],
+            "original_success": case["original_success"],
+            "success": outcome["success"],
+            "outcome_changed": bool(outcome["success"] != case["original_success"]),
+            "end_reason": outcome["end_reason"],
+            "action_steps": int(len(record.executed_actions)),
+            "state_steps": int(len(record.agent_rgb)),
+            "anchor_count": int(len(record.anchor_steps)),
+            "latency_mean_ms": float(latency.mean()),
+            "latency_p95_ms": float(np.percentile(latency, 95)),
+        })
+    return table
 
 
 def _write_summary_csv(path: Path, groups: Sequence[Mapping[str, object]]) -> None:
     buffer = io.StringIO(newline="")
-    writer = csv.DictWriter(
-        buffer, fieldnames=("group_type", "group_key", "landmark", "metric", "count", "mean")
+    fields = (
+        "group_type", "group_key", "metric_path", "landmark", "component",
+        "count", "mean", "std",
     )
+    writer = csv.DictWriter(buffer, fieldnames=fields)
     writer.writeheader()
     for group in groups:
-        for metric, value in sorted(group["metrics"].items()):
-            writer.writerow(
-                {
-                    "group_type": group["group_type"],
-                    "group_key": group["group_key"],
-                    "landmark": group["landmark"],
-                    "metric": metric,
-                    "count": value["count"],
-                    "mean": "" if not np.isfinite(value["mean"]) else f"{value['mean']:.12g}",
-                }
-            )
+        writer.writerow({key: group[key] for key in fields})
     _atomic_bytes(path, buffer.getvalue().encode("utf-8"))
 
 
@@ -560,7 +1053,6 @@ def _render_records(
         path = output / "summaries" / f"task-{_safe_token(suite)}-task-{task_id:03d}-rank-{rank}-init-{initial:03d}.png"
         render_task_seed_summary([record for _, record in values], path)
         task_paths[key] = path
-    sheets = 0
     for suite in manifest["suites"]:
         items = [(key, path) for key, path in task_paths.items() if key[0] == suite]
         if len(items) != 4:
@@ -570,7 +1062,6 @@ def _render_records(
             [(path, key[2]) for key, path in items],
             output / "contact_sheets" / f"{_safe_token(suite)}.png",
         )
-        sheets += 1
     return {
         "episodes": len(records),
         "videos": len(list((output / "videos").glob("*.mp4"))),
@@ -580,14 +1071,22 @@ def _render_records(
     }
 
 
-def aggregate_run(output_dir: str | Path, *, render: bool = True) -> dict[str, object]:
+def aggregate_run(
+    output_dir: str | Path,
+    *,
+    render: bool = True,
+    source_mode: str = "worker_shards",
+) -> dict[str, object]:
     output, manifest = _load_manifest(output_dir)
+    if source_mode not in {"worker_shards", "validated_raw"}:
+        raise ValueError("aggregation source_mode must be worker_shards or validated_raw")
     expected_identity = {"audit_config_identity": manifest["config_identity"]}
     records: list[tuple[str, RolloutRecord]] = []
     for value in manifest["cases"]:
         case = _case_from_plan(value)
+        base = _contained(output / "raw" / str(value["artifact_id"]), output / "raw", "raw artifact")
         record = load_rollout_record(
-            output / "raw" / str(value["artifact_id"]),
+            base,
             expected_case=asdict(case),
             expected_config_identity=expected_identity,
         )
@@ -600,9 +1099,20 @@ def aggregate_run(output_dir: str | Path, *, render: bool = True) -> dict[str, o
     actual_pointers = {path.name for path in (output / "raw").glob("*.manifest.json")}
     if actual_pointers != expected_pointers:
         raise ValueError("finalized raw pointer count does not match run manifest")
-    episodes = [_episode_row(name, record) for name, record in records]
+    raw_rows = [
+        _episode_row(name, record, _raw_generation(output / "raw" / name))
+        for name, record in records
+    ]
+    if source_mode == "worker_shards":
+        episodes = _validated_shard_rows(output, manifest, records)
+    else:
+        episodes = [metrics_to_jsonable(row) for row in raw_rows]
     _atomic_jsonl(output / "episodes.jsonl", episodes)
-    groups = _summary_groups(records)
+    observations = [
+        item for artifact, record in records for item in _metric_observations(artifact, record)
+    ]
+    groups = _summary_groups(observations)
+    episode_table = _episode_table(records)
     if render:
         counts = _render_records(output, manifest, records)
     else:
@@ -614,9 +1124,12 @@ def aggregate_run(output_dir: str | Path, *, render: bool = True) -> dict[str, o
         "schema": "libero-v3-trace-audit-summary",
         "schema_version": SCHEMA_VERSION,
         "config_identity": manifest["config_identity"],
+        "aggregation_source": source_mode,
         "full_audit": bool(manifest["full_audit"]),
         "expected_artifacts": expected,
         "artifact_counts": counts,
+        "episode_table": episode_table,
+        "observations": observations,
         "groups": groups,
     }
     _atomic_json(output / "summary.json", summary)
@@ -643,6 +1156,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-horizon", type=int, default=8)
     parser.add_argument("--dummy-steps", type=int, default=10)
     parser.add_argument("--unnorm-key")
+    parser.add_argument("--libero-home")
+    parser.add_argument("--libero-config-path")
+    parser.add_argument("--mujoco-gl", default="egl")
+    parser.add_argument("--pyopengl-platform", default="egl")
     parser.add_argument("--render-only", action="store_true")
     parser.add_argument("--no-render", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -676,6 +1193,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             action_horizon=args.action_horizon,
             dummy_steps=args.dummy_steps,
             unnorm_key=args.unnorm_key,
+            libero_home=args.libero_home,
+            libero_config_path=args.libero_config_path,
+            mujoco_gl=args.mujoco_gl,
+            pyopengl_platform=args.pyopengl_platform,
         )
         selected_tasks = len({(case["suite"], case["task_id"], case["rank_group"]) for case in manifest["cases"]})
         print(f"planned {len(manifest['cases'])} cases from {selected_tasks} selected tasks")
@@ -689,10 +1210,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.phase == "worker":
         if not args.worker_suite:
             raise ValueError("worker phase requires --worker-suite")
+        if args.dry_run:
+            _, manifest = _load_manifest(args.output_dir)
+            if args.worker_suite not in manifest["suites"]:
+                raise ValueError("worker suite is not in the run manifest")
+            expected_port = int(manifest["ports"][args.worker_suite])
+            if args.port is not None and args.port != expected_port:
+                raise ValueError("worker port differs from run manifest")
+            if args.host is not None and args.host != manifest["config"]["host"]:
+                raise ValueError("worker host differs from run manifest")
+            count = sum(case["suite"] == args.worker_suite for case in manifest["cases"])
+            print(f"dry-run worker suite={args.worker_suite} would process {count} cases")
+            return 0
         rows = execute_worker(args.output_dir, args.worker_suite, host=args.host, port=args.port)
         print(f"worker suite={args.worker_suite} finalized {len(rows)} cases")
         return 0
-    summary = aggregate_run(args.output_dir, render=not args.no_render)
+    if args.dry_run:
+        _, manifest = _load_manifest(args.output_dir)
+        source = "validated_raw" if args.render_only else "worker_shards"
+        print(f"dry-run aggregate would validate {len(manifest['cases'])} cases from {source}")
+        return 0
+    summary = aggregate_run(args.output_dir, render=not args.no_render, source_mode=("validated_raw" if args.render_only else "worker_shards"))
     print(f"aggregate finalized {summary['artifact_counts']['episodes']} cases")
     return 0
 
