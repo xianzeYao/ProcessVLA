@@ -18,12 +18,8 @@ POLICY_PYTHON="${POLICY_PYTHON:-/root/data/yxz/miniforge3/envs/CoT_linearATT/bin
 SIM_PYTHON="${SIM_PYTHON:-/root/data/yxz/miniforge3/envs/libero/bin/python}"
 USE_BF16="${USE_BF16:-1}"
 HOST="${HOST:-127.0.0.1}"
-LIBERO_HOME="${LIBERO_HOME:-}"
-if [[ -n "${LIBERO_HOME}" ]]; then
-  LIBERO_CONFIG_PATH="${LIBERO_CONFIG_PATH:-${LIBERO_HOME}/libero}"
-else
-  LIBERO_CONFIG_PATH="${LIBERO_CONFIG_PATH:-}"
-fi
+LIBERO_HOME="${LIBERO_HOME-/root/data/yxz/benchmarks/LIBERO}"
+LIBERO_CONFIG_PATH="${LIBERO_CONFIG_PATH-${LIBERO_HOME}/libero}"
 MUJOCO_GL_VALUE="${MUJOCO_GL_VALUE:-${MUJOCO_GL:-egl}}"
 PYOPENGL_PLATFORM_VALUE="${PYOPENGL_PLATFORM_VALUE:-${PYOPENGL_PLATFORM:-egl}}"
 SERVER_READY_TIMEOUT="${SERVER_READY_TIMEOUT:-180}"
@@ -53,6 +49,51 @@ done
   echo "SERVER_READY_TIMEOUT must be positive" >&2
   exit 2
 }
+[[ "${DRY_RUN}" == "0" || "${DRY_RUN}" == "1" ]] || {
+  echo "DRY_RUN must be 0 or 1" >&2
+  exit 2
+}
+if [[ "${DRY_RUN}" != "1" ]]; then
+  [[ -f "${CHECKPOINT}" ]] || { echo "checkpoint does not exist: ${CHECKPOINT}" >&2; exit 2; }
+  [[ -d "${SOURCE_LOG_DIR}" ]] || {
+    echo "SOURCE_LOG_DIR must be an existing directory: ${SOURCE_LOG_DIR}" >&2
+    exit 2
+  }
+  [[ -x "${POLICY_PYTHON}" ]] || { echo "POLICY_PYTHON is not executable" >&2; exit 2; }
+  [[ -x "${SIM_PYTHON}" ]] || { echo "SIM_PYTHON is not executable" >&2; exit 2; }
+  [[ -d "${LIBERO_HOME}" ]] || {
+    echo "LIBERO_HOME must be an existing directory: ${LIBERO_HOME}" >&2
+    exit 2
+  }
+  [[ -d "${LIBERO_CONFIG_PATH}" && -f "${LIBERO_CONFIG_PATH}/config.yaml" ]] || {
+    echo "LIBERO_CONFIG_PATH/config.yaml does not exist: ${LIBERO_CONFIG_PATH}" >&2
+    exit 2
+  }
+  [[ -n "${MUJOCO_GL_VALUE}" && -n "${PYOPENGL_PLATFORM_VALUE}" ]] || {
+    echo "MUJOCO_GL and PYOPENGL_PLATFORM must be non-empty" >&2
+    exit 2
+  }
+  LIBERO_HOME="$(cd "${LIBERO_HOME}" && pwd -P)"
+  LIBERO_CONFIG_PATH="$(cd "${LIBERO_CONFIG_PATH}" && pwd -P)"
+  case "${LIBERO_CONFIG_PATH}/" in
+    "${LIBERO_HOME}/"*) ;;
+    *)
+      echo "LIBERO_CONFIG_PATH must resolve inside LIBERO_HOME" >&2
+      exit 2
+      ;;
+  esac
+  if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
+    echo "Bash 5.1+ is required for fail-fast wait -n -p" >&2
+    exit 2
+  fi
+  for port_offset in 0 1 2 3; do
+    port=$((BASE_PORT + port_offset))
+    if (echo >/dev/tcp/"${HOST}"/"${port}") >/dev/null 2>&1; then
+      echo "port conflict: ${HOST}:${port} is already accepting connections" >&2
+      exit 2
+    fi
+  done
+fi
 
 cd "${REPO_ROOT}"
 PYTHONPATH_VALUE="${REPO_ROOT}"
@@ -110,25 +151,6 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   echo "[trace-audit] DRY_RUN=1; no server or worker was started and no process was killed"
   exit 0
 fi
-
-[[ -d "${LIBERO_HOME}" ]] || { echo "LIBERO_HOME must be an existing directory" >&2; exit 2; }
-[[ -f "${LIBERO_CONFIG_PATH}/config.yaml" ]] || {
-  echo "LIBERO_CONFIG_PATH/config.yaml does not exist: ${LIBERO_CONFIG_PATH}" >&2
-  exit 2
-}
-[[ -x "${POLICY_PYTHON}" ]] || { echo "POLICY_PYTHON is not executable" >&2; exit 2; }
-[[ -x "${SIM_PYTHON}" ]] || { echo "SIM_PYTHON is not executable" >&2; exit 2; }
-if ((BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1))); then
-  echo "Bash 5.1+ is required for fail-fast wait -n -p" >&2
-  exit 2
-fi
-for port_offset in 0 1 2 3; do
-  port=$((BASE_PORT + port_offset))
-  if (echo >/dev/tcp/"${HOST}"/"${port}") >/dev/null 2>&1; then
-    echo "port conflict: ${HOST}:${port} is already accepting connections" >&2
-    exit 2
-  fi
-done
 
 LOG_DIR="${OUTPUT_DIR}/launcher_logs"
 mkdir -p "${LOG_DIR}"

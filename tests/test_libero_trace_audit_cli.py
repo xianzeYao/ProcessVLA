@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -42,6 +44,14 @@ def _write_logs(root: Path) -> None:
 def _checkpoint(path: Path, contents: bytes = b"checkpoint") -> Path:
     path.write_bytes(contents)
     return path
+
+
+def _libero_runtime(root: Path) -> tuple[Path, Path]:
+    home = root / "LIBERO"
+    config = home / "libero"
+    config.mkdir(parents=True)
+    (config / "config.yaml").write_text("benchmark_root: fixture\n")
+    return home, config
 
 
 def _plan_args(checkpoint: Path, logs: Path, output: Path, *extra: str) -> list[str]:
@@ -156,6 +166,9 @@ def test_dry_run_writes_stable_eighty_case_manifest_without_runtime_side_effects
     checkpoint = _checkpoint(tmp_path / "model.pt")
     monkeypatch.setattr(cli, "collect_rollout", lambda *_: pytest.fail("simulator called"))
     monkeypatch.setattr(cli, "_make_policy_client", lambda *_: pytest.fail("server called"))
+    monkeypatch.setattr(
+        cli, "_apply_runtime_environment", lambda *_: pytest.fail("runtime env applied")
+    )
 
     assert cli.main(_plan_args(checkpoint, logs, output)) == 0
     first = (output / "run_manifest.json").read_bytes()
@@ -195,6 +208,114 @@ def test_max_cases_one_plans_exactly_one_case(tmp_path: Path) -> None:
         "suite_contact_sheets": 0,
     }
     assert manifest["full_audit"] is False
+
+
+def test_plan_records_nonempty_runtime_environment_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    home, config = _libero_runtime(tmp_path)
+    monkeypatch.setenv("LIBERO_HOME", str(home))
+    monkeypatch.setenv("LIBERO_CONFIG_PATH", str(config))
+    monkeypatch.setenv("MUJOCO_GL", "osmesa")
+    monkeypatch.setenv("PYOPENGL_PLATFORM", "osmesa")
+
+    cli.main(
+        _plan_args(
+            _checkpoint(tmp_path / "model.pt"), logs, output, "--max-cases", "1"
+        )
+    )
+
+    config_payload = _read_json(output / "run_manifest.json")["config"]
+    assert config_payload["libero_home"] == str(home.resolve())
+    assert config_payload["libero_config_path"] == str(config.resolve())
+    assert config_payload["mujoco_gl"] == "osmesa"
+    assert config_payload["pyopengl_platform"] == "osmesa"
+
+
+def test_direct_worker_applies_manifest_runtime_environment_before_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    checkpoint = _checkpoint(tmp_path / "model.pt")
+    home, config = _libero_runtime(tmp_path)
+    cli.main(
+        _plan_args(
+            checkpoint,
+            logs,
+            output,
+            "--max-cases",
+            "1",
+            "--libero-home",
+            str(home),
+            "--libero-config-path",
+            str(config),
+            "--mujoco-gl",
+            "egl",
+            "--pyopengl-platform",
+            "egl",
+        )
+    )
+    manifest = _read_json(output / "run_manifest.json")
+    suite = manifest["cases"][0]["suite"]
+    for name in ("LIBERO_HOME", "LIBERO_CONFIG_PATH", "MUJOCO_GL", "PYOPENGL_PLATFORM"):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    events: list[str] = []
+
+    def client(_host: str, _port: int) -> object:
+        events.append("client")
+        assert os.environ["LIBERO_HOME"] == str(home.resolve())
+        assert os.environ["LIBERO_CONFIG_PATH"] == str(config.resolve())
+        assert os.environ["MUJOCO_GL"] == "egl"
+        assert os.environ["PYOPENGL_PLATFORM"] == "egl"
+        assert sys.path[0] == str(home.resolve())
+        return object()
+
+    def collect(case: AuditCase, _client: object, _args: object) -> RolloutRecord:
+        events.append("collect")
+        return _record(case, "replaced-by-worker")
+
+    monkeypatch.setattr(cli, "_make_policy_client", client)
+    monkeypatch.setattr(cli, "collect_rollout", collect)
+    assert cli.main(
+        ["--phase", "worker", "--output-dir", str(output), "--worker-suite", suite]
+    ) == 0
+    assert events == ["client", "collect"]
+
+
+def test_worker_rejects_runtime_environment_conflict_before_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    checkpoint = _checkpoint(tmp_path / "model.pt")
+    home, config = _libero_runtime(tmp_path)
+    cli.main(
+        _plan_args(
+            checkpoint,
+            logs,
+            output,
+            "--max-cases",
+            "1",
+            "--libero-home",
+            str(home),
+            "--libero-config-path",
+            str(config),
+        )
+    )
+    manifest = _read_json(output / "run_manifest.json")
+    suite = manifest["cases"][0]["suite"]
+    monkeypatch.setenv("MUJOCO_GL", "osmesa")
+
+    with pytest.raises(ValueError, match="runtime environment conflict"):
+        cli.execute_worker(
+            output,
+            suite,
+            client_factory=lambda *_: pytest.fail("client created before conflict"),
+        )
 
 
 def test_existing_manifest_rejects_checkpoint_or_selection_mismatch(tmp_path: Path) -> None:
@@ -284,9 +405,31 @@ def test_strict_schema_rejects_coerced_integer_and_boolean_types(tmp_path: Path)
         cli._validate_manifest(manifest, selection)
 
 
+def test_schema_versions_reject_boolean_values(tmp_path: Path) -> None:
+    logs, output = tmp_path / "logs", tmp_path / "audit"
+    _write_logs(logs)
+    checkpoint = _checkpoint(tmp_path / "model.pt")
+    cli.main(_plan_args(checkpoint, logs, output, "--max-cases", "1"))
+
+    selection = _read_json(output / "selection.json")
+    selection["schema_version"] = True
+    with pytest.raises(ValueError, match="schema"):
+        cli._validate_selection(selection)
+
+    selection = _read_json(output / "selection.json")
+    manifest = _read_json(output / "run_manifest.json")
+    manifest["schema_version"] = True
+    cli._finalize_manifest(manifest)
+    with pytest.raises(ValueError, match="version"):
+        cli._validate_manifest(manifest, selection)
+
+
 @pytest.mark.parametrize(
     "extra",
-    [("--resolution", "0"), ("--action-horizon", "0"), ("--dummy-steps", "-1")],
+    [
+        ("--resolution", "0"), ("--resolution", "1"),
+        ("--action-horizon", "0"), ("--dummy-steps", "-1"),
+    ],
 )
 def test_invalid_plan_ranges_fail_before_manifest_write(tmp_path: Path, extra: tuple[str, str]) -> None:
     logs, output = tmp_path / "logs", tmp_path / "audit"
@@ -359,6 +502,9 @@ def test_worker_dry_run_never_connects_collects_or_writes(
     monkeypatch.setattr(cli, "_make_policy_client", lambda *_: pytest.fail("connected"))
     monkeypatch.setattr(cli, "collect_rollout", lambda *_: pytest.fail("collected"))
     monkeypatch.setattr(cli, "save_rollout_record", lambda *_: pytest.fail("saved"))
+    monkeypatch.setattr(
+        cli, "_apply_runtime_environment", lambda *_: pytest.fail("runtime env applied")
+    )
 
     assert cli.main([
         "--phase", "worker", "--output-dir", str(output), "--worker-suite", suite, "--dry-run"
@@ -514,6 +660,29 @@ def test_aggregate_validates_counts_deduplicates_and_passes_explicit_rank_to_she
     assert episode["state_steps"] == 3
     assert episode["latency_mean_ms"] == 1.0
     assert episode["latency_p95_ms"] == 1.0
+    episode_groups = summary["episode_groups"]
+    assert {group["group_type"] for group in episode_groups} == {
+        "task", "rank_group", "suite", "seed",
+    }
+    assert {
+        "success",
+        "outcome_mismatch",
+        "action_steps",
+        "state_steps",
+        "anchor_count",
+        "latency_mean_ms",
+        "latency_p95_ms",
+    } <= {group["metric_name"] for group in episode_groups}
+    assert all({"count", "mean", "std"} <= set(group) for group in episode_groups)
+    csv_rows = list(csv.DictReader((output / "summary.csv").read_text().splitlines()))
+    episode_csv = [row for row in csv_rows if row["row_kind"] == "episode_scalar"]
+    assert episode_csv
+    assert {row["category"] for row in episode_csv} == {
+        "task", "rank_group", "suite", "seed",
+    }
+    assert {"success", "outcome_mismatch", "action_steps", "latency_mean_ms"} <= {
+        row["metric_name"] for row in episode_csv
+    }
     assert "NaN" not in (output / "summary.json").read_text()
 
 
@@ -528,6 +697,64 @@ def test_nonstandard_seeds_do_not_claim_fixed_five_seed_summaries(tmp_path: Path
     assert expected["episodes"] == 32
     assert expected["task_seed_summaries"] == 0
     assert expected["suite_contact_sheets"] == 0
+
+
+@pytest.mark.parametrize("home_value", ("empty", "missing"))
+def test_launcher_live_preflight_rejects_bad_libero_before_manifest_write(
+    tmp_path: Path, home_value: str,
+) -> None:
+    logs = tmp_path / "logs"
+    _write_logs(logs)
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    _checkpoint(model_dir / "model.pt")
+    output = tmp_path / "audit"
+    bad_home = tmp_path / "missing-LIBERO"
+    script = Path("examples/simBenchmarks/CoT/geometry_probe/run_libero_v3_trace_audit.sh")
+    base_env = {
+        "PATH": "/usr/bin:/bin",
+        "MODEL_DIR": str(model_dir),
+        "CKPT_NAME": "model.pt",
+        "SOURCE_LOG_DIR": str(logs),
+        "OUTPUT_DIR": str(output),
+        "POLICY_PYTHON": "/bin/false",
+        "SIM_PYTHON": str(
+            Path("/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python")
+        ),
+        "LIBERO_HOME": "" if home_value == "empty" else str(bad_home),
+        "LIBERO_CONFIG_PATH": str(bad_home / "libero"),
+        "SERVER_READY_TIMEOUT": "1",
+    }
+    failed = subprocess.run(
+        ["bash", str(script)],
+        cwd=Path(__file__).parents[1],
+        env=base_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert failed.returncode == 2
+    assert "LIBERO_HOME" in failed.stderr
+    assert not output.exists()
+
+    config = bad_home / "libero"
+    config.mkdir(parents=True)
+    (config / "config.yaml").write_text("benchmark_root: fixture\n")
+    retried = subprocess.run(
+        ["bash", str(script)],
+        cwd=Path(__file__).parents[1],
+        env={
+            **base_env,
+            "DRY_RUN": "1",
+            "LIBERO_HOME": str(bad_home),
+            "LIBERO_CONFIG_PATH": str(config),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert retried.returncode == 0, retried.stderr
+    assert (output / "run_manifest.json").is_file()
 
 
 def test_launcher_dry_run_prints_four_suites_and_eighty_cases_without_starting(

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 from types import SimpleNamespace
 from typing import Callable, Iterable, Mapping, Sequence
@@ -90,6 +91,68 @@ def _contained(path: Path, root: Path, label: str) -> Path:
     except ValueError as error:
         raise ValueError(f"{label} escapes its configured root") from error
     return resolved
+
+
+def _apply_runtime_environment(config: Mapping[str, object]) -> None:
+    """Apply the manifest-declared LIBERO runtime before any live imports."""
+
+    home_value = config.get("libero_home")
+    config_value = config.get("libero_config_path")
+    if (home_value is None) != (config_value is None):
+        raise ValueError("LIBERO_HOME and LIBERO_CONFIG_PATH must be configured together")
+    desired: dict[str, str] = {
+        "MUJOCO_GL": str(config["mujoco_gl"]),
+        "PYOPENGL_PLATFORM": str(config["pyopengl_platform"]),
+    }
+    path_keys: set[str] = set()
+    home: Path | None = None
+    if home_value is not None and config_value is not None:
+        if not isinstance(home_value, str) or not home_value.strip():
+            raise ValueError("manifest LIBERO_HOME must be a non-empty path")
+        if not isinstance(config_value, str) or not config_value.strip():
+            raise ValueError("manifest LIBERO_CONFIG_PATH must be a non-empty path")
+        try:
+            home = Path(home_value).expanduser().resolve(strict=True)
+            config_root = Path(config_value).expanduser().resolve(strict=True)
+        except (FileNotFoundError, RuntimeError) as error:
+            raise ValueError("manifest LIBERO runtime path does not exist") from error
+        if not home.is_dir() or not config_root.is_dir():
+            raise ValueError("manifest LIBERO runtime paths must be directories")
+        _contained(config_root, home, "LIBERO_CONFIG_PATH")
+        if not (config_root / "config.yaml").is_file():
+            raise ValueError("manifest LIBERO_CONFIG_PATH/config.yaml does not exist")
+        desired.update({
+            "LIBERO_HOME": str(home),
+            "LIBERO_CONFIG_PATH": str(config_root),
+        })
+        path_keys.update(("LIBERO_HOME", "LIBERO_CONFIG_PATH"))
+    else:
+        for name in ("LIBERO_HOME", "LIBERO_CONFIG_PATH"):
+            current = os.environ.get(name)
+            if current:
+                raise ValueError(
+                    f"runtime environment conflict for {name}: "
+                    f"current={current!r}, manifest=None"
+                )
+    for name, value in desired.items():
+        current = os.environ.get(name)
+        if not current:
+            continue
+        equal = (
+            Path(current).expanduser().resolve(strict=False)
+            == Path(value).expanduser().resolve(strict=False)
+            if name in path_keys
+            else current == value
+        )
+        if not equal:
+            raise ValueError(
+                f"runtime environment conflict for {name}: current={current!r}, manifest={value!r}"
+            )
+    os.environ.update(desired)
+    if home is not None:
+        home_text = str(home)
+        sys.path[:] = [item for item in sys.path if item != home_text]
+        sys.path.insert(0, home_text)
 
 
 def _strict_load(path: Path) -> object:
@@ -281,6 +344,7 @@ def _validate_selection(value: object) -> dict[str, object]:
         raise ValueError("selection has an invalid exact schema")
     if (
         value["schema"] != "libero-v3-trace-audit-selection"
+        or not _is_int(value["schema_version"])
         or value["schema_version"] != SCHEMA_VERSION
         or value["selection_policy"] != "best-first-disjoint-v1"
         or not isinstance(value["evaluations"], list)
@@ -379,6 +443,7 @@ def _validate_manifest(value: object, selection: Mapping[str, object]) -> dict[s
     manifest = value
     if (
         manifest["schema"] != "libero-v3-trace-audit-run"
+        or not _is_int(manifest["schema_version"])
         or manifest["schema_version"] != SCHEMA_VERSION
         or manifest["tool_version"] != TOOL_VERSION
     ):
@@ -443,7 +508,7 @@ def _validate_manifest(value: object, selection: Mapping[str, object]) -> dict[s
         or ports != {suite: config["base_port"] + index for index, suite in enumerate(suites)}
         or (max_cases is not None and (not _is_int(max_cases) or max_cases < 1))
         or not _is_int(config["resolution"])
-        or config["resolution"] < 1
+        or config["resolution"] < 2
         or not _is_int(config["action_horizon"])
         or config["action_horizon"] < 1
         or not _is_int(config["dummy_steps"])
@@ -592,8 +657,8 @@ def prepare_plan(
         or base_port + len(suites) - 1 > 65535
     ):
         raise ValueError("base port range is invalid")
-    if not _is_int(resolution) or resolution < 1:
-        raise ValueError("resolution must be positive")
+    if not _is_int(resolution) or resolution < 2:
+        raise ValueError("resolution must be an integer of at least two")
     if not _is_int(action_horizon) or action_horizon < 1:
         raise ValueError("action horizon must be positive")
     if not _is_int(dummy_steps) or dummy_steps < 0:
@@ -612,13 +677,28 @@ def prepare_plan(
         or len(task_filter) != len(set(task_filter))
     ):
         raise ValueError("task filter must contain unique non-negative integers")
-    for name, value in (
-        ("unnorm_key", unnorm_key),
-        ("libero_home", libero_home),
-        ("libero_config_path", libero_config_path),
+    if unnorm_key is not None and (
+        not isinstance(unnorm_key, str) or not unnorm_key.strip()
     ):
-        if value is not None and not isinstance(value, str):
-            raise ValueError(f"{name} must be a string or null")
+        raise ValueError("unnorm_key must be a non-empty string or null")
+    runtime_paths = {
+        "libero_home": libero_home,
+        "libero_config_path": libero_config_path,
+    }
+    for name, value in runtime_paths.items():
+        if value is not None and (
+            not isinstance(value, str) or not value.strip()
+        ):
+            raise ValueError(f"{name} must be a non-empty string or null")
+    canonical_runtime_paths = {
+        name: (
+            str(Path(value).expanduser().resolve(strict=False))
+            if value is not None else None
+        )
+        for name, value in runtime_paths.items()
+    }
+    libero_home = canonical_runtime_paths["libero_home"]
+    libero_config_path = canonical_runtime_paths["libero_config_path"]
     if not isinstance(mujoco_gl, str) or not mujoco_gl:
         raise ValueError("mujoco_gl must be a non-empty string")
     if not isinstance(pyopengl_platform, str) or not pyopengl_platform:
@@ -781,6 +861,7 @@ def execute_worker(
     if suite not in manifest["suites"]:
         raise ValueError(f"worker suite {suite!r} is not in the run manifest")
     config = manifest["config"]
+    _apply_runtime_environment(config)
     expected_identity = {"audit_config_identity": manifest["config_identity"]}
     planned = [case for case in manifest["cases"] if case["suite"] == suite]
     expected_host = str(config["host"])
@@ -998,6 +1079,9 @@ def _episode_table(records: Sequence[tuple[str, RolloutRecord]]) -> list[dict[st
     for artifact, record in records:
         case, outcome = record.metadata["case"], record.metadata["outcome"]
         latency = np.asarray(record.latency_ms, dtype=np.float64)
+        latency = latency[np.isfinite(latency)]
+        latency_mean = float(latency.mean()) if latency.size else None
+        latency_p95 = float(np.percentile(latency, 95)) if latency.size else None
         table.append({
             "artifact_id": artifact,
             "suite": case["suite"],
@@ -1011,22 +1095,98 @@ def _episode_table(records: Sequence[tuple[str, RolloutRecord]]) -> list[dict[st
             "action_steps": int(len(record.executed_actions)),
             "state_steps": int(len(record.agent_rgb)),
             "anchor_count": int(len(record.anchor_steps)),
-            "latency_mean_ms": float(latency.mean()),
-            "latency_p95_ms": float(np.percentile(latency, 95)),
+            "latency_mean_ms": latency_mean,
+            "latency_p95_ms": latency_p95,
         })
     return table
 
 
-def _write_summary_csv(path: Path, groups: Sequence[Mapping[str, object]]) -> None:
+def _episode_observations(
+    episode_table: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    observations: list[dict[str, object]] = []
+    for row in episode_table:
+        scalars = {
+            "success": float(bool(row["success"])),
+            "outcome_mismatch": float(bool(row["outcome_changed"])),
+            "action_steps": float(row["action_steps"]),
+            "state_steps": float(row["state_steps"]),
+            "anchor_count": float(row["anchor_count"]),
+            "latency_mean_ms": row["latency_mean_ms"],
+            "latency_p95_ms": row["latency_p95_ms"],
+        }
+        for metric_name, value in scalars.items():
+            if value is None or not np.isfinite(float(value)):
+                continue
+            observations.append({
+                "artifact_id": row["artifact_id"],
+                "suite": row["suite"],
+                "task_id": row["task_id"],
+                "rank_group": row["rank_group"],
+                "seed": row["seed"],
+                "metric_name": metric_name,
+                "value": float(value),
+            })
+    return observations
+
+
+def _episode_summary_groups(
+    observations: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    buckets: dict[tuple[str, str, str], list[float]] = {}
+    for item in observations:
+        axes = {
+            "task": f"{item['suite']}/task-{int(item['task_id']):03d}",
+            "rank_group": str(item["rank_group"]),
+            "suite": str(item["suite"]),
+            "seed": str(item["seed"]),
+        }
+        for group_type, group_key in axes.items():
+            key = (group_type, group_key, str(item["metric_name"]))
+            buckets.setdefault(key, []).append(float(item["value"]))
+    groups: list[dict[str, object]] = []
+    for (group_type, group_key, metric_name), values in sorted(buckets.items()):
+        array = np.asarray(values, dtype=np.float64)
+        groups.append({
+            "group_type": group_type,
+            "group_key": group_key,
+            "metric_name": metric_name,
+            "rate_alias": (
+                "success_rate" if metric_name == "success"
+                else "mismatch_rate" if metric_name == "outcome_mismatch"
+                else None
+            ),
+            "count": int(len(array)),
+            "mean": float(array.mean()),
+            "std": float(array.std()),
+        })
+    return groups
+
+
+def _write_summary_csv(
+    path: Path,
+    groups: Sequence[Mapping[str, object]],
+    episode_groups: Sequence[Mapping[str, object]],
+) -> None:
     buffer = io.StringIO(newline="")
     fields = (
-        "group_type", "group_key", "metric_path", "landmark", "component",
-        "count", "mean", "std",
+        "row_kind", "category", "group_type", "group_key", "metric_path",
+        "metric_name", "landmark", "component", "rate_alias", "count", "mean", "std",
     )
     writer = csv.DictWriter(buffer, fieldnames=fields)
     writer.writeheader()
     for group in groups:
-        writer.writerow({key: group[key] for key in fields})
+        writer.writerow({
+            **{key: group.get(key) for key in fields},
+            "row_kind": "anchor_metric",
+            "category": group["group_type"],
+        })
+    for group in episode_groups:
+        writer.writerow({
+            **{key: group.get(key) for key in fields},
+            "row_kind": "episode_scalar",
+            "category": group["group_type"],
+        })
     _atomic_bytes(path, buffer.getvalue().encode("utf-8"))
 
 
@@ -1113,6 +1273,8 @@ def aggregate_run(
     ]
     groups = _summary_groups(observations)
     episode_table = _episode_table(records)
+    episode_observations = _episode_observations(episode_table)
+    episode_groups = _episode_summary_groups(episode_observations)
     if render:
         counts = _render_records(output, manifest, records)
     else:
@@ -1131,9 +1293,11 @@ def aggregate_run(
         "episode_table": episode_table,
         "observations": observations,
         "groups": groups,
+        "episode_observations": episode_observations,
+        "episode_groups": episode_groups,
     }
     _atomic_json(output / "summary.json", summary)
-    _write_summary_csv(output / "summary.csv", groups)
+    _write_summary_csv(output / "summary.csv", groups, episode_groups)
     return metrics_to_jsonable(summary)
 
 
@@ -1156,10 +1320,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-horizon", type=int, default=8)
     parser.add_argument("--dummy-steps", type=int, default=10)
     parser.add_argument("--unnorm-key")
-    parser.add_argument("--libero-home")
-    parser.add_argument("--libero-config-path")
-    parser.add_argument("--mujoco-gl", default="egl")
-    parser.add_argument("--pyopengl-platform", default="egl")
+    parser.add_argument("--libero-home", default=os.environ.get("LIBERO_HOME") or None)
+    parser.add_argument(
+        "--libero-config-path", default=os.environ.get("LIBERO_CONFIG_PATH") or None
+    )
+    parser.add_argument("--mujoco-gl", default=os.environ.get("MUJOCO_GL") or "egl")
+    parser.add_argument(
+        "--pyopengl-platform", default=os.environ.get("PYOPENGL_PLATFORM") or "egl"
+    )
     parser.add_argument("--render-only", action="store_true")
     parser.add_argument("--no-render", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -1177,6 +1345,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         seeds = _integers(args.seeds, "seeds")
         suite_filter = _csv_values(args.suite_filter) if args.suite_filter else None
         task_filter = _integers(args.task_filter, "task-filter") if args.task_filter else None
+        libero_config_path = args.libero_config_path
+        if args.libero_home and not libero_config_path:
+            libero_config_path = str(
+                Path(args.libero_home).expanduser() / "libero"
+            )
         manifest = prepare_plan(
             checkpoint=args.checkpoint,
             source_log_dir=args.source_log_dir,
@@ -1194,7 +1367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dummy_steps=args.dummy_steps,
             unnorm_key=args.unnorm_key,
             libero_home=args.libero_home,
-            libero_config_path=args.libero_config_path,
+            libero_config_path=libero_config_path,
             mujoco_gl=args.mujoco_gl,
             pyopengl_platform=args.pyopengl_platform,
         )
@@ -1203,6 +1376,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.dry_run or args.phase == "plan":
             print("dry-run: no policy server or simulator was contacted" if args.dry_run else "plan complete")
             return 0
+        _apply_runtime_environment(manifest["config"])
         for suite in manifest["config"]["suite_filter"]:
             execute_worker(args.output_dir, suite)
         aggregate_run(args.output_dir, render=not args.no_render)
