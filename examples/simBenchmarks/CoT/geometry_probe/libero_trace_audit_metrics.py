@@ -6,7 +6,7 @@ All UVD inputs use normalized ``(u, v, depth_m)`` values and canonical
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -15,48 +15,115 @@ from .probe_utils import uvd_pixel_scale
 
 LANDMARK_NAMES = ("left", "right", "wrist")
 
+def _strict_integer(value: object, name: str, *, positive: bool = False) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        qualifier = "positive integer" if positive else "integer"
+        raise ValueError(f"{name} must be a {qualifier}, got {value!r}")
+    value = int(value)
+    if positive and value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
+
+def _validate_v3_metadata(
+    *,
+    time_points: int,
+    uvd_time: np.ndarray | None,
+    uvd_landmark_ids: np.ndarray | None,
+) -> None:
+    if uvd_time is None and uvd_landmark_ids is None:
+        return
+    if uvd_time is None or uvd_landmark_ids is None:
+        raise ValueError("uvd_time and uvd_landmark_ids must be supplied together")
+    expected_count = time_points * len(LANDMARK_NAMES)
+    time = np.asarray(uvd_time)
+    landmark_ids = np.asarray(uvd_landmark_ids)
+    if time.shape != (expected_count,) or landmark_ids.shape != (expected_count,):
+        raise ValueError(
+            "V3 metadata must be flattened [time, landmark] tokens with "
+            f"shape {(expected_count,)}, got {time.shape} and {landmark_ids.shape}"
+        )
+    if not np.isfinite(time).all():
+        raise ValueError("uvd_time must be finite")
+    expected_landmarks = np.tile(np.arange(len(LANDMARK_NAMES)), time_points)
+    if not np.array_equal(landmark_ids, expected_landmarks):
+        raise ValueError("uvd_landmark_ids must be time-major [0, 1, 2] for every block")
+    time_blocks = time.reshape(time_points, len(LANDMARK_NAMES))
+    block_time = time_blocks[:, 0]
+    if not np.array_equal(time_blocks, np.repeat(block_time[:, None], len(LANDMARK_NAMES), axis=1)):
+        raise ValueError("each V3 time block must have the same uvd_time")
+    if time_points > 1 and not np.all(np.diff(block_time) > 0):
+        raise ValueError("V3 uvd_time blocks must be strictly increasing")
+
+
 
 def canonicalize_v3_uvd(
     flat: np.ndarray,
     *,
     time_points: int = 4,
     landmarks: int = 3,
+    uvd_time: np.ndarray | None = None,
+    uvd_landmark_ids: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Reshape time-major V3 tokens to canonical ``[T, L, 3]`` UVD."""
+    """Reshape validated time-major V3 tokens to canonical ``[T, L, 3]`` UVD."""
 
+    time_points = _strict_integer(time_points, "time_points", positive=True)
+    landmarks = _strict_integer(landmarks, "landmarks", positive=True)
+    if landmarks != len(LANDMARK_NAMES):
+        raise ValueError(f"V3 landmarks must be exactly 3, got {landmarks}")
     flat = np.asarray(flat, dtype=np.float32)
-    expected = (int(time_points) * int(landmarks), 3)
+    expected = (time_points * landmarks, 3)
     if flat.shape != expected:
         raise ValueError(f"expected flattened V3 UVD shape {expected}, got {flat.shape}")
-    return flat.reshape(int(time_points), int(landmarks), 3)
+    _validate_v3_metadata(
+        time_points=time_points,
+        uvd_time=uvd_time,
+        uvd_landmark_ids=uvd_landmark_ids,
+    )
+    return flat.reshape(time_points, landmarks, 3)
 
 
 def align_realized_trace(
     step_uvd: np.ndarray,
     anchor: int,
     offsets: Sequence[int],
+    *,
+    step_valid: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Align one anchor's offsets to a realized trace without tail padding.
 
     Positions outside the realized episode are explicitly NaN and invalid.
-    Finite status is retained independently for every landmark in-range.
+    Finite status and an optional supplied validity mask are retained per
+    landmark in-range.
     """
 
     step_uvd = np.asarray(step_uvd, dtype=np.float32)
-    if step_uvd.ndim != 3 or step_uvd.shape[-1] != 3:
-        raise ValueError(f"step_uvd must have shape [step, landmark, 3], got {step_uvd.shape}")
-    offsets = np.asarray(offsets, dtype=np.int64)
-    if offsets.ndim != 1:
-        raise ValueError(f"offsets must be one-dimensional, got {offsets.shape}")
+    if step_uvd.ndim != 3 or step_uvd.shape[1:] != (len(LANDMARK_NAMES), 3):
+        raise ValueError(f"step_uvd must have shape [step, 3, 3], got {step_uvd.shape}")
+    anchor = _strict_integer(anchor, "anchor")
+    raw_offsets = np.asarray(offsets)
+    if raw_offsets.ndim != 1:
+        raise ValueError(f"offsets must be one-dimensional, got {raw_offsets.shape}")
+    offset_values = np.asarray([_strict_integer(value, "offset") for value in raw_offsets], dtype=np.int64)
+    if (offset_values < 0).any():
+        raise ValueError("offsets must be non-negative")
+    if step_valid is None:
+        step_valid_array = np.ones(step_uvd.shape[:2], dtype=np.bool_)
+    else:
+        step_valid_array = np.asarray(step_valid, dtype=np.bool_)
+        if step_valid_array.shape != step_uvd.shape[:2]:
+            raise ValueError(
+                f"step_valid must have shape [step, 3], got {step_valid_array.shape}"
+            )
 
-    target = np.full((len(offsets), step_uvd.shape[1], 3), np.nan, dtype=np.float32)
+    target = np.full((len(offset_values), len(LANDMARK_NAMES), 3), np.nan, dtype=np.float32)
     valid = np.zeros(target.shape[:2], dtype=np.bool_)
-    for time_index, offset in enumerate(offsets):
-        step_index = int(anchor) + int(offset)
+    for time_index, offset in enumerate(offset_values):
+        step_index = anchor + int(offset)
         if not 0 <= step_index < len(step_uvd):
             continue
         target[time_index] = step_uvd[step_index]
-        valid[time_index] = np.isfinite(step_uvd[step_index]).all(axis=-1)
+        valid[time_index] = step_valid_array[step_index] & np.isfinite(step_uvd[step_index]).all(axis=-1)
     return target, valid
 
 
@@ -129,6 +196,7 @@ def _empty_landmark_metrics(*, projection_valid_count: int, in_frame_count: int)
         "valid_count": 0,
         "projection_valid_count": projection_valid_count,
         "in_frame_count": in_frame_count,
+        "fde_valid_count": 0,
         "uv_ade_px": float("nan"),
         "uv_fde_px": float("nan"),
         "d_mae_mm": float("nan"),
@@ -162,7 +230,8 @@ def _landmark_metrics(
     uv_error = (prediction[:, :2] - target[:, :2]) * uv_scale
     uv_l2 = np.linalg.norm(uv_error, axis=-1)
     depth_error_mm = np.abs(prediction[:, 2] - target[:, 2]) * 1000.0
-    last_valid = int(np.flatnonzero(metric_valid)[-1])
+    fde_valid_count = int(metric_valid[-1])
+    uv_fde_px = float(uv_l2[-1]) if fde_valid_count else float("nan")
     adjacent = metric_valid[1:] & metric_valid[:-1]
     target_delta = target[1:, 2] - target[:-1, 2]
     prediction_delta = prediction[1:, 2] - prediction[:-1, 2]
@@ -181,8 +250,9 @@ def _landmark_metrics(
         "valid_count": int(metric_valid.sum()),
         "projection_valid_count": projection_valid_count,
         "in_frame_count": in_frame_count,
+        "fde_valid_count": fde_valid_count,
         "uv_ade_px": float(uv_l2[metric_valid].mean()),
-        "uv_fde_px": float(uv_l2[last_valid]),
+        "uv_fde_px": uv_fde_px,
         "d_mae_mm": float(depth_error_mm[metric_valid].mean()),
         "delta_d_mae_mm": delta_d_mae_mm,
         "delta_d_direction_accuracy": direction_accuracy,
@@ -196,6 +266,7 @@ def _aggregate_metrics(per_landmark: dict[str, dict[str, float | int]]) -> dict[
         "valid_count": total_valid,
         "projection_valid_count": sum(int(value["projection_valid_count"]) for value in values),
         "in_frame_count": sum(int(value["in_frame_count"]) for value in values),
+        "fde_valid_count": sum(int(value["fde_valid_count"]) for value in values),
     }
     for metric_name in ("uv_ade_px", "d_mae_mm"):
         if total_valid:
@@ -271,6 +342,27 @@ def _camera_derived_metrics(
     }
 
 
+
+def metrics_to_jsonable(value: object) -> object:
+    """Convert metric output to strict JSON while preserving invalid gaps as null.
+
+    Internal metric dictionaries use NaN for plotting gaps. Call this adapter
+    before writing rollout or summary JSON, then use ``allow_nan=False``.
+    """
+
+    if isinstance(value, np.ndarray):
+        return metrics_to_jsonable(value.tolist())
+    if isinstance(value, np.generic):
+        return metrics_to_jsonable(value.item())
+    if isinstance(value, Mapping):
+        return {str(key): metrics_to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [metrics_to_jsonable(item) for item in value]
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    return value
+
+
 def compute_anchor_metrics(
     prediction: np.ndarray,
     target: np.ndarray,
@@ -279,6 +371,8 @@ def compute_anchor_metrics(
     image_size: int | tuple[int, int],
     depth_dead_zone_m: float = 0.002,
     camera_k: np.ndarray | None = None,
+    uvd_time: np.ndarray | None = None,
+    uvd_landmark_ids: np.ndarray | None = None,
 ) -> dict[str, object]:
     """Score one canonical three-landmark prediction horizon.
 
@@ -291,6 +385,11 @@ def compute_anchor_metrics(
     if depth_dead_zone_m < 0.0:
         raise ValueError(f"depth_dead_zone_m must be non-negative, got {depth_dead_zone_m}")
     prediction, target, valid = _validated_arrays(prediction, target, valid)
+    _validate_v3_metadata(
+        time_points=prediction.shape[0],
+        uvd_time=uvd_time,
+        uvd_landmark_ids=uvd_landmark_ids,
+    )
     scale = uvd_pixel_scale(image_size)
     projection_valid, in_frame = _projection_masks(prediction)
     per_landmark = {
