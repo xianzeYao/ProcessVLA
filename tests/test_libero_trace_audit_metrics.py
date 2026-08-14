@@ -167,3 +167,21 @@ def test_backproject_uses_height_width_pixel_scales_for_rectangular_images():
     xyz = backproject_uvd(np.asarray([[[0.5, 1.0, 2.0]]], dtype=np.float32), camera_k, image_size=(11, 21))
 
     np.testing.assert_allclose(xyz[0, 0], [0.0, 1.0, 2.0])
+
+def test_v3_rejects_single_timepoint_and_float_landmark_metadata():
+    flat = np.zeros((3, 3), dtype=np.float32)
+    with pytest.raises(ValueError, match="at least 2"):
+        canonicalize_v3_uvd(flat, time_points=1)
+
+    full_flat = np.zeros((12, 3), dtype=np.float32)
+    uvd_time = np.repeat(np.arange(4, dtype=np.float32), 3)
+    float_landmark_ids = np.tile(np.arange(3, dtype=np.float32), 4)
+    with pytest.raises(ValueError, match="integer dtype"):
+        canonicalize_v3_uvd(full_flat, uvd_time=uvd_time, uvd_landmark_ids=float_landmark_ids)
+
+
+def test_align_rejects_negative_anchor_before_it_can_map_to_step_zero():
+    steps = np.zeros((2, 3, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="anchor must be non-negative"):
+        align_realized_trace(steps, anchor=-1, offsets=[1])

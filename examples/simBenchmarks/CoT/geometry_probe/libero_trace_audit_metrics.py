@@ -45,6 +45,8 @@ def _validate_v3_metadata(
         )
     if not np.isfinite(time).all():
         raise ValueError("uvd_time must be finite")
+    if not np.issubdtype(landmark_ids.dtype, np.integer):
+        raise ValueError("uvd_landmark_ids must have an integer dtype")
     expected_landmarks = np.tile(np.arange(len(LANDMARK_NAMES)), time_points)
     if not np.array_equal(landmark_ids, expected_landmarks):
         raise ValueError("uvd_landmark_ids must be time-major [0, 1, 2] for every block")
@@ -68,6 +70,8 @@ def canonicalize_v3_uvd(
     """Reshape validated time-major V3 tokens to canonical ``[T, L, 3]`` UVD."""
 
     time_points = _strict_integer(time_points, "time_points", positive=True)
+    if time_points < 2:
+        raise ValueError(f"V3 time_points must be at least 2, got {time_points}")
     landmarks = _strict_integer(landmarks, "landmarks", positive=True)
     if landmarks != len(LANDMARK_NAMES):
         raise ValueError(f"V3 landmarks must be exactly 3, got {landmarks}")
@@ -101,6 +105,8 @@ def align_realized_trace(
     if step_uvd.ndim != 3 or step_uvd.shape[1:] != (len(LANDMARK_NAMES), 3):
         raise ValueError(f"step_uvd must have shape [step, 3, 3], got {step_uvd.shape}")
     anchor = _strict_integer(anchor, "anchor")
+    if anchor < 0:
+        raise ValueError(f"anchor must be non-negative, got {anchor}")
     raw_offsets = np.asarray(offsets)
     if raw_offsets.ndim != 1:
         raise ValueError(f"offsets must be one-dimensional, got {raw_offsets.shape}")
