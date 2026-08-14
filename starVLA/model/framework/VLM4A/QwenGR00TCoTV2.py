@@ -502,8 +502,11 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             kwargs.pop("return_geometry", False),
             name="return_geometry",
         )
+        if return_geometry and not hasattr(self.geometry_layout, "uvd_time_points"):
+            raise ValueError(
+                "return_geometry is supported only by QwenGR00TCoTV3 landmark layouts"
+            )
         timing: dict[str, float] = {}
-
         def timed(name: str, fn: Callable[[], Any]) -> Any:
             return timing_callback(name, fn) if timing_callback is not None else fn()
 
@@ -543,10 +546,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         timing["output_transfer_ms"] = (time.perf_counter() - output_start) * 1000.0
         result = {"normalized_actions": normalized_actions}
         if return_geometry:
-            if not hasattr(self.geometry_layout, "uvd_time_points"):
-                raise ValueError(
-                    "return_geometry is supported only by QwenGR00TCoTV3 landmark layouts"
-                )
             depth_current, depth_future, uvd = self._decode_geometry(
                 split,
                 qwen_inputs,

@@ -26,9 +26,9 @@ class _RandomFramework:
         return {
             "normalized_actions": torch.rand(1, 2, 3),
             "geometry": {
-                "depth_current": torch.ones(1, 1, 2, 2),
+                "depth_current": torch.ones(1, 1, 2, 2, dtype=torch.bfloat16),
                 "depth_future": torch.full((1, 1, 2, 2), 2.0),
-                "uvd": torch.zeros(1, 3, 3),
+                "uvd": torch.zeros(1, 3, 3, dtype=torch.bfloat16),
                 "uvd_time": torch.tensor([[0.0, 0.0, 0.0]]),
                 "uvd_landmark_ids": torch.tensor([[0, 1, 2]]),
             },
