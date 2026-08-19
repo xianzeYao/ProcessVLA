@@ -5,6 +5,7 @@
 
 
 from dataclasses import dataclass, field
+from typing import Sequence
 
 import torch
 import torch.nn.functional as F
@@ -193,6 +194,18 @@ DiTConfig = {
 }
 
 
+@dataclass(frozen=True)
+class FlowStepDiagnostics:
+    """Detached tensors recorded around one Euler integration step."""
+
+    step_index: int
+    t_cont: float
+    t_discretized: int
+    x_before: torch.Tensor
+    pred_velocity: torch.Tensor
+    x_after: torch.Tensor
+
+
 class FlowmatchingActionHead(nn.Module):
     def __init__(
         self,
@@ -367,62 +380,228 @@ class FlowmatchingActionHead(nn.Module):
         return loss
 
     @torch.no_grad()
+    def _predict_velocity_from_features(
+        self,
+        actions: torch.Tensor,
+        *,
+        timesteps_tensor: torch.Tensor,
+        vl_embs: torch.Tensor,
+        state_features: torch.Tensor | None,
+        encoder_attention_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        action_features = self.action_encoder(actions, timesteps_tensor)
+        if self.config.add_pos_embed:
+            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=actions.device)
+            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+            action_features = action_features + pos_embs
+
+        sa_features = [action_features]
+        if self.future_tokens is not None:
+            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
+            sa_features.insert(0, future_tokens)
+        if state_features is not None:
+            sa_features.insert(0, state_features)
+        sa_embs = torch.cat(sa_features, dim=1) if len(sa_features) > 1 else action_features
+
+        model_output = self.model(
+            hidden_states=sa_embs,
+            encoder_hidden_states=vl_embs,
+            encoder_attention_mask=encoder_attention_mask,
+            timestep=timesteps_tensor,
+        )
+        pred = self.action_decoder(model_output)
+        return pred[:, -self.action_horizon :]
+
+    def _validate_diagnostic_condition(
+        self,
+        condition: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        *,
+        batch_size: int,
+        reference: torch.Tensor,
+        name: str,
+    ) -> None:
+        if condition.ndim != 3 or int(condition.shape[0]) != batch_size:
+            raise ValueError(
+                f"{name} must have shape [B, tokens, hidden] with B={batch_size}, "
+                f"got {tuple(condition.shape)}"
+            )
+        if condition.device != reference.device:
+            raise ValueError(f"{name} device {condition.device} does not match {reference.device}")
+        if condition.dtype != reference.dtype:
+            raise ValueError(f"{name} dtype {condition.dtype} does not match {reference.dtype}")
+        if not torch.isfinite(condition).all():
+            raise ValueError(f"{name} must contain only finite values")
+        if attention_mask is None:
+            return
+        expected_mask_shape = tuple(condition.shape[:2])
+        if tuple(attention_mask.shape) != expected_mask_shape:
+            raise ValueError(
+                f"{name} attention mask shape {tuple(attention_mask.shape)} "
+                f"does not match {expected_mask_shape}"
+            )
+        if attention_mask.device != condition.device:
+            raise ValueError(
+                f"{name} attention mask device {attention_mask.device} "
+                f"does not match {condition.device}"
+            )
+        if attention_mask.dtype != torch.bool:
+            raise ValueError(f"{name} attention mask must have dtype bool")
+
+    @torch.no_grad()
+    def predict_velocity(
+        self,
+        actions: torch.Tensor,
+        *,
+        t_cont: float,
+        vl_embs: torch.Tensor,
+        state: torch.Tensor = None,
+        encoder_attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Evaluate the action velocity at an explicitly supplied flow state."""
+
+        expected_shape = (int(vl_embs.shape[0]), self.action_horizon, self.action_dim)
+        if tuple(actions.shape) != expected_shape:
+            raise ValueError(f"actions shape {tuple(actions.shape)} does not match {expected_shape}")
+        if actions.device != vl_embs.device:
+            raise ValueError(f"actions device {actions.device} does not match {vl_embs.device}")
+        if actions.dtype != vl_embs.dtype:
+            raise ValueError(f"actions dtype {actions.dtype} does not match {vl_embs.dtype}")
+        if not torch.isfinite(actions).all():
+            raise ValueError("actions must contain only finite values")
+        t_cont = float(t_cont)
+        if not 0.0 <= t_cont <= 1.0:
+            raise ValueError(f"t_cont must be in [0, 1], got {t_cont}")
+        self._validate_diagnostic_condition(
+            vl_embs,
+            encoder_attention_mask,
+            batch_size=expected_shape[0],
+            reference=actions,
+            name="vl_embs",
+        )
+        state_features = self.state_encoder(state) if state is not None else None
+        t_discretized = int(t_cont * self.num_timestep_buckets)
+        timesteps_tensor = torch.full(
+            size=(expected_shape[0],),
+            fill_value=t_discretized,
+            device=actions.device,
+        )
+        velocity = self._predict_velocity_from_features(
+            actions,
+            timesteps_tensor=timesteps_tensor,
+            vl_embs=vl_embs,
+            state_features=state_features,
+            encoder_attention_mask=encoder_attention_mask,
+        )
+        if not torch.isfinite(velocity).all():
+            raise ValueError("predicted velocity must contain only finite values")
+        return velocity
+
+    @torch.no_grad()
     def predict_action(
         self,
         vl_embs: torch.Tensor,
         state: torch.Tensor = None,
         encoder_attention_mask=None,
-    ) -> torch.Tensor:
+        *,
+        initial_actions: torch.Tensor | None = None,
+        condition_schedule: Sequence[tuple[torch.Tensor, torch.Tensor | None]] | None = None,
+        return_diagnostics: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[FlowStepDiagnostics, ...]]:
         # Set initial actions as the sampled noise.
         batch_size = vl_embs.shape[0]
         device = vl_embs.device
-        actions = torch.randn(
-            size=(batch_size, self.action_horizon, self.action_dim),
-            dtype=vl_embs.dtype,
-            device=device,
-        )
+        expected_shape = (batch_size, self.action_horizon, self.action_dim)
+        diagnostic_mode = initial_actions is not None or condition_schedule is not None or return_diagnostics
+        if initial_actions is None:
+            actions = torch.randn(
+                size=expected_shape,
+                dtype=vl_embs.dtype,
+                device=device,
+            )
+        else:
+            if tuple(initial_actions.shape) != expected_shape:
+                raise ValueError(
+                    f"initial_actions shape {tuple(initial_actions.shape)} does not match {expected_shape}"
+                )
+            if initial_actions.device != device:
+                raise ValueError(
+                    f"initial_actions device {initial_actions.device} does not match {device}"
+                )
+            if initial_actions.dtype != vl_embs.dtype:
+                raise ValueError(
+                    f"initial_actions dtype {initial_actions.dtype} does not match {vl_embs.dtype}"
+                )
+            if not torch.isfinite(initial_actions).all():
+                raise ValueError("initial_actions must contain only finite values")
+            actions = initial_actions.clone()
 
         num_steps = self.num_inference_timesteps
         dt = 1.0 / num_steps
 
         state_features = self.state_encoder(state) if state is not None else None
+        if condition_schedule is not None:
+            if len(condition_schedule) != num_steps:
+                raise ValueError(
+                    f"condition_schedule has {len(condition_schedule)} steps, expected {num_steps}"
+                )
+            for step_index, (step_condition, step_mask) in enumerate(condition_schedule):
+                self._validate_diagnostic_condition(
+                    step_condition,
+                    step_mask,
+                    batch_size=batch_size,
+                    reference=vl_embs,
+                    name=f"condition_schedule[{step_index}]",
+                )
+        if diagnostic_mode:
+            self._validate_diagnostic_condition(
+                vl_embs,
+                encoder_attention_mask,
+                batch_size=batch_size,
+                reference=vl_embs,
+                name="vl_embs",
+            )
+        diagnostics: list[FlowStepDiagnostics] = []
 
         # Run denoising steps.
         for t in range(num_steps):
             t_cont = t / float(num_steps)  # e.g. goes 0, 1/N, 2/N, ...
             t_discretized = int(t_cont * self.num_timestep_buckets)
-
-            # Embed noised action trajectory.
-            timesteps_tensor = torch.full(size=(batch_size,), fill_value=t_discretized, device=device)
-            action_features = self.action_encoder(actions, timesteps_tensor)
-            # Maybe add position embedding.
-            if self.config.add_pos_embed:
-                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
-                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
-                action_features = action_features + pos_embs
-
-            # Join vision, language, state and action embedding along sequence dimension.
-            sa_features = [action_features]
-            if self.future_tokens is not None:
-                future_tokens = self.future_tokens.weight.unsqueeze(0).expand(vl_embs.shape[0], -1, -1)
-                sa_features.insert(0, future_tokens)
-            if state_features is not None:
-                sa_features.insert(0, state_features)
-            sa_embs = torch.cat(sa_features, dim=1) if len(sa_features) > 1 else action_features
-
-            # Run model forward.
-            model_output = self.model(
-                hidden_states=sa_embs,
-                encoder_hidden_states=vl_embs,
-                encoder_attention_mask=encoder_attention_mask,
-                timestep=timesteps_tensor,
+            step_condition, step_mask = (
+                condition_schedule[t]
+                if condition_schedule is not None
+                else (vl_embs, encoder_attention_mask)
             )
-            pred = self.action_decoder(model_output)
 
-            pred_velocity = pred[:, -self.action_horizon :]
+            timesteps_tensor = torch.full(size=(batch_size,), fill_value=t_discretized, device=device)
+            x_before = actions
+            pred_velocity = self._predict_velocity_from_features(
+                actions,
+                timesteps_tensor=timesteps_tensor,
+                vl_embs=step_condition,
+                state_features=state_features,
+                encoder_attention_mask=step_mask,
+            )
+            if diagnostic_mode and not torch.isfinite(pred_velocity).all():
+                raise ValueError(f"predicted velocity at step {t} must contain only finite values")
 
             # Update actions using euler integration.
             actions = actions + dt * pred_velocity
+            if diagnostic_mode and not torch.isfinite(actions).all():
+                raise ValueError(f"actions after step {t} must contain only finite values")
+            if return_diagnostics:
+                diagnostics.append(
+                    FlowStepDiagnostics(
+                        step_index=t,
+                        t_cont=t_cont,
+                        t_discretized=t_discretized,
+                        x_before=x_before.detach().clone(),
+                        pred_velocity=pred_velocity.detach().clone(),
+                        x_after=actions.detach().clone(),
+                    )
+                )
+        if return_diagnostics:
+            return actions, tuple(diagnostics)
         return actions
 
     @property

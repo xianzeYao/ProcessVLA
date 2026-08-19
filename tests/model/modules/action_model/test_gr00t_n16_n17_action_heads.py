@@ -63,6 +63,38 @@ class _CaptureActionModel(nn.Module):
         )
 
 
+class _PassthroughActionEncoder(nn.Module):
+    def forward(self, actions, timesteps):
+        assert timesteps.shape == (actions.shape[0],)
+        return actions
+
+
+class _ConditionVelocityModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(output_dim=2)
+
+    def forward(self, hidden_states, *, encoder_hidden_states, **kwargs):
+        condition_mean = encoder_hidden_states.mean(dim=(1, 2), keepdim=True)
+        return torch.ones_like(hidden_states) * condition_mean
+
+
+def _tiny_diagnostic_legacy_head():
+    head = LegacyActionHead.__new__(LegacyActionHead)
+    nn.Module.__init__(head)
+    head.action_horizon = 3
+    head.action_dim = 2
+    head.num_inference_timesteps = 2
+    head.num_timestep_buckets = 10
+    head.config = SimpleNamespace(add_pos_embed=False)
+    head.action_encoder = _PassthroughActionEncoder()
+    head.action_decoder = nn.Identity()
+    head.model = _ConditionVelocityModel()
+    head.state_encoder = None
+    head.future_tokens = None
+    return head
+
+
 class _CaptureStateEncoder(nn.Module):
     def __init__(self, output_dim=8):
         super().__init__()
@@ -452,3 +484,105 @@ def test_legacy_action_head_zero_future_tokens_predicts_with_only_action_slots()
 
     assert actions.shape == batch["actions"].shape
     assert capture_model.hidden_states.shape == (2, 3, 768)
+
+
+def test_legacy_action_head_reuses_supplied_initial_actions_without_mutating_them():
+    head = _tiny_diagnostic_legacy_head()
+    condition = torch.ones(2, 2, 2)
+    initial = torch.full((2, 3, 2), 0.25)
+    snapshot = initial.clone()
+
+    first = head.predict_action(condition, initial_actions=initial)
+    second = head.predict_action(condition, initial_actions=initial)
+
+    assert torch.equal(first, second)
+    assert torch.equal(initial, snapshot)
+    assert torch.equal(first, torch.full_like(first, 1.25))
+
+
+def test_legacy_action_head_different_initial_actions_change_output():
+    head = _tiny_diagnostic_legacy_head()
+    condition = torch.ones(1, 2, 2)
+
+    zeros = head.predict_action(condition, initial_actions=torch.zeros(1, 3, 2))
+    ones = head.predict_action(condition, initial_actions=torch.ones(1, 3, 2))
+
+    assert not torch.equal(zeros, ones)
+
+
+def test_legacy_action_head_returns_detached_flow_diagnostics():
+    head = _tiny_diagnostic_legacy_head()
+
+    actions, diagnostics = head.predict_action(
+        torch.ones(1, 2, 2),
+        initial_actions=torch.zeros(1, 3, 2),
+        return_diagnostics=True,
+    )
+
+    assert torch.equal(actions, torch.ones_like(actions))
+    assert len(diagnostics) == 2
+    assert diagnostics[0].step_index == 0
+    assert diagnostics[0].t_cont == 0.0
+    assert diagnostics[0].t_discretized == 0
+    assert torch.equal(diagnostics[0].x_before, torch.zeros(1, 3, 2))
+    assert torch.equal(diagnostics[0].pred_velocity, torch.ones(1, 3, 2))
+    assert torch.equal(diagnostics[0].x_after, torch.full((1, 3, 2), 0.5))
+    assert torch.equal(diagnostics[1].x_before, diagnostics[0].x_after)
+    assert all(
+        not tensor.requires_grad
+        for step in diagnostics
+        for tensor in (step.x_before, step.pred_velocity, step.x_after)
+    )
+
+
+def test_legacy_action_head_condition_schedule_changes_only_selected_step():
+    head = _tiny_diagnostic_legacy_head()
+    correct = torch.ones(1, 2, 2)
+    alternative = torch.full((1, 2, 2), 2.0)
+    initial = torch.zeros(1, 3, 2)
+
+    baseline = head.predict_action(correct, initial_actions=initial)
+    intervened = head.predict_action(
+        correct,
+        initial_actions=initial,
+        condition_schedule=((correct, None), (alternative, None)),
+    )
+
+    assert torch.equal(baseline, torch.ones_like(baseline))
+    assert torch.equal(intervened, torch.full_like(intervened, 1.5))
+
+
+def test_legacy_action_head_predict_velocity_uses_requested_state_and_condition():
+    head = _tiny_diagnostic_legacy_head()
+
+    velocity = head.predict_velocity(
+        torch.zeros(1, 3, 2),
+        t_cont=0.5,
+        vl_embs=torch.full((1, 2, 2), 3.0),
+    )
+
+    assert torch.equal(velocity, torch.full_like(velocity, 3.0))
+
+
+@pytest.mark.parametrize("bad_shape", [(1, 3, 2), (2, 2, 2), (2, 3, 1)])
+def test_legacy_action_head_rejects_wrong_initial_action_shape(bad_shape):
+    head = _tiny_diagnostic_legacy_head()
+
+    with pytest.raises(ValueError, match="initial_actions shape"):
+        head.predict_action(torch.ones(2, 2, 2), initial_actions=torch.zeros(bad_shape))
+
+
+def test_legacy_action_head_rejects_invalid_diagnostic_inputs():
+    head = _tiny_diagnostic_legacy_head()
+    condition = torch.ones(1, 2, 2)
+
+    with pytest.raises(ValueError, match="initial_actions dtype"):
+        head.predict_action(condition, initial_actions=torch.zeros(1, 3, 2, dtype=torch.float64))
+    with pytest.raises(ValueError, match="finite"):
+        head.predict_action(condition, initial_actions=torch.full((1, 3, 2), float("nan")))
+    with pytest.raises(ValueError, match="condition_schedule has 1 steps, expected 2"):
+        head.predict_action(
+            condition,
+            initial_actions=torch.zeros(1, 3, 2),
+            condition_schedule=((condition, None),),
+        )

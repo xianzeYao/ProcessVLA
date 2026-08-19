@@ -117,7 +117,7 @@ Expected: PASS.
 - Modify: `tests/test_qwen_gr00t_cot_v2.py`
 
 **Interfaces:**
-- Produces: `Qwen_GR00T_CoT_V2.predict_action_interventions(examples, *, variants, task_ids, initial_actions=None, seed=42, rollout_steps=("all", 0, 1, 2, 3)) -> dict[str, Any]`.
+- Produces: `Qwen_GR00T_CoT_V2.predict_action_interventions(examples, *, variants, task_ids, initial_actions=None, seed=42, rollout_steps=None) -> dict[str, Any]`, where `None` expands to `("all", *range(num_inference_timesteps))`.
 
 - [ ] **Step 1: Write a failing one-backbone orchestration test**
 
