@@ -1,11 +1,13 @@
 import numpy as np
 import pytest
 import torch
-from types import MethodType
+from torch import nn
+from types import MethodType, SimpleNamespace
 
 import starVLA.model.framework.VLM4A.QwenGR00TCoTV2 as cot_v2_module
 from starVLA.model.framework.VLM4A.QwenGR00T import Qwen_GR00T
 from starVLA.model.framework.VLM4A.QwenGR00TCoTV2 import GeometryHiddenSplit, Qwen_GR00T_CoT_V2
+from starVLA.model.modules.action_model.GR00T_ActionHeader import FlowmatchingActionHead
 from starVLA.model.modules.geometric_cot_v2 import (
     GeometryTokenLayout,
     PackedUVDTargets,
@@ -320,6 +322,129 @@ def test_intervention_rejects_identity_permutation_and_nonfinite_condition():
             native_attention_mask=torch.ones(2, 1, dtype=torch.bool),
             name="correct",
         )
+
+
+class _ProbeActionEncoder(nn.Module):
+    def forward(self, actions, timesteps):
+        return actions
+
+
+class _ProbeVelocityModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(output_dim=2)
+
+    def forward(self, hidden_states, *, encoder_hidden_states, **kwargs):
+        condition_mean = encoder_hidden_states.mean(dim=(1, 2), keepdim=True)
+        return hidden_states + condition_mean
+
+
+def make_probe_action_head():
+    head = FlowmatchingActionHead.__new__(FlowmatchingActionHead)
+    nn.Module.__init__(head)
+    head.action_horizon = 3
+    head.action_dim = 2
+    head.num_inference_timesteps = 2
+    head.num_timestep_buckets = 10
+    head.config = SimpleNamespace(add_pos_embed=False)
+    head.action_encoder = _ProbeActionEncoder()
+    head.action_decoder = nn.Identity()
+    head.model = _ProbeVelocityModel()
+    head.state_encoder = None
+    head.future_tokens = None
+    return head
+
+
+def test_predict_action_interventions_runs_one_backbone_and_uses_correct_path_for_local_effect():
+    model = make_uninitialized_model(depth_queries=1, points=2, hands=1, include_depth=True)
+    nn.Module.__init__(model)
+    model.action_model = make_probe_action_head()
+    qwen_inputs = {"input_ids": torch.ones(4, 1, dtype=torch.long)}
+    native_mask = torch.ones(4, 1, dtype=torch.bool)
+    split = GeometryHiddenSplit(
+        native=torch.zeros(4, 1, 2),
+        depth_current=torch.tensor([1.0, 11.0, 21.0, 31.0])[:, None, None].expand(-1, 1, 2),
+        depth_future=torch.tensor([2.0, 12.0, 22.0, 32.0])[:, None, None].expand(-1, 1, 2),
+        uvd=torch.stack(
+            [
+                torch.full((2, 2), 3.5),
+                torch.full((2, 2), 13.5),
+                torch.full((2, 2), 23.5),
+                torch.full((2, 2), 33.5),
+            ]
+        ),
+    )
+    backbone_calls = []
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (qwen_inputs, native_mask),
+        model,
+    )
+
+    def run_backbone(self, inputs):
+        backbone_calls.append(inputs)
+        return split
+
+    model._run_geometry_backbone = MethodType(run_backbone, model)
+    initial_actions = torch.zeros(4, 3, 2)
+
+    result = model.predict_action_interventions(
+        [{"image": [], "lang": "move"} for _ in range(4)],
+        variants=("zero_geometry", "within_task_shuffle", "cross_task_swap"),
+        task_ids=("a", "a", "b", "b"),
+        initial_actions=initial_actions,
+        seed=7,
+        rollout_steps=("all", 1),
+    )
+
+    assert len(backbone_calls) == 1
+    assert torch.equal(result["initial_actions"], initial_actions)
+    assert result["correct"]["repeat_max_abs_error"] == 0.0
+    assert torch.equal(result["correct"]["actions"], result["correct"]["repeat_actions"])
+    assert torch.equal(result["correct"]["diagnostics"][1].x_before[0], torch.ones(3, 2))
+
+    zero = result["interventions"]["zero_geometry"]
+    assert torch.equal(zero["local_velocities"][0, 0], torch.zeros(3, 2))
+    assert torch.equal(zero["local_velocities"][1, 0], torch.ones(3, 2))
+    assert torch.equal(zero["rollouts"]["all"]["actions"][0], torch.zeros(3, 2))
+    assert torch.equal(zero["rollouts"]["step_1"]["actions"][0], torch.full((3, 2), 1.5))
+    assert set(result["interventions"]) == {
+        "zero_geometry",
+        "within_task_shuffle",
+        "cross_task_swap",
+    }
+
+
+def test_predict_action_interventions_expands_default_rollout_steps_from_action_head():
+    model = make_uninitialized_model(depth_queries=1, points=2, hands=1, include_depth=True)
+    nn.Module.__init__(model)
+    model.action_model = make_probe_action_head()
+    split = GeometryHiddenSplit(
+        native=torch.zeros(2, 1, 2),
+        depth_current=torch.ones(2, 1, 2),
+        depth_future=torch.ones(2, 1, 2),
+        uvd=torch.ones(2, 2, 2),
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(2, 1, dtype=torch.long)},
+            torch.ones(2, 1, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+
+    result = model.predict_action_interventions(
+        [{"image": [], "lang": "move"} for _ in range(2)],
+        variants=("zero_geometry",),
+        task_ids=("a", "a"),
+        initial_actions=torch.zeros(2, 3, 2),
+    )
+
+    assert set(result["interventions"]["zero_geometry"]["rollouts"]) == {
+        "all",
+        "step_0",
+        "step_1",
+    }
 
 
 @pytest.mark.parametrize("value", ["false", 1, None])

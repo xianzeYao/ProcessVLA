@@ -733,6 +733,191 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         return output
 
     @torch.inference_mode()
+    def predict_action_interventions(
+        self,
+        examples: List[dict],
+        *,
+        variants: Sequence[str],
+        task_ids: Sequence[str],
+        initial_actions: torch.Tensor | None = None,
+        seed: int = 42,
+        rollout_steps: Sequence[str | int] | None = None,
+    ) -> dict[str, Any]:
+        """Run hidden-geometry interventions from one shared backbone result."""
+
+        if not isinstance(examples, list):
+            examples = [examples]
+        if not examples:
+            raise ValueError("predict_action_interventions requires at least one example")
+        variants = tuple(str(name) for name in variants)
+        if not variants:
+            raise ValueError("at least one geometry intervention variant is required")
+        if len(set(variants)) != len(variants):
+            raise ValueError(f"geometry intervention variants must be unique, got {variants}")
+        if "correct" in variants:
+            raise ValueError("correct is always evaluated as the reference and must not be a variant")
+        task_ids = tuple(str(task_id) for task_id in task_ids)
+        if len(task_ids) != len(examples):
+            raise ValueError(
+                f"task_ids has {len(task_ids)} entries for {len(examples)} examples"
+            )
+
+        qwen_inputs, native_attention_mask = self._build_native_inputs(examples, inference=True)
+        input_device = qwen_inputs["input_ids"].device
+        if input_device.type == "cuda":
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                split = self._run_geometry_backbone(qwen_inputs)
+        else:
+            split = self._run_geometry_backbone(qwen_inputs)
+
+        correct = self._build_intervention_condition(
+            split,
+            native_attention_mask=native_attention_mask,
+            name="correct",
+        )
+        state = None
+        if "state" in examples[0] and self.config.framework.action_model.get("state_dim", 0):
+            state = torch.as_tensor(
+                np.asarray([example["state"] for example in examples]),
+                device=correct.condition.device,
+                dtype=correct.condition.dtype,
+            )
+            state = state[..., : int(self.config.framework.action_model.state_dim)]
+
+        action_shape = (
+            len(examples),
+            int(self.action_model.action_horizon),
+            int(self.action_model.action_dim),
+        )
+        if initial_actions is None:
+            noise_generator = torch.Generator(device=correct.condition.device)
+            noise_generator.manual_seed(int(seed))
+            common_initial = torch.randn(
+                action_shape,
+                dtype=correct.condition.dtype,
+                device=correct.condition.device,
+                generator=noise_generator,
+            )
+        else:
+            common_initial = initial_actions
+
+        def run_action(
+            condition_schedule: Sequence[tuple[torch.Tensor, torch.Tensor | None]] | None = None,
+        ):
+            def call():
+                return self.action_model.predict_action(
+                    correct.condition,
+                    state,
+                    encoder_attention_mask=correct.condition_mask,
+                    initial_actions=common_initial,
+                    condition_schedule=condition_schedule,
+                    return_diagnostics=True,
+                )
+
+            if correct.condition.device.type == "cuda":
+                with torch.autocast("cuda", dtype=torch.float32):
+                    return call()
+            return call()
+
+        correct_actions, correct_diagnostics = run_action()
+        repeat_actions, repeat_diagnostics = run_action()
+        repeat_error = float((correct_actions - repeat_actions).abs().max().item())
+
+        num_steps = int(self.action_model.num_inference_timesteps)
+        if rollout_steps is None:
+            rollout_steps = ("all", *range(num_steps))
+        normalized_rollout_steps: list[str | int] = []
+        for value in rollout_steps:
+            if value == "all":
+                normalized: str | int = "all"
+            elif isinstance(value, int) and not isinstance(value, bool) and 0 <= value < num_steps:
+                normalized = int(value)
+            else:
+                raise ValueError(
+                    f"rollout step must be 'all' or an integer in [0, {num_steps}), got {value!r}"
+                )
+            if normalized in normalized_rollout_steps:
+                raise ValueError(f"duplicate rollout step: {normalized!r}")
+            normalized_rollout_steps.append(normalized)
+
+        interventions: dict[str, Any] = {}
+        for variant_index, name in enumerate(variants):
+            permutation = None
+            if name in {"within_task_shuffle", "cross_task_swap"}:
+                permutation_generator = torch.Generator().manual_seed(
+                    int(seed) + variant_index + 1
+                )
+                permutation = build_geometry_permutation(
+                    task_ids,
+                    mode=name,
+                    generator=permutation_generator,
+                )
+            alternative = self._build_intervention_condition(
+                split,
+                native_attention_mask=native_attention_mask,
+                name=name,
+                permutation=permutation,
+            )
+
+            local_velocities = []
+            for step in correct_diagnostics:
+                def call_local_velocity():
+                    return self.action_model.predict_velocity(
+                        step.x_before,
+                        t_cont=step.t_cont,
+                        vl_embs=alternative.condition,
+                        state=state,
+                        encoder_attention_mask=alternative.condition_mask,
+                    )
+
+                if alternative.condition.device.type == "cuda":
+                    with torch.autocast("cuda", dtype=torch.float32):
+                        local_velocity = call_local_velocity()
+                else:
+                    local_velocity = call_local_velocity()
+                local_velocities.append(local_velocity.detach().clone())
+
+            rollouts: dict[str, Any] = {}
+            for intervene_at in normalized_rollout_steps:
+                schedule = tuple(
+                    (
+                        (alternative.condition, alternative.condition_mask)
+                        if intervene_at == "all" or step_index == intervene_at
+                        else (correct.condition, correct.condition_mask)
+                    )
+                    for step_index in range(num_steps)
+                )
+                actions, diagnostics = run_action(schedule)
+                key = "all" if intervene_at == "all" else f"step_{intervene_at}"
+                rollouts[key] = {
+                    "actions": actions.detach().clone(),
+                    "diagnostics": diagnostics,
+                }
+
+            interventions[name] = {
+                "permutation": (
+                    None
+                    if alternative.permutation is None
+                    else alternative.permutation.detach().clone()
+                ),
+                "diagnostic_counterfactual": alternative.diagnostic_counterfactual,
+                "local_velocities": torch.stack(local_velocities, dim=0),
+                "rollouts": rollouts,
+            }
+
+        return {
+            "initial_actions": common_initial.detach().clone(),
+            "correct": {
+                "actions": correct_actions.detach().clone(),
+                "diagnostics": correct_diagnostics,
+                "repeat_actions": repeat_actions.detach().clone(),
+                "repeat_diagnostics": repeat_diagnostics,
+                "repeat_max_abs_error": repeat_error,
+            },
+            "interventions": interventions,
+        }
+
+    @torch.inference_mode()
     def predict_action(self, examples: List[dict], **kwargs) -> dict:
         if not isinstance(examples, list):
             examples = [examples]
