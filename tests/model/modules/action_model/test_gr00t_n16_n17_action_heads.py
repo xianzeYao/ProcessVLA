@@ -558,7 +558,7 @@ def test_legacy_action_head_predict_velocity_uses_requested_state_and_condition(
     velocity = head.predict_velocity(
         torch.zeros(1, 3, 2),
         t_cont=0.5,
-        vl_embs=torch.full((1, 2, 2), 3.0),
+        vl_embs=torch.full((1, 2, 3), 3.0),
     )
 
     assert torch.equal(velocity, torch.full_like(velocity, 3.0))
@@ -585,4 +585,14 @@ def test_legacy_action_head_rejects_invalid_diagnostic_inputs():
             condition,
             initial_actions=torch.zeros(1, 3, 2),
             condition_schedule=((condition, None),),
+        )
+    wrong_hidden_width = torch.ones(1, 2, 3)
+    with pytest.raises(ValueError, match="hidden width"):
+        head.predict_action(
+            condition,
+            initial_actions=torch.zeros(1, 3, 2),
+            condition_schedule=(
+                (wrong_hidden_width, None),
+                (wrong_hidden_width, None),
+            ),
         )

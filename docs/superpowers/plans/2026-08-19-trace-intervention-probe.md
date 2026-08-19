@@ -149,7 +149,7 @@ Expected: PASS.
 - Produces: `effect_metrics(reference, alternative, action_groups) -> dict[str, Any]`.
 - Produces: `cluster_bootstrap_mean_ci(values, cluster_ids, *, seed, resamples=2000) -> tuple[float, float]`.
 - Produces: `run_trace_intervention_checkpoint(...) -> dict[str, Any]`.
-- CLI accepts `--checkpoint`, `--samples-dir`, `--output-dir`, `--batch-size`, `--seed`, `--device`, `--variants`, and `--bootstrap-resamples`.
+- CLI accepts `--checkpoint`, `--samples-dir`, `--output-dir`, `--batch-size`, `--seed`, `--device`, `--variants`, `--bootstrap-resamples`, and `--repeat-tolerance`.
 
 - [ ] **Step 1: Write failing pure CPU tests**
 

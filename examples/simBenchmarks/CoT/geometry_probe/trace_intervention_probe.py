@@ -43,6 +43,28 @@ def _to_numpy(value: Any) -> np.ndarray:
     return np.asarray(value)
 
 
+def _nested_config_value(root: Any, *keys: str) -> Any:
+    current = root
+    for key in keys:
+        if current is None:
+            return None
+        if isinstance(current, Mapping):
+            current = current.get(key)
+        else:
+            current = getattr(current, key, None)
+    return current
+
+
+def _optional_config_bool(value: Any, *, name: str) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, str) and value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    raise ValueError(f"{name} must be boolean when present, got {value!r}")
+
+
 def load_sample_identity(path: str | Path) -> dict[str, Any]:
     """Read only stable identity metadata from a materialized paired-probe NPZ."""
 
@@ -73,7 +95,7 @@ def build_intervention_batches(
     *,
     batch_size: int,
 ) -> list[list[Path]]:
-    """Build batches with two samples from each of multiple distinct tasks."""
+    """Build full batches from within-task pairs while preserving swap validity."""
 
     batch_size = int(batch_size)
     if batch_size < 4 or batch_size % 2:
@@ -97,21 +119,40 @@ def build_intervention_batches(
         task_id: [paths[index : index + 2] for index in range(0, len(paths), 2)]
         for task_id, paths in sorted(paths_by_task.items())
     }
-    task_pairs_per_batch = batch_size // 2
+    pairs_per_batch = batch_size // 2
+    pair_count = sum(len(pairs) for pairs in pair_queues.values())
+    if pair_count % pairs_per_batch:
+        raise ValueError(
+            f"{pair_count} within-task pairs cannot form full batches of "
+            f"{pairs_per_batch} pairs"
+        )
+    max_pairs_per_task = pairs_per_batch // 2
     batches: list[list[Path]] = []
     while any(pair_queues.values()):
-        active = sorted(
-            (task_id for task_id, pairs in pair_queues.items() if pairs),
-            key=lambda task_id: (-len(pair_queues[task_id]), task_id),
-        )
-        if len(active) < task_pairs_per_batch:
-            raise ValueError(
-                f"cannot form a full batch with {task_pairs_per_batch} distinct tasks; "
-                f"only {len(active)} task pair queues remain"
+        batch: list[Path] = []
+        selected_counts: dict[str, int] = defaultdict(int)
+        for _ in range(pairs_per_batch):
+            candidates = sorted(
+                (
+                    task_id
+                    for task_id, pairs in pair_queues.items()
+                    if pairs and selected_counts[task_id] < max_pairs_per_task
+                ),
+                key=lambda task_id: (-len(pair_queues[task_id]), task_id),
             )
-        batch = []
-        for task_id in active[:task_pairs_per_batch]:
+            if not candidates:
+                remaining = {
+                    task_id: len(pairs)
+                    for task_id, pairs in pair_queues.items()
+                    if pairs
+                }
+                raise ValueError(
+                    "cannot form a full cross-task-valid batch from remaining "
+                    f"within-task pairs: {remaining}"
+                )
+            task_id = candidates[0]
             batch.extend(pair_queues[task_id].pop(0))
+            selected_counts[task_id] += 1
         batches.append(batch)
     return batches
 
@@ -434,11 +475,17 @@ def run_trace_intervention_checkpoint(
     device: str,
     variants: Sequence[str],
     bootstrap_resamples: int = 2000,
+    repeat_tolerance: float = 1e-6,
     config_path: str | Path | None = None,
     framework_loader: Any | None = None,
 ) -> dict[str, Any]:
     """Load one V2 checkpoint and write a complete offline intervention probe."""
 
+    repeat_tolerance = float(repeat_tolerance)
+    if not np.isfinite(repeat_tolerance) or repeat_tolerance < 0.0:
+        raise ValueError(
+            f"repeat_tolerance must be finite and non-negative, got {repeat_tolerance}"
+        )
     if framework_loader is None:
         from starVLA.model.framework.base_framework import baseframework
 
@@ -450,6 +497,24 @@ def run_trace_intervention_checkpoint(
     framework = framework_loader(checkpoint)
     if not callable(getattr(framework, "predict_action_interventions", None)):
         raise TypeError("checkpoint framework does not implement predict_action_interventions")
+    checkpoint_include_state = _optional_config_bool(
+        _nested_config_value(
+            getattr(framework, "config", None),
+            "datasets",
+            "vla_data",
+            "include_state",
+        ),
+        name="checkpoint datasets.vla_data.include_state",
+    )
+    checkpoint_state_dim_value = _nested_config_value(
+        getattr(framework, "config", None),
+        "framework",
+        "action_model",
+        "state_dim",
+    )
+    checkpoint_state_dim = (
+        None if checkpoint_state_dim_value is None else int(checkpoint_state_dim_value)
+    )
     framework = framework.to(device).eval()
 
     action_dim = int(framework.action_model.action_dim)
@@ -459,10 +524,28 @@ def run_trace_intervention_checkpoint(
     repeat_errors: list[float] = []
     observed_dtypes: set[str] = set()
     observed_devices: set[str] = set()
+    observed_example_keys: set[tuple[str, ...]] = set()
     try:
         for batch_index, batch in enumerate(batches):
             batch_samples = [load_materialized_sample(path) for path in batch]
             examples = [build_geometry_example(sample) for sample in batch_samples]
+            batch_example_keys = {tuple(sorted(example)) for example in examples}
+            if len(batch_example_keys) != 1:
+                raise ValueError(
+                    f"batch {batch_index} has inconsistent input example keys: "
+                    f"{sorted(batch_example_keys)}"
+                )
+            observed_example_keys.update(batch_example_keys)
+            batch_has_state = "state" in next(iter(batch_example_keys))
+            if (
+                checkpoint_include_state is not None
+                and batch_has_state != checkpoint_include_state
+            ):
+                raise ValueError(
+                    "checkpoint state-input contract mismatch: "
+                    f"datasets.vla_data.include_state={checkpoint_include_state}, "
+                    f"but batch {batch_index} state presence is {batch_has_state}"
+                )
             batch_identities = [load_sample_identity(path) for path in batch]
             task_ids = tuple(identity["task_id"] for identity in batch_identities)
             result = framework.predict_action_interventions(
@@ -482,7 +565,14 @@ def run_trace_intervention_checkpoint(
                 observed_devices.add(str(device))
             batch_size_actual = len(batch)
             batch_offset = len(per_sample)
-            repeat_errors.append(float(result["correct"]["repeat_max_abs_error"]))
+            repeat_error = float(result["correct"]["repeat_max_abs_error"])
+            repeat_errors.append(repeat_error)
+            if not np.isfinite(repeat_error) or repeat_error > repeat_tolerance:
+                raise RuntimeError(
+                    "correct-condition repeat sanity check failed for "
+                    f"batch {batch_index}: max_abs_error={repeat_error} exceeds "
+                    f"tolerance={repeat_tolerance}"
+                )
             correct_actions = _to_numpy(result["correct"]["actions"])
             correct_x_before = _diagnostic_tensor(
                 result["correct"]["diagnostics"], "x_before"
@@ -495,6 +585,9 @@ def run_trace_intervention_checkpoint(
             )
             trajectory_chunks["initial_actions"].append(_to_numpy(result["initial_actions"]))
             trajectory_chunks["correct_actions"].append(correct_actions)
+            trajectory_chunks["correct_repeat_actions"].append(
+                _to_numpy(result["correct"]["repeat_actions"])
+            )
             trajectory_chunks["correct_x_before"].append(
                 np.swapaxes(correct_x_before, 0, 1)
             )
@@ -586,6 +679,8 @@ def run_trace_intervention_checkpoint(
         "sample_count": len(per_sample),
         "batch_count": len(batches),
         "correct_repeat_max_abs_error": max(repeat_errors, default=0.0),
+        "correct_repeat_tolerance": repeat_tolerance,
+        "correct_repeat_passed": True,
         "velocity_effect": {},
         "final_action_effect": {},
     }
@@ -621,6 +716,15 @@ def run_trace_intervention_checkpoint(
         name: np.concatenate(chunks, axis=0)
         for name, chunks in trajectory_chunks.items()
     }
+    if len(observed_example_keys) != 1:
+        raise ValueError(
+            f"probe batches used inconsistent input example keys: {sorted(observed_example_keys)}"
+        )
+    input_example_keys = list(next(iter(observed_example_keys)))
+    proprioceptive_state_present = "state" in input_example_keys
+    state_conditioning_used = proprioceptive_state_present and (
+        checkpoint_state_dim is None or checkpoint_state_dim > 0
+    )
     config = {
         "git_commit": _git_commit(),
         "checkpoint": checkpoint,
@@ -648,6 +752,12 @@ def run_trace_intervention_checkpoint(
         "action_groups": {name: list(bounds) for name, bounds in action_groups.items()},
         "normalized_actions": True,
         "bootstrap_resamples": int(bootstrap_resamples),
+        "correct_repeat_tolerance": repeat_tolerance,
+        "input_example_keys": input_example_keys,
+        "proprioceptive_state_present": proprioceptive_state_present,
+        "checkpoint_include_state": checkpoint_include_state,
+        "checkpoint_state_dim": checkpoint_state_dim,
+        "state_conditioning_used": state_conditioning_used,
         "intervention_permutations": {
             variant: trajectories[f"{variant}__permutation"].tolist()
             for variant in variants

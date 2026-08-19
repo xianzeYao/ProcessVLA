@@ -90,7 +90,9 @@ Within-task shuffling requires at least two samples for every task present in a
 batch. Cross-task swapping requires at least two task labels and is rejected
 when any task occupies more than half the batch, because a cross-task
 derangement is then impossible. Every permutation is recorded and validated as
-non-identity.
+non-identity. Offline batching therefore packs within-task sample pairs and may
+place multiple pairs from one task in a larger batch, up to the half-batch
+cross-task limit.
 
 ## Diagnostic execution
 
@@ -99,7 +101,9 @@ non-identity.
 1. preprocess and run the Qwen geometry backbone once;
 2. construct `correct` plus each requested alternative condition;
 3. sample or accept one initial action tensor and reuse it for every rollout;
-4. run the correct trajectory twice for the exact-repeat numerical floor;
+4. run the correct trajectory twice for the exact-repeat numerical floor and
+   reject the probe if its maximum absolute action error exceeds the configured
+   tolerance;
 5. at every correct-path `x_k`, evaluate correct and alternative velocity to
    measure the local effect;
 6. run the alternative for `all` steps and for each individual Euler step,
@@ -126,8 +130,15 @@ trajectories.npz
 
 `config.json` records commit, checkpoint, sample paths and identities, seed,
 batch construction, permutations, inference steps, dtype/device, action groups,
-and normalized-space status. `trajectories.npz` stores initial noise, correct
-states/velocities, local alternative velocities, and final rollout actions.
+normalized-space status, the repeat tolerance, and the exact input-example
+keys. The current RoboCasa training configuration uses `include_state: false`;
+the recorded keys, checkpoint `include_state`/`state_dim`, and
+`proprioceptive_state_present` flag make that no-state input contract explicit
+even though the action-head configuration retains a nonzero compatibility
+`state_dim`. A known checkpoint `include_state` value that disagrees with the
+materialized example keys is rejected. `trajectories.npz` stores initial noise,
+both correct-repeat actions, correct states/velocities, local alternative
+velocities, and final rollout actions.
 
 Effects are reported as both L2 norm and dimension-normalized RMS. RoboCasa
 groups are left arm `[0:7]`, right arm `[7:14]`, left hand `[14:20]`, right hand

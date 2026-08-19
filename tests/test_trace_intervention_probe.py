@@ -76,6 +76,28 @@ def test_build_intervention_batches_pairs_two_samples_from_distinct_tasks(tmp_pa
         assert task_ids.count("b") == 2
 
 
+def test_build_intervention_batches_allows_multiple_pairs_per_task(tmp_path):
+    probe = _probe_module()
+    paths = []
+    for task_id in ("a", "b"):
+        for sample_index in range(4):
+            paths.append(
+                _write_materialized_sample(
+                    tmp_path / f"{task_id}_{sample_index}.npz",
+                    task_id=task_id,
+                    episode_id=sample_index,
+                    frame_index=sample_index,
+                )
+            )
+
+    batches = probe.build_intervention_batches(paths, batch_size=8)
+
+    assert len(batches) == 1
+    task_ids = [probe.load_sample_identity(path)["task_id"] for path in batches[0]]
+    assert task_ids.count("a") == 4
+    assert task_ids.count("b") == 4
+
+
 @pytest.mark.parametrize(
     ("task_counts", "batch_size", "message"),
     [
@@ -199,12 +221,22 @@ def test_write_probe_figures_creates_velocity_final_and_group_views(tmp_path):
 
 
 class _FakeTraceFramework:
-    def __init__(self):
+    def __init__(self, *, repeat_error=0.0, include_state=None, state_dim=None):
         self.action_model = SimpleNamespace(
             action_horizon=2,
             action_dim=4,
             num_inference_timesteps=2,
         )
+        if include_state is not None or state_dim is not None:
+            self.config = SimpleNamespace(
+                datasets=SimpleNamespace(
+                    vla_data=SimpleNamespace(include_state=include_state),
+                ),
+                framework=SimpleNamespace(
+                    action_model=SimpleNamespace(state_dim=state_dim),
+                ),
+            )
+        self.repeat_error = float(repeat_error)
         self.calls = []
 
     def to(self, device):
@@ -259,7 +291,7 @@ class _FakeTraceFramework:
                 "diagnostics": correct_diagnostics,
                 "repeat_actions": zeros,
                 "repeat_diagnostics": correct_diagnostics,
-                "repeat_max_abs_error": 0.0,
+                "repeat_max_abs_error": self.repeat_error,
             },
             "interventions": {
                 name: {
@@ -313,6 +345,8 @@ def test_run_trace_intervention_checkpoint_writes_recomputable_outputs(tmp_path)
     assert framework.calls == [(4, ("zero_geometry",), ("a", "a", "b", "b"), 7, None)]
     assert summary["sample_count"] == 4
     assert summary["correct_repeat_max_abs_error"] == 0.0
+    assert summary["correct_repeat_tolerance"] == 1e-6
+    assert summary["correct_repeat_passed"] is True
     assert summary["velocity_effect"]["zero_geometry"]["step_0"]["l2"]["mean"] == pytest.approx(
         np.sqrt(8.0)
     )
@@ -327,8 +361,85 @@ def test_run_trace_intervention_checkpoint_writes_recomputable_outputs(tmp_path)
     assert (tmp_path / "output" / "figures" / "velocity_effect_heatmap.png").exists()
     assert (tmp_path / "output" / "figures" / "final_action_effect.png").exists()
     assert (tmp_path / "output" / "figures" / "action_group_effect.png").exists()
+    with np.load(tmp_path / "output" / "trajectories.npz", allow_pickle=False) as payload:
+        np.testing.assert_array_equal(
+            payload["correct_repeat_actions"],
+            payload["correct_actions"],
+        )
     config = json.loads((tmp_path / "output" / "config.json").read_text())
     assert config["dtype"] == "torch.float32"
+    assert config["correct_repeat_tolerance"] == 1e-6
+    assert config["input_example_keys"] == [
+        "image",
+        "lang",
+        "uvd",
+        "uvd_time",
+        "uvd_valid_mask",
+    ]
+    assert config["proprioceptive_state_present"] is False
+    assert config["state_conditioning_used"] is False
+
+
+def test_run_trace_intervention_checkpoint_rejects_repeat_error_above_tolerance(tmp_path):
+    probe = _probe_module()
+    samples = []
+    for task_id in ("a", "b"):
+        for sample_index in range(2):
+            samples.append(
+                _write_materialized_sample(
+                    tmp_path / f"{task_id}_{sample_index}.npz",
+                    task_id=task_id,
+                    episode_id=sample_index,
+                    frame_index=sample_index,
+                )
+            )
+
+    with pytest.raises(RuntimeError, match="repeat sanity check failed"):
+        probe.run_trace_intervention_checkpoint(
+            "checkpoint.pt",
+            sample_paths=samples,
+            output_dir=tmp_path / "output",
+            batch_size=4,
+            seed=7,
+            device="cpu",
+            variants=("zero_geometry",),
+            bootstrap_resamples=20,
+            repeat_tolerance=1e-5,
+            framework_loader=lambda _path: _FakeTraceFramework(repeat_error=2e-5),
+        )
+
+    assert not (tmp_path / "output" / "summary.json").exists()
+
+
+def test_run_trace_intervention_checkpoint_rejects_state_contract_mismatch(tmp_path):
+    probe = _probe_module()
+    samples = []
+    for task_id in ("a", "b"):
+        for sample_index in range(2):
+            samples.append(
+                _write_materialized_sample(
+                    tmp_path / f"{task_id}_{sample_index}.npz",
+                    task_id=task_id,
+                    episode_id=sample_index,
+                    frame_index=sample_index,
+                )
+            )
+
+    with pytest.raises(ValueError, match="include_state=True"):
+        probe.run_trace_intervention_checkpoint(
+            "checkpoint.pt",
+            sample_paths=samples,
+            output_dir=tmp_path / "output",
+            batch_size=4,
+            seed=7,
+            device="cpu",
+            variants=("zero_geometry",),
+            bootstrap_resamples=20,
+            framework_loader=lambda _path: _FakeTraceFramework(
+                include_state=True,
+                state_dim=7,
+            ),
+        )
 
 
 def test_trace_probe_cli_exposes_checkpoint_sample_and_reproducibility_options():
@@ -350,6 +461,8 @@ def test_trace_probe_cli_exposes_checkpoint_sample_and_reproducibility_options()
             "9",
             "--device",
             "cuda:2",
+            "--repeat-tolerance",
+            "1e-5",
         ]
     )
 
@@ -359,3 +472,4 @@ def test_trace_probe_cli_exposes_checkpoint_sample_and_reproducibility_options()
     assert args.batch_size == 8
     assert args.seed == 9
     assert args.device == "cuda:2"
+    assert args.repeat_tolerance == 1e-5

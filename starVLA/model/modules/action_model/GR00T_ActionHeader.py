@@ -426,6 +426,11 @@ class FlowmatchingActionHead(nn.Module):
                 f"{name} must have shape [B, tokens, hidden] with B={batch_size}, "
                 f"got {tuple(condition.shape)}"
             )
+        if int(condition.shape[2]) != int(reference.shape[2]):
+            raise ValueError(
+                f"{name} hidden width {int(condition.shape[2])} does not match "
+                f"reference hidden width {int(reference.shape[2])}"
+            )
         if condition.device != reference.device:
             raise ValueError(f"{name} device {condition.device} does not match {reference.device}")
         if condition.dtype != reference.dtype:
@@ -476,7 +481,7 @@ class FlowmatchingActionHead(nn.Module):
             vl_embs,
             encoder_attention_mask,
             batch_size=expected_shape[0],
-            reference=actions,
+            reference=vl_embs,
             name="vl_embs",
         )
         state_features = self.state_encoder(state) if state is not None else None

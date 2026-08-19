@@ -23,6 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--bootstrap-resamples", type=int, default=2000)
     parser.add_argument(
+        "--repeat-tolerance",
+        type=float,
+        default=1e-6,
+        help="Maximum allowed correct-condition repeat action error",
+    )
+    parser.add_argument(
         "--variants",
         nargs="+",
         default=[
@@ -55,6 +61,7 @@ def main() -> None:
         device=args.device,
         variants=args.variants,
         bootstrap_resamples=args.bootstrap_resamples,
+        repeat_tolerance=args.repeat_tolerance,
         config_path=args.config,
     )
     print(json.dumps(summary, indent=2))
