@@ -1,0 +1,24 @@
+{
+  "status": "success",
+  "mode": "validate_only",
+  "dataset_root": "/root/data/yxz/datasets/libero_rerender",
+  "totals": {
+    "selected_episodes": 10,
+    "selected_frames": 1497,
+    "validated_episodes": 10,
+    "written_episodes": 0,
+    "skipped_episodes": 0
+  },
+  "missing": [],
+  "corrupt": [],
+  "suites": {
+    "libero_goal": {
+      "episode_count": 10,
+      "frame_count": 1497,
+      "min_finger_distance_m": 0.018674660290349785,
+      "min_triangle_area_m2": 0.0010121669484922042,
+      "projection_valid_point_ratio": 1.0,
+      "in_frame_point_ratio": 1.0
+    }
+  }
+}

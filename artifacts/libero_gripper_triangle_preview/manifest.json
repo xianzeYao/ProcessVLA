@@ -1,0 +1,1301 @@
+{
+  "status": "success",
+  "point_body_names": [
+    "gripper0_finger_joint1_tip",
+    "gripper0_finger_joint2_tip",
+    "gripper0_right_gripper"
+  ],
+  "camera": "agentview",
+  "occlusion_policy": "keep geometric projection without visibility masking",
+  "dataset_root": "/root/data/yxz/datasets/libero_rerender",
+  "output_root": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview",
+  "episode_count": 40,
+  "contact_sheets": {
+    "libero_10": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/contact_sheet.jpg",
+    "libero_goal": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/contact_sheet.jpg",
+    "libero_object": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/contact_sheet.jpg",
+    "libero_spatial": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/contact_sheet.jpg"
+  },
+  "episodes": [
+    {
+      "suite": "libero_10",
+      "episode_id": 0,
+      "frame_count": 214,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000000.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000000.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/LIVING_ROOM_SCENE5_put_the_white_mug_on_the_left_plate_and_put_the_yellow_and_white_mug_on_the_right_plate_demo.hdf5",
+        "demo_id": "demo_19",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 215
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000000.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000000.mp4",
+        "fps": 20.0,
+        "frame_count": 214,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.027423965812414148,
+        "max_finger_distance_m": 0.09676649733306775,
+        "min_triangle_area_m2": 0.0014863789470328456,
+        "max_triangle_area_m2": 0.005244744155452265,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 0.9190031152647975,
+        "all_three_in_frame_frame_ratio": 0.8878504672897196
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 42,
+      "frame_count": 244,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000042.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000042.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/LIVING_ROOM_SCENE2_put_both_the_cream_cheese_box_and_the_butter_in_the_basket_demo.hdf5",
+        "demo_id": "demo_36",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 243
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000042.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000042.mp4",
+        "fps": 20.0,
+        "frame_count": 244,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.056496144330963366,
+        "max_finger_distance_m": 0.09663141764167507,
+        "min_triangle_area_m2": 0.003062091022738208,
+        "max_triangle_area_m2": 0.005237422836178778,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 0.9877049180327869,
+        "all_three_in_frame_frame_ratio": 0.9631147540983607
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 84,
+      "frame_count": 247,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000084.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000084.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it_demo.hdf5",
+        "demo_id": "demo_47",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 246
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000084.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000084.mp4",
+        "fps": 20.0,
+        "frame_count": 247,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.035439218275339114,
+        "max_finger_distance_m": 0.09698277416351266,
+        "min_triangle_area_m2": 0.0019208056305233766,
+        "max_triangle_area_m2": 0.005256466359662379,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 126,
+      "frame_count": 293,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000126.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000126.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it_demo.hdf5",
+        "demo_id": "demo_5",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 292
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000126.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000126.mp4",
+        "fps": 20.0,
+        "frame_count": 293,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.03547060855022021,
+        "max_finger_distance_m": 0.0968821824646251,
+        "min_triangle_area_m2": 0.0019225069834219323,
+        "max_triangle_area_m2": 0.005251014289582673,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 168,
+      "frame_count": 203,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000168.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000168.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/LIVING_ROOM_SCENE6_put_the_white_mug_on_the_plate_and_put_the_chocolate_pudding_to_the_right_of_the_plate_demo.hdf5",
+        "demo_id": "demo_0",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 202
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000168.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000168.mp4",
+        "fps": 20.0,
+        "frame_count": 203,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.022844422703634838,
+        "max_finger_distance_m": 0.09652835149625423,
+        "min_triangle_area_m2": 0.0012381677105370065,
+        "max_triangle_area_m2": 0.005231836651096974,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 210,
+      "frame_count": 286,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000210.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000210.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/LIVING_ROOM_SCENE6_put_the_white_mug_on_the_plate_and_put_the_chocolate_pudding_to_the_right_of_the_plate_demo.hdf5",
+        "demo_id": "demo_35",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 285
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000210.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000210.mp4",
+        "fps": 20.0,
+        "frame_count": 286,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.02284441859434458,
+        "max_finger_distance_m": 0.09648500027002761,
+        "min_triangle_area_m2": 0.0012381674878134757,
+        "max_triangle_area_m2": 0.005229487014635486,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 252,
+      "frame_count": 232,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000252.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000252.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/LIVING_ROOM_SCENE6_put_the_white_mug_on_the_plate_and_put_the_chocolate_pudding_to_the_right_of_the_plate_demo.hdf5",
+        "demo_id": "demo_25",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 231
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000252.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000252.mp4",
+        "fps": 20.0,
+        "frame_count": 232,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.022844401509014147,
+        "max_finger_distance_m": 0.09662105211592824,
+        "min_triangle_area_m2": 0.0012381665617885662,
+        "max_triangle_area_m2": 0.005236861024683303,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 294,
+      "frame_count": 241,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000294.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000294.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/LIVING_ROOM_SCENE2_put_both_the_cream_cheese_box_and_the_butter_in_the_basket_demo.hdf5",
+        "demo_id": "demo_4",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 240
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000294.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000294.mp4",
+        "fps": 20.0,
+        "frame_count": 241,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.056446611629490745,
+        "max_finger_distance_m": 0.0966264866844718,
+        "min_triangle_area_m2": 0.0030594063503183917,
+        "max_triangle_area_m2": 0.005237155578298366,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 0.9543568464730291,
+        "all_three_in_frame_frame_ratio": 0.9004149377593361
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 336,
+      "frame_count": 276,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000336.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000336.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/LIVING_ROOM_SCENE2_put_both_the_alphabet_soup_and_the_tomato_sauce_in_the_basket_demo.hdf5",
+        "demo_id": "demo_35",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 275
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000336.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000336.mp4",
+        "fps": 20.0,
+        "frame_count": 276,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.07698900803404321,
+        "max_finger_distance_m": 0.09704759122251722,
+        "min_triangle_area_m2": 0.004172804235445139,
+        "max_triangle_area_m2": 0.005259979444260427,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 0.9444444444444444,
+        "all_three_in_frame_frame_ratio": 0.894927536231884
+      }
+    },
+    {
+      "suite": "libero_10",
+      "episode_id": 378,
+      "frame_count": 252,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000378.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_10_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000378.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_10/LIVING_ROOM_SCENE2_put_both_the_cream_cheese_box_and_the_butter_in_the_basket_demo.hdf5",
+        "demo_id": "demo_21",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 251
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000378.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_10/videos/episode_000378.mp4",
+        "fps": 20.0,
+        "frame_count": 252,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.056394748306153916,
+        "max_finger_distance_m": 0.09667330513027159,
+        "min_triangle_area_m2": 0.0030565953581935387,
+        "max_triangle_area_m2": 0.005239693138060709,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 0.9166666666666666,
+        "all_three_in_frame_frame_ratio": 0.8531746031746031
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 0,
+      "frame_count": 112,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000000.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000000.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/put_the_bowl_on_the_plate_demo.hdf5",
+        "demo_id": "demo_10",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 111
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000000.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000000.mp4",
+        "fps": 20.0,
+        "frame_count": 112,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.02208761692487827,
+        "max_finger_distance_m": 0.09664125876651009,
+        "min_triangle_area_m2": 0.0011971488373284014,
+        "max_triangle_area_m2": 0.00523795622514484,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 47,
+      "frame_count": 103,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000047.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000047.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/put_the_bowl_on_the_plate_demo.hdf5",
+        "demo_id": "demo_42",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 102
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000047.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000047.mp4",
+        "fps": 20.0,
+        "frame_count": 103,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.022129986472548623,
+        "max_finger_distance_m": 0.09636456177703695,
+        "min_triangle_area_m2": 0.001199445266812135,
+        "max_triangle_area_m2": 0.005222959248315398,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 95,
+      "frame_count": 103,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000095.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000095.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/put_the_bowl_on_top_of_the_cabinet_demo.hdf5",
+        "demo_id": "demo_30",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 102
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000095.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000095.mp4",
+        "fps": 20.0,
+        "frame_count": 103,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.022191356715959856,
+        "max_finger_distance_m": 0.0961737484684422,
+        "min_triangle_area_m2": 0.001202771534005023,
+        "max_triangle_area_m2": 0.005212617166989562,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 142,
+      "frame_count": 102,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000142.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000142.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/put_the_bowl_on_top_of_the_cabinet_demo.hdf5",
+        "demo_id": "demo_6",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 101
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000142.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000142.mp4",
+        "fps": 20.0,
+        "frame_count": 102,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.021296538063043616,
+        "max_finger_distance_m": 0.09620997661113982,
+        "min_triangle_area_m2": 0.0011542723630169616,
+        "max_triangle_area_m2": 0.005214580732323769,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 190,
+      "frame_count": 77,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000190.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000190.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/turn_on_the_stove_demo.hdf5",
+        "demo_id": "demo_47",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 76
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000190.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000190.mp4",
+        "fps": 20.0,
+        "frame_count": 77,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.06151285263273555,
+        "max_finger_distance_m": 0.09668361472221812,
+        "min_triangle_area_m2": 0.0033339966126942635,
+        "max_triangle_area_m2": 0.005240251917944212,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 237,
+      "frame_count": 96,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000237.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000237.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/put_the_bowl_on_the_stove_demo.hdf5",
+        "demo_id": "demo_16",
+        "hdf5_index_first": 1,
+        "hdf5_index_last": 96
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000237.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000237.mp4",
+        "fps": 20.0,
+        "frame_count": 96,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.022323019534728247,
+        "max_finger_distance_m": 0.0964708480057002,
+        "min_triangle_area_m2": 0.001209907658782269,
+        "max_triangle_area_m2": 0.005228719961908947,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 285,
+      "frame_count": 139,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000285.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000285.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/open_the_middle_drawer_of_the_cabinet_demo.hdf5",
+        "demo_id": "demo_5",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 138
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000285.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000285.mp4",
+        "fps": 20.0,
+        "frame_count": 139,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.0851121085905231,
+        "max_finger_distance_m": 0.09770143170650424,
+        "min_triangle_area_m2": 0.004613076285606351,
+        "max_triangle_area_m2": 0.005295417598492522,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 332,
+      "frame_count": 251,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000332.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000332.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/open_the_top_drawer_and_put_the_bowl_inside_demo.hdf5",
+        "demo_id": "demo_47",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 250
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000332.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000332.mp4",
+        "fps": 20.0,
+        "frame_count": 251,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.018926387168188737,
+        "max_finger_distance_m": 0.09786188283055089,
+        "min_triangle_area_m2": 0.001025810184515828,
+        "max_triangle_area_m2": 0.005304114049415852,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 380,
+      "frame_count": 96,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000380.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000380.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/turn_on_the_stove_demo.hdf5",
+        "demo_id": "demo_40",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 95
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000380.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000380.mp4",
+        "fps": 20.0,
+        "frame_count": 96,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.04768301715329327,
+        "max_finger_distance_m": 0.09673855145617768,
+        "min_triangle_area_m2": 0.0025844195297084925,
+        "max_triangle_area_m2": 0.005243229488924817,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_goal",
+      "episode_id": 427,
+      "frame_count": 92,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000427.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_goal_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000427.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_goal/put_the_bowl_on_the_plate_demo.hdf5",
+        "demo_id": "demo_2",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 91
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000427.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_goal/videos/episode_000427.mp4",
+        "fps": 20.0,
+        "frame_count": 92,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.021551807921627374,
+        "max_finger_distance_m": 0.09639167369659359,
+        "min_triangle_area_m2": 0.001168107989352202,
+        "max_triangle_area_m2": 0.005224428714355366,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 0,
+      "frame_count": 143,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000000.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000000.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_orange_juice_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_31",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 142
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000000.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000000.mp4",
+        "fps": 20.0,
+        "frame_count": 143,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.0702701891756757,
+        "max_finger_distance_m": 0.09670130523399513,
+        "min_triangle_area_m2": 0.0038086442533216197,
+        "max_triangle_area_m2": 0.005241210743682528,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 50,
+      "frame_count": 154,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000050.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000050.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_alphabet_soup_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_15",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 153
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000050.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000050.mp4",
+        "fps": 20.0,
+        "frame_count": 154,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.07951936277670156,
+        "max_finger_distance_m": 0.09722047829644775,
+        "min_triangle_area_m2": 0.0043099494624972215,
+        "max_triangle_area_m2": 0.0052693499236674615,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 101,
+      "frame_count": 195,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000101.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000101.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_alphabet_soup_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_47",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 194
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000101.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000101.mp4",
+        "fps": 20.0,
+        "frame_count": 195,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.018836318794321495,
+        "max_finger_distance_m": 0.09667788329446907,
+        "min_triangle_area_m2": 0.0010209284786522233,
+        "max_triangle_area_m2": 0.005239941274560217,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 151,
+      "frame_count": 144,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000151.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000151.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_butter_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_33",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 143
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000151.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000151.mp4",
+        "fps": 20.0,
+        "frame_count": 144,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.0564209856551021,
+        "max_finger_distance_m": 0.09657351902527102,
+        "min_triangle_area_m2": 0.003058017422506531,
+        "max_triangle_area_m2": 0.005234284731169684,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 201,
+      "frame_count": 140,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000201.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000201.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_bbq_sauce_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_16",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 139
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000201.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000201.mp4",
+        "fps": 20.0,
+        "frame_count": 140,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.0535148394631676,
+        "max_finger_distance_m": 0.09673657654451384,
+        "min_triangle_area_m2": 0.002900504298903681,
+        "max_triangle_area_m2": 0.00524312244871264,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 252,
+      "frame_count": 161,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000252.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000252.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_butter_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_30",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 161
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000252.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000252.mp4",
+        "fps": 20.0,
+        "frame_count": 161,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.05638762416275071,
+        "max_finger_distance_m": 0.09669885957029604,
+        "min_triangle_area_m2": 0.0030562092296210837,
+        "max_triangle_area_m2": 0.005241078188710034,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 302,
+      "frame_count": 141,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000302.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000302.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_milk_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_20",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 140
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000302.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000302.mp4",
+        "fps": 20.0,
+        "frame_count": 141,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.07025044391842293,
+        "max_finger_distance_m": 0.09667511764883863,
+        "min_triangle_area_m2": 0.003807574060378518,
+        "max_triangle_area_m2": 0.0052397913765670455,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 352,
+      "frame_count": 153,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000352.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000352.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_orange_juice_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_29",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 153
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000352.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000352.mp4",
+        "fps": 20.0,
+        "frame_count": 153,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.07055848639922652,
+        "max_finger_distance_m": 0.09657469739329115,
+        "min_triangle_area_m2": 0.0038242699628380753,
+        "max_triangle_area_m2": 0.005234348598716373,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 403,
+      "frame_count": 162,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000403.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000403.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_chocolate_pudding_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_36",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 161
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000403.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000403.mp4",
+        "fps": 20.0,
+        "frame_count": 162,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.06350308089103986,
+        "max_finger_distance_m": 0.09669213464261425,
+        "min_triangle_area_m2": 0.003441866984294356,
+        "max_triangle_area_m2": 0.005240713697629687,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_object",
+      "episode_id": 453,
+      "frame_count": 152,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000453.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_object_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000453.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_object/pick_up_the_ketchup_and_place_it_in_the_basket_demo.hdf5",
+        "demo_id": "demo_24",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 151
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000453.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_object/videos/episode_000453.mp4",
+        "fps": 20.0,
+        "frame_count": 152,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.05082122029582366,
+        "max_finger_distance_m": 0.09673959516431986,
+        "min_triangle_area_m2": 0.002754510140033637,
+        "max_triangle_area_m2": 0.005243286057906131,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 0,
+      "frame_count": 110,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000000.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000000.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_40",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 109
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000000.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000000.mp4",
+        "fps": 20.0,
+        "frame_count": 110,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.021729791009305773,
+        "max_finger_distance_m": 0.09674478519878714,
+        "min_triangle_area_m2": 0.001177754672704371,
+        "max_triangle_area_m2": 0.005243567357774257,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 48,
+      "frame_count": 115,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000048.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000048.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_next_to_the_cookie_box_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_34",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 114
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000048.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000048.mp4",
+        "fps": 20.0,
+        "frame_count": 115,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.02198654941176831,
+        "max_finger_distance_m": 0.0966246298548507,
+        "min_triangle_area_m2": 0.001191670978117841,
+        "max_triangle_area_m2": 0.0052370549381329,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 96,
+      "frame_count": 95,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000096.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000096.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_on_the_cookie_box_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_28",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 94
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000096.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000096.mp4",
+        "fps": 20.0,
+        "frame_count": 95,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.034124230656487446,
+        "max_finger_distance_m": 0.0965158148092437,
+        "min_triangle_area_m2": 0.0018495333015816173,
+        "max_triangle_area_m2": 0.0052311571626609986,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 144,
+      "frame_count": 92,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000144.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000144.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_on_the_cookie_box_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_26",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 91
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000144.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000144.mp4",
+        "fps": 20.0,
+        "frame_count": 92,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.022191084698230026,
+        "max_finger_distance_m": 0.09655319345133637,
+        "min_triangle_area_m2": 0.0012027567906440662,
+        "max_triangle_area_m2": 0.005233183085062421,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 192,
+      "frame_count": 158,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000192.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000192.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_in_the_top_drawer_of_the_wooden_cabinet_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_5",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 157
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000192.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000192.mp4",
+        "fps": 20.0,
+        "frame_count": 158,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.02133259921503227,
+        "max_finger_distance_m": 0.09671216379779773,
+        "min_triangle_area_m2": 0.0011562268774547486,
+        "max_triangle_area_m2": 0.005241799277840625,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 239,
+      "frame_count": 91,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000239.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000239.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_25",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 90
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000239.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000239.mp4",
+        "fps": 20.0,
+        "frame_count": 91,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.021394701405424068,
+        "max_finger_distance_m": 0.09639430204256272,
+        "min_triangle_area_m2": 0.0011595928161739827,
+        "max_triangle_area_m2": 0.005224571170706894,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 287,
+      "frame_count": 96,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000287.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000287.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_on_the_cookie_box_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_24",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 95
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000287.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000287.mp4",
+        "fps": 20.0,
+        "frame_count": 96,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.022026088664557388,
+        "max_finger_distance_m": 0.09655466999411234,
+        "min_triangle_area_m2": 0.0011938140056190092,
+        "max_triangle_area_m2": 0.0052332631136808834,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 335,
+      "frame_count": 141,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000335.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000335.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_48",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 140
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000335.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000335.mp4",
+        "fps": 20.0,
+        "frame_count": 141,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.02202621195605577,
+        "max_finger_distance_m": 0.09675831108670933,
+        "min_triangle_area_m2": 0.0011938206880182207,
+        "max_triangle_area_m2": 0.005244300460899642,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 383,
+      "frame_count": 136,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000383.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000383.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_on_the_wooden_cabinet_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_14",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 135
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000383.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000383.mp4",
+        "fps": 20.0,
+        "frame_count": 136,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.0216816822325621,
+        "max_finger_distance_m": 0.09673314823627287,
+        "min_triangle_area_m2": 0.0011751471770048657,
+        "max_triangle_area_m2": 0.005242936634405982,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    },
+    {
+      "suite": "libero_spatial",
+      "episode_id": 431,
+      "frame_count": 109,
+      "source": {
+        "dataset_root": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot",
+        "video": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.image/episode_000431.mp4",
+        "camera": "/root/data/yxz/datasets/libero_rerender/libero_spatial_no_noops_1.0.0_lerobot/camera/chunk-000/episode_000431.npz",
+        "hdf5": "/root/data/yxz/datasets/libero_original_hdf5/libero_spatial/pick_up_the_black_bowl_on_the_ramekin_and_place_it_on_the_plate_demo.hdf5",
+        "demo_id": "demo_33",
+        "hdf5_index_first": 0,
+        "hdf5_index_last": 108
+      },
+      "output_video": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000431.mp4",
+      "video": {
+        "path": "/home/yxz/CoT/CoT_vla/artifacts/libero_gripper_triangle_preview/libero_spatial/videos/episode_000431.mp4",
+        "fps": 20.0,
+        "frame_count": 109,
+        "width": 256,
+        "height": 256,
+        "codec": "h264"
+      },
+      "metrics": {
+        "min_finger_distance_m": 0.022031835093923136,
+        "max_finger_distance_m": 0.09640425078158833,
+        "min_triangle_area_m2": 0.0011941254620906336,
+        "max_triangle_area_m2": 0.0052251103923620775,
+        "projection_valid_point_ratio": 1.0,
+        "in_frame_point_ratio": 1.0,
+        "all_three_in_frame_frame_ratio": 1.0
+      }
+    }
+  ]
+}
