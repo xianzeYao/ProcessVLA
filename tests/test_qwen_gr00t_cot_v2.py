@@ -3,6 +3,7 @@ import pytest
 import torch
 from types import MethodType
 
+import starVLA.model.framework.VLM4A.QwenGR00TCoTV2 as cot_v2_module
 from starVLA.model.framework.VLM4A.QwenGR00T import Qwen_GR00T
 from starVLA.model.framework.VLM4A.QwenGR00TCoTV2 import GeometryHiddenSplit, Qwen_GR00T_CoT_V2
 from starVLA.model.modules.geometric_cot_v2 import (
@@ -120,6 +121,205 @@ def test_action_condition_includes_both_depth_groups_when_enabled():
 
     assert condition.flatten().tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
     assert condition_mask.tolist() == [[True, False, True, True, True, True]]
+
+
+def test_zero_geometry_preserves_correct_shape_and_mask():
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=True,
+    )
+    split = model._split_geometry_hidden(
+        torch.arange(6, dtype=torch.float32).view(1, 6, 1),
+        native_token_count=2,
+    )
+    native_mask = torch.tensor([[True, False]])
+
+    correct = model._build_intervention_condition(
+        split,
+        native_attention_mask=native_mask,
+        name="correct",
+    )
+    zero = model._build_intervention_condition(
+        split,
+        native_attention_mask=native_mask,
+        name="zero_geometry",
+    )
+
+    assert zero.condition.shape == correct.condition.shape
+    assert torch.equal(zero.condition_mask, correct.condition_mask)
+    assert zero.condition.flatten().tolist() == [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def test_native_only_condition_and_mask_have_matching_lengths():
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=True,
+    )
+    split = model._split_geometry_hidden(
+        torch.arange(6, dtype=torch.float32).view(1, 6, 1),
+        native_token_count=2,
+    )
+
+    native_only = model._build_intervention_condition(
+        split,
+        native_attention_mask=torch.tensor([[True, False]]),
+        name="native_only",
+    )
+
+    assert native_only.condition.flatten().tolist() == [0.0, 1.0]
+    assert native_only.condition_mask.tolist() == [[True, False]]
+    assert native_only.condition.shape[:2] == native_only.condition_mask.shape
+
+
+def test_uvd_only_and_depth_only_are_length_matched_for_depth_conditioned_model():
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=True,
+    )
+    split = model._split_geometry_hidden(
+        torch.arange(6, dtype=torch.float32).view(1, 6, 1),
+        native_token_count=2,
+    )
+    native_mask = torch.ones(1, 2, dtype=torch.bool)
+
+    uvd_only = model._build_intervention_condition(
+        split,
+        native_attention_mask=native_mask,
+        name="uvd_only",
+    )
+    depth_only = model._build_intervention_condition(
+        split,
+        native_attention_mask=native_mask,
+        name="depth_only",
+    )
+
+    assert uvd_only.condition.flatten().tolist() == [0.0, 1.0, 0.0, 0.0, 4.0, 5.0]
+    assert depth_only.condition.flatten().tolist() == [0.0, 1.0, 2.0, 3.0, 0.0, 0.0]
+    assert uvd_only.condition.shape == depth_only.condition.shape == (1, 6, 1)
+    assert not uvd_only.diagnostic_counterfactual
+    assert not depth_only.diagnostic_counterfactual
+
+
+def test_depth_only_is_marked_counterfactual_for_q0_model():
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=False,
+    )
+    split = model._split_geometry_hidden(
+        torch.arange(6, dtype=torch.float32).view(1, 6, 1),
+        native_token_count=2,
+    )
+
+    depth_only = model._build_intervention_condition(
+        split,
+        native_attention_mask=torch.ones(1, 2, dtype=torch.bool),
+        name="depth_only",
+    )
+
+    assert depth_only.condition.flatten().tolist() == [0.0, 1.0, 2.0, 3.0]
+    assert depth_only.condition_mask.tolist() == [[True, True, True, True]]
+    assert depth_only.diagnostic_counterfactual
+
+
+def test_geometry_permutations_obey_within_and_cross_task_constraints():
+    task_ids = ["a", "a", "b", "b"]
+    generator = torch.Generator().manual_seed(7)
+
+    within = cot_v2_module.build_geometry_permutation(
+        task_ids,
+        mode="within_task_shuffle",
+        generator=generator,
+    )
+    cross = cot_v2_module.build_geometry_permutation(
+        task_ids,
+        mode="cross_task_swap",
+        generator=torch.Generator().manual_seed(7),
+    )
+
+    assert not torch.equal(within, torch.arange(4))
+    assert not torch.equal(cross, torch.arange(4))
+    assert all(task_ids[index] == task_ids[within[index]] for index in range(4))
+    assert all(task_ids[index] != task_ids[cross[index]] for index in range(4))
+
+
+@pytest.mark.parametrize(
+    ("task_ids", "mode", "message"),
+    [
+        (["a"], "within_task_shuffle", "at least two samples"),
+        (["a", "b"], "within_task_shuffle", "at least two samples for task"),
+        (["a", "a", "a", "b"], "cross_task_swap", "impossible"),
+    ],
+)
+def test_geometry_permutation_rejects_impossible_batches(task_ids, mode, message):
+    with pytest.raises(ValueError, match=message):
+        cot_v2_module.build_geometry_permutation(task_ids, mode=mode)
+
+
+def test_shuffle_moves_the_whole_geometry_bundle_without_moving_native_tokens():
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=True,
+    )
+    split = GeometryHiddenSplit(
+        native=torch.tensor([[[0.0]], [[10.0]]]),
+        depth_current=torch.tensor([[[1.0]], [[11.0]]]),
+        depth_future=torch.tensor([[[2.0]], [[12.0]]]),
+        uvd=torch.tensor([[[3.0], [4.0]], [[13.0], [14.0]]]),
+    )
+
+    shuffled = model._build_intervention_condition(
+        split,
+        native_attention_mask=torch.ones(2, 1, dtype=torch.bool),
+        name="within_task_shuffle",
+        permutation=torch.tensor([1, 0]),
+    )
+
+    assert shuffled.condition[:, :, 0].tolist() == [
+        [0.0, 11.0, 12.0, 13.0, 14.0],
+        [10.0, 1.0, 2.0, 3.0, 4.0],
+    ]
+    assert shuffled.permutation.tolist() == [1, 0]
+
+
+def test_intervention_rejects_identity_permutation_and_nonfinite_condition():
+    model = make_uninitialized_model(depth_queries=1, points=2, hands=1, include_depth=True)
+    split = GeometryHiddenSplit(
+        native=torch.zeros(2, 1, 1),
+        depth_current=torch.zeros(2, 1, 1),
+        depth_future=torch.zeros(2, 1, 1),
+        uvd=torch.zeros(2, 2, 1),
+    )
+
+    with pytest.raises(ValueError, match="identity"):
+        model._build_intervention_condition(
+            split,
+            native_attention_mask=torch.ones(2, 1, dtype=torch.bool),
+            name="within_task_shuffle",
+            permutation=torch.arange(2),
+        )
+
+    invalid = GeometryHiddenSplit(
+        native=split.native,
+        depth_current=split.depth_current,
+        depth_future=split.depth_future,
+        uvd=torch.full((2, 2, 1), float("nan")),
+    )
+    with pytest.raises(ValueError, match="finite"):
+        model._build_intervention_condition(
+            invalid,
+            native_attention_mask=torch.ones(2, 1, dtype=torch.bool),
+            name="correct",
+        )
 
 
 @pytest.mark.parametrize("value", ["false", 1, None])

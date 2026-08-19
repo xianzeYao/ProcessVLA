@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Sequence
 
 import numpy as np
 import torch
@@ -44,6 +44,78 @@ class GeometryHiddenSplit:
     depth_current: torch.Tensor
     depth_future: torch.Tensor
     uvd: torch.Tensor
+
+
+@dataclass(frozen=True)
+class GeometryActionCondition:
+    """One explicit action condition used by the intervention probe."""
+
+    name: str
+    condition: torch.Tensor
+    condition_mask: torch.Tensor | None
+    permutation: torch.Tensor | None = None
+    diagnostic_counterfactual: bool = False
+
+
+def build_geometry_permutation(
+    task_ids: Sequence[str],
+    *,
+    mode: str,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Build a reproducible non-identity donor permutation for a probe batch."""
+
+    task_ids = tuple(str(task_id) for task_id in task_ids)
+    batch_size = len(task_ids)
+    if batch_size < 2:
+        raise ValueError(f"{mode} requires at least two samples, got {batch_size}")
+    if mode not in {"within_task_shuffle", "cross_task_swap"}:
+        raise ValueError(f"unsupported geometry permutation mode: {mode!r}")
+
+    groups = {
+        task_id: torch.tensor(
+            [index for index, value in enumerate(task_ids) if value == task_id],
+            dtype=torch.long,
+        )
+        for task_id in sorted(set(task_ids))
+    }
+    permutation = torch.empty(batch_size, dtype=torch.long)
+
+    if mode == "within_task_shuffle":
+        for task_id, indices in groups.items():
+            if indices.numel() < 2:
+                raise ValueError(
+                    f"within_task_shuffle requires at least two samples for task "
+                    f"{task_id!r}, got {indices.numel()}"
+                )
+            if generator is not None:
+                indices = indices[torch.randperm(indices.numel(), generator=generator)]
+            permutation[indices] = torch.roll(indices, shifts=1)
+    else:
+        largest_group = max(int(indices.numel()) for indices in groups.values())
+        if largest_group * 2 > batch_size:
+            raise ValueError(
+                "cross_task_swap is impossible when one task occupies more than half "
+                f"the batch: largest={largest_group}, batch={batch_size}"
+            )
+        ordered_groups = []
+        for indices in groups.values():
+            if generator is not None:
+                indices = indices[torch.randperm(indices.numel(), generator=generator)]
+            ordered_groups.append(indices)
+        recipients = torch.cat(ordered_groups)
+        donors = torch.roll(recipients, shifts=-largest_group)
+        permutation[recipients] = donors
+
+    identity = torch.arange(batch_size, dtype=torch.long)
+    if torch.equal(permutation, identity):
+        raise ValueError(f"{mode} produced an identity permutation")
+    if mode == "within_task_shuffle":
+        if any(task_ids[index] != task_ids[int(permutation[index])] for index in range(batch_size)):
+            raise RuntimeError("within_task_shuffle produced a cross-task donor")
+    elif any(task_ids[index] == task_ids[int(permutation[index])] for index in range(batch_size)):
+        raise RuntimeError("cross_task_swap produced a same-task donor")
+    return permutation
 
 
 def _require_boolean_option(value: Any, *, name: str) -> bool:
@@ -229,6 +301,173 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             dtype=torch.bool,
         )
         return condition, torch.cat([native_attention_mask, geometry_attention_mask], dim=1)
+
+    @staticmethod
+    def _validate_intervention_split(split: GeometryHiddenSplit) -> int:
+        tensors = {
+            "native": split.native,
+            "depth_current": split.depth_current,
+            "depth_future": split.depth_future,
+            "uvd": split.uvd,
+        }
+        native = split.native
+        if native.ndim != 3:
+            raise ValueError(f"native geometry split must be rank 3, got {tuple(native.shape)}")
+        batch_size = int(native.shape[0])
+        hidden_size = int(native.shape[2])
+        for name, tensor in tensors.items():
+            if tensor.ndim != 3:
+                raise ValueError(f"{name} geometry split must be rank 3, got {tuple(tensor.shape)}")
+            if int(tensor.shape[0]) != batch_size or int(tensor.shape[2]) != hidden_size:
+                raise ValueError(
+                    f"{name} geometry split shape {tuple(tensor.shape)} is incompatible "
+                    f"with native {tuple(native.shape)}"
+                )
+            if tensor.device != native.device or tensor.dtype != native.dtype:
+                raise ValueError(
+                    f"{name} geometry split device/dtype must match native "
+                    f"({native.device}, {native.dtype})"
+                )
+            if not torch.isfinite(tensor).all():
+                raise ValueError(f"{name} geometry split must contain only finite values")
+        return batch_size
+
+    @staticmethod
+    def _validate_intervention_permutation(
+        permutation: torch.Tensor | None,
+        *,
+        batch_size: int,
+        name: str,
+    ) -> torch.Tensor:
+        if permutation is None:
+            raise ValueError(f"{name} requires an explicit donor permutation")
+        if permutation.dtype != torch.long or tuple(permutation.shape) != (batch_size,):
+            raise ValueError(
+                f"{name} permutation must have dtype long and shape [{batch_size}], "
+                f"got {permutation.dtype} {tuple(permutation.shape)}"
+            )
+        permutation_cpu = permutation.detach().cpu()
+        if not torch.equal(torch.sort(permutation_cpu).values, torch.arange(batch_size)):
+            raise ValueError(f"{name} permutation must contain every batch index exactly once")
+        if torch.equal(permutation_cpu, torch.arange(batch_size)):
+            raise ValueError(f"{name} permutation must not be identity")
+        return permutation_cpu
+
+    def _build_intervention_condition(
+        self,
+        split: GeometryHiddenSplit,
+        *,
+        native_attention_mask: torch.Tensor | None,
+        name: str,
+        permutation: torch.Tensor | None = None,
+    ) -> GeometryActionCondition:
+        """Construct one opt-in condition without changing the default builder."""
+
+        supported = {
+            "correct",
+            "native_only",
+            "zero_geometry",
+            "within_task_shuffle",
+            "cross_task_swap",
+            "uvd_only",
+            "depth_only",
+        }
+        if name not in supported:
+            raise ValueError(f"unknown geometry intervention {name!r}; expected one of {sorted(supported)}")
+        batch_size = self._validate_intervention_split(split)
+        include_depth = _require_boolean_option(
+            self.include_depth_in_action_condition,
+            name="include_depth_in_action_condition",
+        )
+        shuffle_names = {"within_task_shuffle", "cross_task_swap"}
+        permutation_cpu = None
+        variant_split = split
+        diagnostic_counterfactual = False
+
+        if name in shuffle_names:
+            permutation_cpu = self._validate_intervention_permutation(
+                permutation,
+                batch_size=batch_size,
+                name=name,
+            )
+            donor_indices = permutation_cpu.to(device=split.native.device)
+            variant_split = GeometryHiddenSplit(
+                native=split.native,
+                depth_current=split.depth_current.index_select(0, donor_indices),
+                depth_future=split.depth_future.index_select(0, donor_indices),
+                uvd=split.uvd.index_select(0, donor_indices),
+            )
+        elif permutation is not None:
+            raise ValueError(f"{name} does not accept a donor permutation")
+        elif name == "zero_geometry":
+            variant_split = GeometryHiddenSplit(
+                native=split.native,
+                depth_current=torch.zeros_like(split.depth_current),
+                depth_future=torch.zeros_like(split.depth_future),
+                uvd=torch.zeros_like(split.uvd),
+            )
+        elif name == "uvd_only" and include_depth:
+            variant_split = GeometryHiddenSplit(
+                native=split.native,
+                depth_current=torch.zeros_like(split.depth_current),
+                depth_future=torch.zeros_like(split.depth_future),
+                uvd=split.uvd,
+            )
+        elif name == "depth_only" and include_depth:
+            variant_split = GeometryHiddenSplit(
+                native=split.native,
+                depth_current=split.depth_current,
+                depth_future=split.depth_future,
+                uvd=torch.zeros_like(split.uvd),
+            )
+
+        if name == "native_only":
+            condition = split.native
+            condition_mask = (
+                None
+                if native_attention_mask is None
+                else native_attention_mask.to(device=condition.device, dtype=torch.bool)
+            )
+        elif name == "depth_only" and not include_depth:
+            diagnostic_counterfactual = True
+            depth_groups = (split.depth_current, split.depth_future)
+            condition = torch.cat([split.native, *depth_groups], dim=1)
+            if native_attention_mask is None:
+                condition_mask = None
+            else:
+                native_mask = native_attention_mask.to(device=condition.device, dtype=torch.bool)
+                depth_mask = torch.ones(
+                    batch_size,
+                    sum(group.shape[1] for group in depth_groups),
+                    device=condition.device,
+                    dtype=torch.bool,
+                )
+                condition_mask = torch.cat([native_mask, depth_mask], dim=1)
+        else:
+            condition, condition_mask = self._build_action_condition(
+                variant_split,
+                native_attention_mask=native_attention_mask,
+            )
+
+        if tuple(condition.shape[:2]) != (
+            batch_size,
+            int(condition.shape[1]),
+        ):
+            raise RuntimeError(f"invalid condition shape for {name}: {tuple(condition.shape)}")
+        if condition_mask is not None and tuple(condition_mask.shape) != tuple(condition.shape[:2]):
+            raise ValueError(
+                f"{name} condition mask shape {tuple(condition_mask.shape)} "
+                f"does not match {tuple(condition.shape[:2])}"
+            )
+        if not torch.isfinite(condition).all():
+            raise ValueError(f"{name} condition must contain only finite values")
+        return GeometryActionCondition(
+            name=name,
+            condition=condition,
+            condition_mask=condition_mask,
+            permutation=permutation_cpu,
+            diagnostic_counterfactual=diagnostic_counterfactual,
+        )
 
     def _build_native_inputs(self, examples: List[dict], *, inference: bool) -> tuple[dict, torch.Tensor]:
         if inference:
