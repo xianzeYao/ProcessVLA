@@ -564,6 +564,45 @@ def test_legacy_action_head_predict_velocity_uses_requested_state_and_condition(
     assert torch.equal(velocity, torch.full_like(velocity, 3.0))
 
 
+def test_legacy_action_head_predict_velocity_accepts_fp32_state_with_bf16_condition():
+    head = _tiny_diagnostic_legacy_head()
+    actions = torch.zeros(1, 3, 2, dtype=torch.float32)
+    condition = torch.full((1, 2, 3), 3.0, dtype=torch.bfloat16)
+    condition_snapshot = condition.clone()
+
+    velocity = head.predict_velocity(
+        actions,
+        t_cont=0.5,
+        vl_embs=condition,
+    )
+
+    assert velocity.dtype == torch.float32
+    assert torch.equal(velocity, torch.full_like(velocity, 3.0))
+    assert torch.equal(condition, condition_snapshot)
+
+
+@pytest.mark.parametrize(
+    ("actions_dtype", "condition_dtype"),
+    [
+        (torch.float64, torch.bfloat16),
+        (torch.float32, torch.float16),
+        (torch.float32, torch.bool),
+    ],
+)
+def test_legacy_action_head_predict_velocity_rejects_unsupported_dtype_mismatch(
+    actions_dtype,
+    condition_dtype,
+):
+    head = _tiny_diagnostic_legacy_head()
+
+    with pytest.raises(ValueError, match="actions dtype"):
+        head.predict_velocity(
+            torch.zeros(1, 3, 2, dtype=actions_dtype),
+            t_cont=0.5,
+            vl_embs=torch.ones(1, 2, 3, dtype=condition_dtype),
+        )
+
+
 @pytest.mark.parametrize("bad_shape", [(1, 3, 2), (2, 2, 2), (2, 3, 1)])
 def test_legacy_action_head_rejects_wrong_initial_action_shape(bad_shape):
     head = _tiny_diagnostic_legacy_head()

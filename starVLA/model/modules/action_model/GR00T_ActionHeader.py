@@ -471,7 +471,15 @@ class FlowmatchingActionHead(nn.Module):
         if actions.device != vl_embs.device:
             raise ValueError(f"actions device {actions.device} does not match {vl_embs.device}")
         if actions.dtype != vl_embs.dtype:
-            raise ValueError(f"actions dtype {actions.dtype} does not match {vl_embs.dtype}")
+            if actions.dtype == torch.float32 and vl_embs.dtype == torch.bfloat16:
+                # A float32 DiT velocity can promote the Euler state even when
+                # the backbone condition is bfloat16. Preserve that exact flow
+                # state and align the read-only condition for local evaluation.
+                vl_embs = vl_embs.to(dtype=actions.dtype)
+            else:
+                raise ValueError(
+                    f"actions dtype {actions.dtype} does not match {vl_embs.dtype}"
+                )
         if not torch.isfinite(actions).all():
             raise ValueError("actions must contain only finite values")
         t_cont = float(t_cont)
