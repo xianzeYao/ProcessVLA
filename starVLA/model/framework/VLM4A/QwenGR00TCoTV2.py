@@ -57,6 +57,33 @@ class GeometryActionCondition:
     diagnostic_counterfactual: bool = False
 
 
+_GEOMETRY_SHUFFLE_SPECS: dict[str, tuple[str, frozenset[str]]] = {
+    "within_task_shuffle": (
+        "within_task_shuffle",
+        frozenset({"depth_current", "depth_future", "uvd"}),
+    ),
+    "cross_task_swap": (
+        "cross_task_swap",
+        frozenset({"depth_current", "depth_future", "uvd"}),
+    ),
+}
+for _component_name, _components in {
+    "uvd": frozenset({"uvd"}),
+    "current_depth": frozenset({"depth_current"}),
+    "future_depth": frozenset({"depth_future"}),
+    "depth": frozenset({"depth_current", "depth_future"}),
+}.items():
+    for _mode in ("within_task_shuffle", "cross_task_swap"):
+        _GEOMETRY_SHUFFLE_SPECS[f"{_component_name}_{_mode}"] = (_mode, _components)
+
+
+def geometry_intervention_permutation_mode(name: str) -> str | None:
+    """Return the shared donor mode for one shuffle intervention."""
+
+    spec = _GEOMETRY_SHUFFLE_SPECS.get(str(name))
+    return None if spec is None else spec[0]
+
+
 def build_geometry_permutation(
     task_ids: Sequence[str],
     *,
@@ -364,11 +391,10 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         """Construct one opt-in condition without changing the default builder."""
 
         supported = {
+            *_GEOMETRY_SHUFFLE_SPECS,
             "correct",
             "native_only",
             "zero_geometry",
-            "within_task_shuffle",
-            "cross_task_swap",
             "uvd_only",
             "depth_only",
         }
@@ -379,12 +405,22 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             self.include_depth_in_action_condition,
             name="include_depth_in_action_condition",
         )
-        shuffle_names = {"within_task_shuffle", "cross_task_swap"}
         permutation_cpu = None
         variant_split = split
         diagnostic_counterfactual = False
 
-        if name in shuffle_names:
+        shuffle_spec = _GEOMETRY_SHUFFLE_SPECS.get(name)
+        if shuffle_spec is not None:
+            _, components = shuffle_spec
+            legacy_bundle_variant = name in {
+                "within_task_shuffle",
+                "cross_task_swap",
+            }
+            selects_depth = bool(components.intersection({"depth_current", "depth_future"}))
+            if not include_depth and selects_depth and not legacy_bundle_variant:
+                raise ValueError(
+                    f"{name} requires a trained direct depth condition, but this model excludes depth"
+                )
             permutation_cpu = self._validate_intervention_permutation(
                 permutation,
                 batch_size=batch_size,
@@ -393,9 +429,12 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             donor_indices = permutation_cpu.to(device=split.native.device)
             variant_split = GeometryHiddenSplit(
                 native=split.native,
-                depth_current=split.depth_current.index_select(0, donor_indices),
-                depth_future=split.depth_future.index_select(0, donor_indices),
-                uvd=split.uvd.index_select(0, donor_indices),
+                depth_current=(split.depth_current.index_select(0, donor_indices)
+                               if "depth_current" in components else split.depth_current),
+                depth_future=(split.depth_future.index_select(0, donor_indices)
+                              if "depth_future" in components else split.depth_future),
+                uvd=(split.uvd.index_select(0, donor_indices)
+                     if "uvd" in components else split.uvd),
             )
         elif permutation is not None:
             raise ValueError(f"{name} does not accept a donor permutation")
@@ -799,7 +838,16 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 generator=noise_generator,
             )
         else:
-            common_initial = initial_actions
+            common_initial = torch.as_tensor(
+                initial_actions,
+                device=correct.condition.device,
+                dtype=correct.condition.dtype,
+            )
+            if tuple(common_initial.shape) != action_shape:
+                raise ValueError(
+                    f"initial_actions shape {tuple(common_initial.shape)} "
+                    f"does not match {action_shape}"
+                )
 
         def run_action(
             condition_schedule: Sequence[tuple[torch.Tensor, torch.Tensor | None]] | None = None,
@@ -840,18 +888,25 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 raise ValueError(f"duplicate rollout step: {normalized!r}")
             normalized_rollout_steps.append(normalized)
 
+        permutation_modes = {
+            mode
+            for name in variants
+            if (mode := geometry_intervention_permutation_mode(name)) is not None
+        }
+        mode_seed_offsets = {"within_task_shuffle": 1, "cross_task_swap": 2}
+        permutations = {
+            mode: build_geometry_permutation(
+                task_ids,
+                mode=mode,
+                generator=torch.Generator().manual_seed(int(seed) + mode_seed_offsets[mode]),
+            )
+            for mode in sorted(permutation_modes)
+        }
+
         interventions: dict[str, Any] = {}
-        for variant_index, name in enumerate(variants):
-            permutation = None
-            if name in {"within_task_shuffle", "cross_task_swap"}:
-                permutation_generator = torch.Generator().manual_seed(
-                    int(seed) + variant_index + 1
-                )
-                permutation = build_geometry_permutation(
-                    task_ids,
-                    mode=name,
-                    generator=permutation_generator,
-                )
+        for name in variants:
+            mode = geometry_intervention_permutation_mode(name)
+            permutation = None if mode is None else permutations[mode]
             alternative = self._build_intervention_condition(
                 split,
                 native_attention_mask=native_attention_mask,

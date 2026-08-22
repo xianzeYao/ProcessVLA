@@ -23,6 +23,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--bootstrap-resamples", type=int, default=2000)
     parser.add_argument(
+        "--unnorm-key",
+        help="Dataset key in checkpoint norm_stats for physical final-action metrics",
+    )
+    parser.add_argument(
         "--repeat-tolerance",
         type=float,
         default=1e-6,
@@ -38,6 +42,14 @@ def build_parser() -> argparse.ArgumentParser:
             "cross_task_swap",
             "uvd_only",
             "depth_only",
+            "uvd_within_task_shuffle",
+            "uvd_cross_task_swap",
+            "current_depth_within_task_shuffle",
+            "current_depth_cross_task_swap",
+            "future_depth_within_task_shuffle",
+            "future_depth_cross_task_swap",
+            "depth_within_task_shuffle",
+            "depth_cross_task_swap",
         ],
     )
     return parser
@@ -63,6 +75,7 @@ def main() -> None:
         bootstrap_resamples=args.bootstrap_resamples,
         repeat_tolerance=args.repeat_tolerance,
         config_path=args.config,
+        unnorm_key=args.unnorm_key,
     )
     print(json.dumps(summary, indent=2))
 

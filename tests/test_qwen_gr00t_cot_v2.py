@@ -293,6 +293,113 @@ def test_shuffle_moves_the_whole_geometry_bundle_without_moving_native_tokens():
     assert shuffled.permutation.tolist() == [1, 0]
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (
+            "uvd_within_task_shuffle",
+            [[0.0, 1.0, 2.0, 13.0, 14.0], [10.0, 11.0, 12.0, 3.0, 4.0]],
+        ),
+        (
+            "current_depth_within_task_shuffle",
+            [[0.0, 11.0, 2.0, 3.0, 4.0], [10.0, 1.0, 12.0, 13.0, 14.0]],
+        ),
+        (
+            "future_depth_within_task_shuffle",
+            [[0.0, 1.0, 12.0, 3.0, 4.0], [10.0, 11.0, 2.0, 13.0, 14.0]],
+        ),
+        (
+            "depth_within_task_shuffle",
+            [[0.0, 11.0, 12.0, 3.0, 4.0], [10.0, 1.0, 2.0, 13.0, 14.0]],
+        ),
+    ],
+)
+def test_component_shuffle_moves_only_selected_geometry(name, expected):
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=True,
+    )
+    split = GeometryHiddenSplit(
+        native=torch.tensor([[[0.0]], [[10.0]]]),
+        depth_current=torch.tensor([[[1.0]], [[11.0]]]),
+        depth_future=torch.tensor([[[2.0]], [[12.0]]]),
+        uvd=torch.tensor([[[3.0], [4.0]], [[13.0], [14.0]]]),
+    )
+
+    shuffled = model._build_intervention_condition(
+        split,
+        native_attention_mask=torch.ones(2, 1, dtype=torch.bool),
+        name=name,
+        permutation=torch.tensor([1, 0]),
+    )
+
+    assert shuffled.condition[:, :, 0].tolist() == expected
+    assert shuffled.permutation.tolist() == [1, 0]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "current_depth_within_task_shuffle",
+        "current_depth_cross_task_swap",
+        "future_depth_within_task_shuffle",
+        "future_depth_cross_task_swap",
+        "depth_within_task_shuffle",
+        "depth_cross_task_swap",
+    ],
+)
+def test_depth_component_shuffle_rejects_model_without_direct_depth_condition(name):
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=False,
+    )
+    split = GeometryHiddenSplit(
+        native=torch.tensor([[[0.0]], [[10.0]]]),
+        depth_current=torch.tensor([[[1.0]], [[11.0]]]),
+        depth_future=torch.tensor([[[2.0]], [[12.0]]]),
+        uvd=torch.tensor([[[3.0], [4.0]], [[13.0], [14.0]]]),
+    )
+
+    with pytest.raises(ValueError, match="direct depth condition"):
+        model._build_intervention_condition(
+            split,
+            native_attention_mask=torch.ones(2, 1, dtype=torch.bool),
+            name=name,
+            permutation=torch.tensor([1, 0]),
+        )
+
+
+def test_legacy_whole_bundle_shuffle_remains_valid_without_direct_depth_condition():
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=False,
+    )
+    split = GeometryHiddenSplit(
+        native=torch.tensor([[[0.0]], [[10.0]]]),
+        depth_current=torch.tensor([[[1.0]], [[11.0]]]),
+        depth_future=torch.tensor([[[2.0]], [[12.0]]]),
+        uvd=torch.tensor([[[3.0], [4.0]], [[13.0], [14.0]]]),
+    )
+
+    shuffled = model._build_intervention_condition(
+        split,
+        native_attention_mask=torch.ones(2, 1, dtype=torch.bool),
+        name="within_task_shuffle",
+        permutation=torch.tensor([1, 0]),
+    )
+
+    assert shuffled.condition[:, :, 0].tolist() == [
+        [0.0, 13.0, 14.0],
+        [10.0, 3.0, 4.0],
+    ]
+
+
 def test_intervention_rejects_identity_permutation_and_nonfinite_condition():
     model = make_uninitialized_model(depth_queries=1, points=2, hands=1, include_depth=True)
     split = GeometryHiddenSplit(
@@ -445,6 +552,87 @@ def test_predict_action_interventions_expands_default_rollout_steps_from_action_
         "step_0",
         "step_1",
     }
+
+
+def test_predict_action_interventions_casts_materialized_noise_to_condition():
+    model = make_uninitialized_model(depth_queries=1, points=2, hands=1, include_depth=True)
+    nn.Module.__init__(model)
+    model.action_model = make_probe_action_head()
+    split = GeometryHiddenSplit(
+        native=torch.zeros(2, 1, 2, dtype=torch.float32),
+        depth_current=torch.ones(2, 1, 2, dtype=torch.float32),
+        depth_future=torch.ones(2, 1, 2, dtype=torch.float32),
+        uvd=torch.ones(2, 2, 2, dtype=torch.float32),
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(2, 1, dtype=torch.long)},
+            torch.ones(2, 1, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+
+    result = model.predict_action_interventions(
+        [{"image": [], "lang": "move"} for _ in range(2)],
+        variants=("zero_geometry",),
+        task_ids=("a", "a"),
+        initial_actions=torch.zeros(2, 3, 2, dtype=torch.float64),
+        rollout_steps=("all",),
+    )
+
+    assert result["initial_actions"].dtype == torch.float32
+    assert result["initial_actions"].device == split.native.device
+
+
+def test_predict_action_interventions_reuses_donor_permutation_for_same_mode():
+    model = make_uninitialized_model(depth_queries=1, points=2, hands=1, include_depth=True)
+    nn.Module.__init__(model)
+    model.action_model = make_probe_action_head()
+    split = GeometryHiddenSplit(
+        native=torch.zeros(4, 1, 2),
+        depth_current=torch.arange(4, dtype=torch.float32)[:, None, None].expand(-1, 1, 2),
+        depth_future=(10.0 + torch.arange(4, dtype=torch.float32))[:, None, None].expand(-1, 1, 2),
+        uvd=torch.arange(4, dtype=torch.float32)[:, None, None].expand(-1, 2, 2),
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(4, 1, dtype=torch.long)},
+            torch.ones(4, 1, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+
+    result = model.predict_action_interventions(
+        [{"image": [], "lang": "move"} for _ in range(4)],
+        variants=(
+            "uvd_within_task_shuffle",
+            "current_depth_within_task_shuffle",
+            "future_depth_within_task_shuffle",
+            "uvd_cross_task_swap",
+            "depth_cross_task_swap",
+        ),
+        task_ids=("a", "a", "b", "b"),
+        initial_actions=torch.zeros(4, 3, 2),
+        seed=7,
+        rollout_steps=("all",),
+    )
+
+    within = result["interventions"]["uvd_within_task_shuffle"]["permutation"]
+    cross = result["interventions"]["uvd_cross_task_swap"]["permutation"]
+    assert torch.equal(
+        within,
+        result["interventions"]["current_depth_within_task_shuffle"]["permutation"],
+    )
+    assert torch.equal(
+        within,
+        result["interventions"]["future_depth_within_task_shuffle"]["permutation"],
+    )
+    assert torch.equal(
+        cross,
+        result["interventions"]["depth_cross_task_swap"]["permutation"],
+    )
 
 
 @pytest.mark.parametrize("value", ["false", 1, None])

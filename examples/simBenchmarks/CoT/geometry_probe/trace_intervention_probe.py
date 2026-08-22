@@ -71,9 +71,25 @@ def load_sample_identity(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     with np.load(path, allow_pickle=False) as payload:
         metadata = json.loads(str(payload["metadata_json"].item()))
-    task_id = metadata.get("suite", metadata.get("task_id", metadata.get("task")))
+
+    task_id = metadata.get("task_id")
     if task_id is None:
-        raise ValueError(f"materialized sample lacks suite/task identity: {path}")
+        task_id = metadata.get("task")
+    if task_id is None:
+        suite = metadata.get("suite")
+        language = metadata.get("language")
+        language = None if language is None else " ".join(str(language).split())
+        if suite is not None and language:
+            task_id = f"{suite}:{language}"
+        elif language:
+            task_id = language
+        else:
+            task_id = suite
+    if task_id is None:
+        raise ValueError(
+            f"materialized sample lacks task_id/task or suite/language identity: {path}"
+        )
+
     episode_id = metadata.get("episode_id", metadata.get("episode_index"))
     if episode_id is None:
         raise ValueError(f"materialized sample lacks episode identity: {path}")
@@ -90,16 +106,102 @@ def load_sample_identity(path: str | Path) -> dict[str, Any]:
     }
 
 
+def _task_count_fits_batches(
+    count: int,
+    *,
+    batch_count: int,
+    max_per_batch: int,
+) -> bool:
+    """Whether a task can occupy future batches without singleton groups."""
+
+    if count == 0:
+        return True
+    if batch_count <= 0:
+        return False
+    minimum_occupied_batches = (count + max_per_batch - 1) // max_per_batch
+    maximum_occupied_batches = min(batch_count, count // 2)
+    return minimum_occupied_batches <= maximum_occupied_batches
+
+
+def _choose_batch_task_counts(
+    remaining: Mapping[str, int],
+    *,
+    batch_size: int,
+    batches_after: int,
+) -> dict[str, int] | None:
+    """Choose one full batch with valid within- and cross-task permutations."""
+
+    max_per_task = batch_size // 2
+    task_ids = sorted(remaining, key=lambda task_id: (-remaining[task_id], task_id))
+    options: dict[str, tuple[int, ...]] = {}
+    for task_id in task_ids:
+        count = int(remaining[task_id])
+        choices = [
+            take
+            for take in range(min(count, max_per_task), 1, -1)
+            if _task_count_fits_batches(
+                count - take,
+                batch_count=batches_after,
+                max_per_batch=max_per_task,
+            )
+        ]
+        if _task_count_fits_batches(
+            count,
+            batch_count=batches_after,
+            max_per_batch=max_per_task,
+        ):
+            choices.append(0)
+        if not choices:
+            return None
+        options[task_id] = tuple(choices)
+
+    suffix_capacity = [0] * (len(task_ids) + 1)
+    for index in range(len(task_ids) - 1, -1, -1):
+        suffix_capacity[index] = (
+            suffix_capacity[index + 1] + max(options[task_ids[index]])
+        )
+
+    memo: dict[tuple[int, int], tuple[int, ...] | None] = {}
+
+    def search(index: int, needed: int) -> tuple[int, ...] | None:
+        if needed < 0 or needed > suffix_capacity[index]:
+            return None
+        if index == len(task_ids):
+            return () if needed == 0 else None
+        key = (index, needed)
+        if key in memo:
+            return memo[key]
+        task_id = task_ids[index]
+        for take in options[task_id]:
+            tail = search(index + 1, needed - take)
+            if tail is not None:
+                memo[key] = (take, *tail)
+                return memo[key]
+        memo[key] = None
+        return None
+
+    selected = search(0, batch_size)
+    if selected is None:
+        return None
+    return {
+        task_id: take
+        for task_id, take in zip(task_ids, selected, strict=True)
+        if take
+    }
+
+
 def build_intervention_batches(
     sample_paths: Sequence[str | Path],
     *,
     batch_size: int,
 ) -> list[list[Path]]:
-    """Build full batches from within-task pairs while preserving swap validity."""
+    """Build full batches supporting valid within- and cross-task permutations."""
 
     batch_size = int(batch_size)
     if batch_size < 4 or batch_size % 2:
-        raise ValueError(f"intervention batch_size must be even and at least 4, got {batch_size}")
+        raise ValueError(
+            f"intervention batch_size must be even and at least 4, got {batch_size}"
+        )
     paths_by_task: dict[str, list[Path]] = defaultdict(list)
     for raw_path in sample_paths:
         path = Path(raw_path)
@@ -110,51 +212,102 @@ def build_intervention_batches(
     if len(paths_by_task) < 2:
         raise ValueError("intervention batches require samples from distinct tasks")
     for task_id, paths in paths_by_task.items():
-        if len(paths) % 2:
+        if len(paths) < 2:
             raise ValueError(
-                f"task {task_id!r} has {len(paths)} samples; complete within-task pairs are required"
+                f"task {task_id!r} has {len(paths)} sample; at least two are required"
             )
 
-    pair_queues = {
-        task_id: [paths[index : index + 2] for index in range(0, len(paths), 2)]
+    sample_count = sum(len(paths) for paths in paths_by_task.values())
+    if sample_count % batch_size:
+        raise ValueError(
+            f"{sample_count} samples cannot form full batches of {batch_size}"
+        )
+    batch_count = sample_count // batch_size
+    max_per_task = batch_size // 2
+    remaining = {
+        task_id: len(paths)
         for task_id, paths in sorted(paths_by_task.items())
     }
-    pairs_per_batch = batch_size // 2
-    pair_count = sum(len(pairs) for pairs in pair_queues.values())
-    if pair_count % pairs_per_batch:
-        raise ValueError(
-            f"{pair_count} within-task pairs cannot form full batches of "
-            f"{pairs_per_batch} pairs"
-        )
-    max_pairs_per_task = pairs_per_batch // 2
-    batches: list[list[Path]] = []
-    while any(pair_queues.values()):
-        batch: list[Path] = []
-        selected_counts: dict[str, int] = defaultdict(int)
-        for _ in range(pairs_per_batch):
-            candidates = sorted(
-                (
-                    task_id
-                    for task_id, pairs in pair_queues.items()
-                    if pairs and selected_counts[task_id] < max_pairs_per_task
-                ),
-                key=lambda task_id: (-len(pair_queues[task_id]), task_id),
+    for task_id, count in remaining.items():
+        if not _task_count_fits_batches(
+            count,
+            batch_count=batch_count,
+            max_per_batch=max_per_task,
+        ):
+            raise ValueError(
+                f"task {task_id!r} with {count} samples cannot be distributed over "
+                f"{batch_count} cross-task-valid batches"
             )
-            if not candidates:
-                remaining = {
-                    task_id: len(pairs)
-                    for task_id, pairs in pair_queues.items()
-                    if pairs
-                }
-                raise ValueError(
-                    "cannot form a full cross-task-valid batch from remaining "
-                    f"within-task pairs: {remaining}"
-                )
-            task_id = candidates[0]
-            batch.extend(pair_queues[task_id].pop(0))
-            selected_counts[task_id] += 1
+
+    queues = {
+        task_id: list(paths)
+        for task_id, paths in sorted(paths_by_task.items())
+    }
+    batches: list[list[Path]] = []
+    for batch_index in range(batch_count):
+        batches_after = batch_count - batch_index - 1
+        allocation = _choose_batch_task_counts(
+            {task_id: count for task_id, count in remaining.items() if count},
+            batch_size=batch_size,
+            batches_after=batches_after,
+        )
+        if allocation is None:
+            unresolved = {
+                task_id: count
+                for task_id, count in remaining.items()
+                if count
+            }
+            raise ValueError(
+                "cannot form a full cross-task-valid batch from remaining task "
+                f"counts: {unresolved}"
+            )
+        batch: list[Path] = []
+        for task_id in sorted(allocation):
+            take = allocation[task_id]
+            batch.extend(queues[task_id][:take])
+            del queues[task_id][:take]
+            remaining[task_id] -= take
         batches.append(batch)
     return batches
+
+
+def _vector_effect_metrics(
+    reference: np.ndarray,
+    alternative: np.ndarray,
+    *,
+    axes: int | tuple[int, ...],
+    eps: float = 1e-12,
+) -> dict[str, np.ndarray]:
+    difference = alternative - reference
+    difference_l2 = np.linalg.norm(difference, axis=axes)
+    reference_l2 = np.linalg.norm(reference, axis=axes)
+    alternative_l2 = np.linalg.norm(alternative, axis=axes)
+    dot = np.sum(reference * alternative, axis=axes)
+    denominator = reference_l2 * alternative_l2
+    cosine = np.divide(
+        dot,
+        denominator,
+        out=np.zeros_like(dot, dtype=np.float64),
+        where=denominator > eps,
+    )
+    reference_zero = reference_l2 <= eps
+    alternative_zero = alternative_l2 <= eps
+    cosine = np.where(reference_zero & alternative_zero, 1.0, cosine)
+    cosine = np.clip(cosine, -1.0, 1.0)
+    return {
+        "l2": difference_l2,
+        "rms": np.sqrt(np.mean(np.square(difference), axis=axes)),
+        "reference_l2": reference_l2,
+        "relative_l2": difference_l2 / np.maximum(reference_l2, eps),
+        "cosine": cosine,
+    }
+
+
+def _full_effect_metrics(reference: np.ndarray, alternative: np.ndarray) -> dict[str, np.ndarray]:
+    output = _vector_effect_metrics(reference, alternative, axes=(1, 2))
+    per_time = _vector_effect_metrics(reference, alternative, axes=2)
+    output.update({f"per_time_{name}": value for name, value in per_time.items()})
+    return output
 
 
 def effect_metrics(
@@ -173,14 +326,7 @@ def effect_metrics(
         )
     if not np.isfinite(reference).all() or not np.isfinite(alternative).all():
         raise ValueError("effect inputs must contain only finite values")
-    difference = alternative - reference
-    output: dict[str, Any] = {
-        "l2": np.linalg.norm(difference, axis=(1, 2)),
-        "rms": np.sqrt(np.mean(np.square(difference), axis=(1, 2))),
-        "per_time_l2": np.linalg.norm(difference, axis=2),
-        "per_time_rms": np.sqrt(np.mean(np.square(difference), axis=2)),
-        "groups": {},
-    }
+    output: dict[str, Any] = {**_full_effect_metrics(reference, alternative), "groups": {}}
     action_dim = int(reference.shape[2])
     for name, bounds in action_groups.items():
         start, stop = (int(bounds[0]), int(bounds[1]))
@@ -188,14 +334,70 @@ def effect_metrics(
             raise ValueError(
                 f"action group {name!r} has invalid bounds {(start, stop)} for dim {action_dim}"
             )
-        group_difference = difference[:, :, start:stop]
-        output["groups"][str(name)] = {
-            "l2": np.linalg.norm(group_difference, axis=(1, 2)),
-            "rms": np.sqrt(np.mean(np.square(group_difference), axis=(1, 2))),
-            "per_time_l2": np.linalg.norm(group_difference, axis=2),
-            "per_time_rms": np.sqrt(np.mean(np.square(group_difference), axis=2)),
-        }
+        output["groups"][str(name)] = _full_effect_metrics(
+            reference[:, :, start:stop],
+            alternative[:, :, start:stop],
+        )
     return output
+
+
+def binary_action_flip_metrics(
+    reference: Any,
+    alternative: Any,
+    *,
+    indices: Sequence[int],
+    threshold: float = 0.5,
+) -> dict[str, np.ndarray]:
+    """Return discrete threshold changes independently from continuous effects."""
+
+    reference = _to_numpy(reference).astype(np.float64, copy=False)
+    alternative = _to_numpy(alternative).astype(np.float64, copy=False)
+    if reference.shape != alternative.shape or reference.ndim != 3:
+        raise ValueError(
+            "reference and alternative must share shape [B, horizon, action_dim], "
+            f"got {reference.shape} and {alternative.shape}"
+        )
+    if not np.isfinite(reference).all() or not np.isfinite(alternative).all():
+        raise ValueError("binary effect inputs must contain only finite values")
+    threshold = float(threshold)
+    if not np.isfinite(threshold):
+        raise ValueError(f"binary threshold must be finite, got {threshold}")
+    normalized_indices = tuple(int(index) for index in indices)
+    if not normalized_indices or len(set(normalized_indices)) != len(normalized_indices):
+        raise ValueError("binary action indices must be non-empty and unique")
+    action_dim = int(reference.shape[2])
+    if any(index < 0 or index >= action_dim for index in normalized_indices):
+        raise ValueError(
+            f"binary action indices {normalized_indices} are invalid for dim {action_dim}"
+        )
+    reference_binary = reference[:, :, normalized_indices] >= threshold
+    alternative_binary = alternative[:, :, normalized_indices] >= threshold
+    flips = reference_binary != alternative_binary
+    per_time_flip = np.mean(flips, axis=2, dtype=np.float64)
+    return {
+        "flip_rate": np.mean(flips, axis=(1, 2), dtype=np.float64),
+        "any_flip": np.any(flips, axis=(1, 2)).astype(np.float64),
+        "per_time_flip": per_time_flip,
+    }
+
+
+def unnormalize_action_batch(actions: Any, action_norm_stats: Mapping[str, Any]) -> np.ndarray:
+    """Unnormalize a `[B,T,D]` action batch with checkpoint dataset statistics."""
+
+    from starVLA.model.tools import FrameworkTools
+
+    actions = _to_numpy(actions).astype(np.float64, copy=False)
+    if actions.ndim != 3 or not np.isfinite(actions).all():
+        raise ValueError(
+            f"normalized actions must be finite with shape [B, horizon, dim], got {actions.shape}"
+        )
+    flat = actions.reshape(-1, actions.shape[-1])
+    unnormalized = FrameworkTools.unnormalize_actions(
+        flat,
+        dict(action_norm_stats),
+        gripper_channel_idx=6 if actions.shape[-1] == 7 else -1,
+    )
+    return np.asarray(unnormalized, dtype=np.float64).reshape(actions.shape)
 
 
 def cluster_bootstrap_mean_ci(
@@ -260,21 +462,28 @@ def _metric_summary(
     }
 
 
+_EFFECT_SCALAR_METRICS = ("l2", "rms", "reference_l2", "relative_l2", "cosine")
+_EFFECT_TIME_METRICS = tuple(f"per_time_{name}" for name in _EFFECT_SCALAR_METRICS)
+
+
 def _sample_effect(metrics: dict[str, Any], sample_index: int) -> dict[str, Any]:
-    output = {
-        "l2": float(metrics["l2"][sample_index]),
-        "rms": float(metrics["rms"][sample_index]),
-        "per_time_l2": metrics["per_time_l2"][sample_index].tolist(),
-        "per_time_rms": metrics["per_time_rms"][sample_index].tolist(),
-        "groups": {},
-    }
+    output = {name: float(metrics[name][sample_index]) for name in _EFFECT_SCALAR_METRICS}
+    output.update(
+        {name: metrics[name][sample_index].tolist() for name in _EFFECT_TIME_METRICS}
+    )
+    output["groups"] = {}
     for name, group in metrics["groups"].items():
-        output["groups"][name] = {
-            "l2": float(group["l2"][sample_index]),
-            "rms": float(group["rms"][sample_index]),
-            "per_time_l2": group["per_time_l2"][sample_index].tolist(),
-            "per_time_rms": group["per_time_rms"][sample_index].tolist(),
+        group_output = {
+            metric_name: float(group[metric_name][sample_index])
+            for metric_name in _EFFECT_SCALAR_METRICS
         }
+        group_output.update(
+            {
+                metric_name: group[metric_name][sample_index].tolist()
+                for metric_name in _EFFECT_TIME_METRICS
+            }
+        )
+        output["groups"][name] = group_output
     return output
 
 
@@ -285,21 +494,15 @@ def _summarize_effect_nodes(
     seed: int,
     resamples: int,
 ) -> dict[str, Any]:
-    output = {
-        "l2": _metric_summary(
-            [node["l2"] for node in nodes],
+    output = {}
+    for metric_name in _EFFECT_SCALAR_METRICS:
+        output[metric_name] = _metric_summary(
+            [node[metric_name] for node in nodes],
             cluster_ids,
             seed=seed,
             resamples=resamples,
-        ),
-        "rms": _metric_summary(
-            [node["rms"] for node in nodes],
-            cluster_ids,
-            seed=seed,
-            resamples=resamples,
-        ),
-    }
-    for metric_name in ("per_time_l2", "per_time_rms"):
+        )
+    for metric_name in _EFFECT_TIME_METRICS:
         width = len(nodes[0][metric_name])
         output[metric_name] = [
             _metric_summary(
@@ -321,6 +524,39 @@ def _summarize_effect_nodes(
     return output
 
 
+def _sample_binary_effect(metrics: dict[str, np.ndarray], sample_index: int) -> dict[str, Any]:
+    return {
+        "flip_rate": float(metrics["flip_rate"][sample_index]),
+        "any_flip": float(metrics["any_flip"][sample_index]),
+        "per_time_flip": metrics["per_time_flip"][sample_index].tolist(),
+    }
+
+
+def _summarize_binary_nodes(
+    nodes: Sequence[dict[str, Any]],
+    cluster_ids: Sequence[str],
+    *,
+    seed: int,
+    resamples: int,
+) -> dict[str, Any]:
+    output = {
+        name: _metric_summary(
+            [node[name] for node in nodes], cluster_ids, seed=seed, resamples=resamples
+        )
+        for name in ("flip_rate", "any_flip")
+    }
+    output["per_time_flip"] = [
+        _metric_summary(
+            [node["per_time_flip"][index] for node in nodes],
+            cluster_ids,
+            seed=seed,
+            resamples=resamples,
+        )
+        for index in range(len(nodes[0]["per_time_flip"]))
+    ]
+    return output
+
+
 def _diagnostic_tensor(diagnostics: Sequence[Any], field: str) -> np.ndarray:
     return np.stack([_to_numpy(getattr(step, field)) for step in diagnostics], axis=0)
 
@@ -328,6 +564,8 @@ def _diagnostic_tensor(diagnostics: Sequence[Any], field: str) -> np.ndarray:
 def _action_groups(action_dim: int) -> dict[str, tuple[int, int]]:
     if int(action_dim) == 29:
         return dict(ROBOCASA_ACTION_GROUPS)
+    if int(action_dim) == 7:
+        return {"arm": (0, 6), "hand": (6, 7)}
     return {"all": (0, int(action_dim))}
 
 
@@ -477,6 +715,7 @@ def run_trace_intervention_checkpoint(
     bootstrap_resamples: int = 2000,
     repeat_tolerance: float = 1e-6,
     config_path: str | Path | None = None,
+    unnorm_key: str | None = None,
     framework_loader: Any | None = None,
 ) -> dict[str, Any]:
     """Load one V2 checkpoint and write a complete offline intervention probe."""
@@ -497,6 +736,19 @@ def run_trace_intervention_checkpoint(
     framework = framework_loader(checkpoint)
     if not callable(getattr(framework, "predict_action_interventions", None)):
         raise TypeError("checkpoint framework does not implement predict_action_interventions")
+    norm_stats = getattr(framework, "norm_stats", None)
+    action_norm_stats = None
+    resolved_unnorm_key = None
+    if norm_stats:
+        from starVLA.model.tools import FrameworkTools
+
+        resolved_unnorm_key = FrameworkTools.check_unnorm_key(norm_stats, unnorm_key)
+        action_norm_stats = FrameworkTools.get_action_stats(
+            norm_stats,
+            resolved_unnorm_key,
+        )
+    elif unnorm_key is not None:
+        raise ValueError("unnorm_key was provided but the checkpoint has no norm_stats")
     checkpoint_include_state = _optional_config_bool(
         _nested_config_value(
             getattr(framework, "config", None),
@@ -548,11 +800,19 @@ def run_trace_intervention_checkpoint(
                 )
             batch_identities = [load_sample_identity(path) for path in batch]
             task_ids = tuple(identity["task_id"] for identity in batch_identities)
+            noise_generator = torch.Generator(device="cpu").manual_seed(
+                int(seed) + batch_index
+            )
+            initial_actions = torch.randn(
+                (len(examples), int(framework.action_model.action_horizon), action_dim),
+                dtype=torch.float32,
+                generator=noise_generator,
+            )
             result = framework.predict_action_interventions(
                 examples,
                 variants=tuple(variants),
                 task_ids=task_ids,
-                initial_actions=None,
+                initial_actions=initial_actions,
                 seed=int(seed) + batch_index,
                 rollout_steps=None,
             )
@@ -574,6 +834,11 @@ def run_trace_intervention_checkpoint(
                     f"tolerance={repeat_tolerance}"
                 )
             correct_actions = _to_numpy(result["correct"]["actions"])
+            correct_actions_unnormalized = (
+                None
+                if action_norm_stats is None
+                else unnormalize_action_batch(correct_actions, action_norm_stats)
+            )
             correct_x_before = _diagnostic_tensor(
                 result["correct"]["diagnostics"], "x_before"
             )
@@ -634,6 +899,8 @@ def run_trace_intervention_checkpoint(
                     for step_index in range(correct_velocity.shape[0])
                 ]
                 rollout_metrics: dict[str, dict[str, Any]] = {}
+                rollout_unnormalized_metrics: dict[str, dict[str, Any]] = {}
+                hand_metrics: dict[str, dict[str, np.ndarray]] = {}
                 for rollout_name, rollout in intervention["rollouts"].items():
                     rollout_actions = _to_numpy(rollout["actions"])
                     rollout_metrics[rollout_name] = effect_metrics(
@@ -641,6 +908,22 @@ def run_trace_intervention_checkpoint(
                         rollout_actions,
                         action_groups,
                     )
+                    if correct_actions_unnormalized is not None:
+                        rollout_unnormalized_metrics[rollout_name] = effect_metrics(
+                            correct_actions_unnormalized,
+                            unnormalize_action_batch(
+                                rollout_actions,
+                                action_norm_stats,
+                            ),
+                            action_groups,
+                        )
+                    if action_dim == 7:
+                        hand_metrics[rollout_name] = binary_action_flip_metrics(
+                            correct_actions,
+                            rollout_actions,
+                            indices=(6,),
+                            threshold=0.5,
+                        )
                     trajectory_chunks[f"{variant}__{rollout_name}__actions"].append(
                         rollout_actions
                     )
@@ -667,6 +950,16 @@ def run_trace_intervention_checkpoint(
                             for rollout_name, metrics in rollout_metrics.items()
                         },
                     }
+                    if hand_metrics:
+                        record["interventions"][variant]["hand_discrete"] = {
+                            rollout_name: _sample_binary_effect(metrics, sample_index)
+                            for rollout_name, metrics in hand_metrics.items()
+                        }
+                    if rollout_unnormalized_metrics:
+                        record["interventions"][variant]["final_action_unnormalized"] = {
+                            rollout_name: _sample_effect(metrics, sample_index)
+                            for rollout_name, metrics in rollout_unnormalized_metrics.items()
+                        }
             per_sample.extend(batch_records)
     finally:
         del framework
@@ -683,6 +976,8 @@ def run_trace_intervention_checkpoint(
         "correct_repeat_passed": True,
         "velocity_effect": {},
         "final_action_effect": {},
+        "final_action_effect_unnormalized": {},
+        "hand_discrete_effect": {},
     }
     step_count = len(per_sample[0]["interventions"][variants[0]]["local_velocity"])
     for variant_index, variant in enumerate(variants):
@@ -711,6 +1006,32 @@ def run_trace_intervention_checkpoint(
                 seed=int(seed) + variant_index * 1000 + rollout_index,
                 resamples=bootstrap_resamples,
             )
+            if action_norm_stats is not None:
+                nodes = [
+                    record["interventions"][variant]["final_action_unnormalized"][rollout_name]
+                    for record in per_sample
+                ]
+                summary["final_action_effect_unnormalized"].setdefault(variant, {})[
+                    rollout_name
+                ] = _summarize_effect_nodes(
+                    nodes,
+                    cluster_ids,
+                    seed=int(seed) + variant_index * 1000 + rollout_index,
+                    resamples=bootstrap_resamples,
+                )
+            if action_dim == 7:
+                nodes = [
+                    record["interventions"][variant]["hand_discrete"][rollout_name]
+                    for record in per_sample
+                ]
+                summary["hand_discrete_effect"].setdefault(variant, {})[rollout_name] = (
+                    _summarize_binary_nodes(
+                        nodes,
+                        cluster_ids,
+                        seed=int(seed) + variant_index * 1000 + rollout_index,
+                        resamples=bootstrap_resamples,
+                    )
+                )
 
     trajectories = {
         name: np.concatenate(chunks, axis=0)
@@ -751,6 +1072,8 @@ def run_trace_intervention_checkpoint(
         "action_dim": action_dim,
         "action_groups": {name: list(bounds) for name, bounds in action_groups.items()},
         "normalized_actions": True,
+        "unnormalized_action_metrics": action_norm_stats is not None,
+        "unnorm_key": resolved_unnorm_key,
         "bootstrap_resamples": int(bootstrap_resamples),
         "correct_repeat_tolerance": repeat_tolerance,
         "input_example_keys": input_example_keys,
