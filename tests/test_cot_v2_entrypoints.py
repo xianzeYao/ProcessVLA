@@ -124,3 +124,32 @@ def test_libero_q0_depth_condition_config_changes_only_the_condition_inputs():
 
     depth_condition["run_id"] = baseline["run_id"]
     assert depth_condition == baseline
+
+
+def test_libero_reverse_full_uvd_config_extends_q0_depth_condition_only():
+    config_root = ROOT / "examples/modelExtensions/CoT/configs"
+    baseline_path = config_root / "qwen35_gr00t_libero_CoT_v2_q0_depthcond.yaml"
+    full_path = (
+        config_root
+        / "qwen35_gr00t_libero_CoT_v2_q0_depthcond_reverse_full_uvd_s4.yaml"
+    )
+    assert full_path.exists(), "reverse-full-UVD experiment YAML is missing"
+
+    baseline = OmegaConf.to_container(OmegaConf.load(baseline_path), resolve=True)
+    full = OmegaConf.to_container(OmegaConf.load(full_path), resolve=True)
+
+    assert full["run_id"] == (
+        "qwen35_gr00t_libero_CoT_v2_q0_depthcond_reverse_full_uvd_s4_8gpu_bs16"
+    )
+    assert full["framework"]["action_model"]["num_target_vision_tokens"] == 0
+    assert full["framework"]["geometry"]["include_depth_in_action_condition"] is True
+    assert full["framework"]["geometry"].pop("full_uvd_num_points") == 128
+    assert full["framework"]["geometry"].pop("lambda_uvd_full") == 0.2
+    assert full["framework"]["geometry"].pop("lambda_uvd_full_relative") == 0.1
+    assert full["datasets"]["vla_data"]["cot_geometry"].pop("full_uvd_stride") == 4
+    assert full["datasets"]["vla_data"]["cot_geometry"].pop(
+        "full_uvd_num_points"
+    ) == 128
+
+    full["run_id"] = baseline["run_id"]
+    assert full == baseline
