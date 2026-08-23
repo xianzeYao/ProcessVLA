@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 import torch
-import starVLA.model.modules.geometric_cot_v2 as geometric_cot_v2_module
 
 from starVLA.model.modules.geometric_cot_v2 import (
     GeometryTokenEmbedding,
@@ -81,61 +80,6 @@ def test_append_geometry_slots_keeps_every_fixed_query_active():
     assert qwen_inputs["input_ids"].shape == (1, 3)
 
 
-def test_full_uvd_layout_places_reverse_plan_before_forward_local_trace():
-    layout = GeometryTokenLayout(
-        depth_query_count=1,
-        uvd_points_per_hand=2,
-        full_uvd_points_per_hand=3,
-        hand_count=1,
-    )
-
-    slices = layout.sequence_slices(native_token_count=2)
-
-    assert layout.full_uvd_token_count == 3
-    assert layout.geometry_token_count == 7
-    assert slices.depth_current == slice(2, 3)
-    assert slices.depth_future == slice(3, 4)
-    assert slices.uvd_full == slice(4, 7)
-    assert slices.uvd == slice(7, 9)
-
-
-def test_local_uvd_queries_read_full_plan_but_full_queries_cannot_read_local_trace():
-    layout = GeometryTokenLayout(
-        depth_query_count=1,
-        uvd_points_per_hand=2,
-        full_uvd_points_per_hand=3,
-        hand_count=1,
-    )
-    appended_mask = torch.ones(1, 2 + layout.geometry_token_count, dtype=torch.bool)
-
-    allowed = build_geometry_full_attention_mask(appended_mask, layout)[0, 0]
-    slices = layout.sequence_slices(native_token_count=2)
-
-    assert allowed[slices.uvd.start, slices.uvd_full].all()
-    assert not allowed[slices.uvd_full.stop - 1, slices.uvd.start]
-
-
-def test_full_uvd_embedding_uses_descending_physical_time_and_separate_seed():
-    layout = GeometryTokenLayout(
-        depth_query_count=1,
-        uvd_points_per_hand=2,
-        full_uvd_points_per_hand=3,
-        hand_count=1,
-    )
-    module = GeometryTokenEmbedding(hidden_dim=4, layout=layout)
-
-    output = module(batch_size=1)
-
-    assert output.shape == (1, layout.geometry_token_count, 4)
-    assert module.full_trajectory_seed is not module.trajectory_seed
-    assert hasattr(geometric_cot_v2_module, "build_time_major_default_full_times")
-    times = geometric_cot_v2_module.build_time_major_default_full_times(
-        layout,
-        device=torch.device("cpu"),
-    )
-    assert times.tolist() == [1.0, 0.5, 0.0]
-
-
 def test_pack_uvd_targets_uses_time_major_order_and_fixed_slots():
     layout = GeometryTokenLayout(depth_query_count=1, uvd_points_per_hand=3, hand_count=2)
     examples = [
@@ -165,40 +109,6 @@ def test_pack_uvd_targets_uses_time_major_order_and_fixed_slots():
     assert packed.valid[0].tolist() == [True, True, True, False, False, False]
     assert packed.times[0].tolist() == [0.0, 0.0, 0.5, 0.5, 0.0, 0.0]
     assert packed.hand_ids[0].tolist() == [0, 1, 0, 1, 0, 1]
-
-
-def test_pack_full_uvd_targets_uses_independent_fixed_slots_and_reverse_times():
-    layout = GeometryTokenLayout(
-        depth_query_count=1,
-        uvd_points_per_hand=2,
-        full_uvd_points_per_hand=3,
-        hand_count=1,
-    )
-    examples = [
-        {
-            "uvd_full": np.asarray(
-                [[9.0, 8.0, 7.0], [6.0, 5.0, 4.0]],
-                dtype=np.float32,
-            ),
-            "uvd_full_valid_mask": np.asarray([True, False]),
-            "uvd_full_time": np.asarray([1.0, 0.25], dtype=np.float32),
-        }
-    ]
-
-    assert hasattr(geometric_cot_v2_module, "pack_full_uvd_targets_time_major")
-    packed = geometric_cot_v2_module.pack_full_uvd_targets_time_major(
-        examples,
-        layout,
-        device=torch.device("cpu"),
-    )
-
-    assert packed.target[0].tolist() == [
-        [9.0, 8.0, 7.0],
-        [6.0, 5.0, 4.0],
-        [0.0, 0.0, 0.0],
-    ]
-    assert packed.valid[0].tolist() == [True, False, False]
-    assert packed.times[0].tolist() == [1.0, 0.25, 0.0]
 
 
 def test_geometry_token_embedding_expands_shared_seed_in_time_major_order():

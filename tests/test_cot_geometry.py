@@ -1,20 +1,31 @@
 
+import inspect
 import unittest
-from types import MethodType
 
 import numpy as np
 import starVLA.dataloader.gr00t_lerobot.cot_geometry as cot_geometry_module
 
 from starVLA.dataloader.gr00t_lerobot.cot_geometry import (
-    CoTLeRobotSingleDataset,
     _EpisodeGeometryCache,
     project_eef_to_agentview_uvd,
     sample_real_uvd_indices,
     transform_uvd_to_model_space,
 )
+from starVLA.model.modules.geometric_cot_v2 import (
+    GeometrySequenceSlices,
+    GeometryTokenLayout,
+)
 
 
 class CotGeometryTest(unittest.TestCase):
+    def test_v2_contract_has_no_full_trajectory_extension(self):
+        self.assertNotIn(
+            "full_uvd_points_per_hand",
+            inspect.signature(GeometryTokenLayout).parameters,
+        )
+        self.assertFalse(hasattr(cot_geometry_module, "sample_reverse_uvd_indices"))
+        self.assertNotIn("uvd_full", GeometrySequenceSlices.__dataclass_fields__)
+
     def test_episode_cache_refreshes_hits_and_evicts_least_recently_used(self):
         cache = _EpisodeGeometryCache(capacity=2)
         episode_1 = ("episode-1",)
@@ -92,96 +103,6 @@ class CotGeometryTest(unittest.TestCase):
         np.testing.assert_array_equal(indices, [10, 13, 15, 18])
         self.assertTrue(np.issubdtype(indices.dtype, np.integer))
         self.assertEqual(len(np.unique(indices)), 4)
-
-    def test_reverse_trace_sampling_walks_from_episode_end_and_keeps_current_frame(self):
-        self.assertTrue(hasattr(cot_geometry_module, "sample_reverse_uvd_indices"))
-        indices = cot_geometry_module.sample_reverse_uvd_indices(
-            start=2,
-            end=11,
-            stride=4,
-            max_points=4,
-        )
-
-        np.testing.assert_array_equal(indices, [11, 7, 3, 2])
-        self.assertTrue(np.issubdtype(indices.dtype, np.integer))
-
-    def test_reverse_trace_sampling_rejects_capacity_that_would_truncate_endpoint(self):
-        self.assertTrue(hasattr(cot_geometry_module, "sample_reverse_uvd_indices"))
-        with self.assertRaisesRegex(ValueError, "capacity"):
-            cot_geometry_module.sample_reverse_uvd_indices(
-                start=0,
-                end=17,
-                stride=4,
-                max_points=5,
-            )
-
-    def test_geometry_targets_add_reverse_full_trace_without_changing_local_trace(self):
-        dataset = CoTLeRobotSingleDataset.__new__(CoTLeRobotSingleDataset)
-        dataset._cot_current_trajectory_id = 7
-        dataset._cot_current_base_index = 2
-        dataset._cot_data_cfg = {
-            "cot_geometry": {
-                "action_horizon": 3,
-                "uvd_num_points": 3,
-                "full_uvd_stride": 4,
-                "full_uvd_num_points": 4,
-                "image_size": 4,
-                "uvd_depth_scale": 1.0,
-            }
-        }
-        depth = np.ones((12, 4, 4), dtype=np.float32)
-        eef_uvd = np.stack(
-            [
-                np.linspace(0.0, 3.0, 12, dtype=np.float32),
-                np.ones(12, dtype=np.float32),
-                np.ones(12, dtype=np.float32),
-            ],
-            axis=-1,
-        )
-        dataset._load_episode_geometry = MethodType(
-            lambda self, trajectory_id: (
-                depth,
-                eef_uvd,
-                np.ones(12, dtype=np.bool_),
-                np.zeros((12, 7), dtype=np.float32),
-            ),
-            dataset,
-        )
-
-        targets = dataset._geometry_targets()
-
-        np.testing.assert_array_equal(targets["uvd_frame_indices"], [2, 4, 5])
-        np.testing.assert_array_equal(targets["uvd_full_frame_indices"], [11, 7, 3, 2])
-        np.testing.assert_allclose(targets["uvd_full_time"], [1.0, 5 / 9, 1 / 9, 0.0])
-        np.testing.assert_allclose(targets["uvd_full"][:, 0], [1.0, 7 / 11, 3 / 11, 2 / 11])
-        np.testing.assert_array_equal(targets["uvd_full_valid_mask"], [True] * 4)
-        np.testing.assert_array_equal(targets["uvd_full_endpoint_indices"], [0, 3])
-
-    def test_geometry_targets_omit_full_trace_when_feature_is_not_configured(self):
-        dataset = CoTLeRobotSingleDataset.__new__(CoTLeRobotSingleDataset)
-        dataset._cot_current_trajectory_id = 7
-        dataset._cot_current_base_index = 0
-        dataset._cot_data_cfg = {
-            "cot_geometry": {
-                "action_horizon": 1,
-                "uvd_num_points": 2,
-                "image_size": 4,
-                "uvd_depth_scale": 1.0,
-            }
-        }
-        dataset._load_episode_geometry = MethodType(
-            lambda self, trajectory_id: (
-                np.ones((2, 4, 4), dtype=np.float32),
-                np.ones((2, 3), dtype=np.float32),
-                np.ones(2, dtype=np.bool_),
-                np.zeros((2, 7), dtype=np.float32),
-            ),
-            dataset,
-        )
-
-        targets = dataset._geometry_targets()
-
-        self.assertNotIn("uvd_full", targets)
 
     def test_uvd_coordinates_follow_depth_resize_into_zero_one_model_space(self):
         raw = np.array([[0.0, 0.0, 2.0], [255.0, 255.0, 1.0]], dtype=np.float32)

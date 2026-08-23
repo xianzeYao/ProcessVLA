@@ -17,20 +17,12 @@ from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils
 
 
-def make_uninitialized_model(
-    *,
-    depth_queries=2,
-    points=3,
-    hands=2,
-    include_depth=False,
-    full_points=0,
-):
+def make_uninitialized_model(*, depth_queries=2, points=3, hands=2, include_depth=False):
     model = Qwen_GR00T_CoT_V2.__new__(Qwen_GR00T_CoT_V2)
     model.geometry_layout = GeometryTokenLayout(
         depth_query_count=depth_queries,
         uvd_points_per_hand=points,
         hand_count=hands,
-        full_uvd_points_per_hand=full_points,
     )
     model.include_depth_in_action_condition = include_depth
     return model
@@ -131,64 +123,6 @@ def test_action_condition_includes_both_depth_groups_when_enabled():
 
     assert condition.flatten().tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
     assert condition_mask.tolist() == [[True, False, True, True, True, True]]
-
-
-def test_full_uvd_split_and_q0_depth_condition_precede_forward_local_trace():
-    model = make_uninitialized_model(
-        depth_queries=1,
-        points=2,
-        hands=1,
-        include_depth=True,
-        full_points=2,
-    )
-    # Sequence: V0,V1,Dc,Df,Fgoal,Fcurrent,Lnow,Lfuture.
-    split = model._split_geometry_hidden(
-        torch.arange(8, dtype=torch.float32).view(1, 8, 1),
-        native_token_count=2,
-    )
-
-    condition, condition_mask = model._build_action_condition(
-        split,
-        native_attention_mask=torch.tensor([[True, False]]),
-    )
-
-    assert split.uvd_full.flatten().tolist() == [4.0, 5.0]
-    assert split.uvd.flatten().tolist() == [6.0, 7.0]
-    assert condition.flatten().tolist() == list(map(float, range(8)))
-    assert condition_mask.tolist() == [[True, False, True, True, True, True, True, True]]
-
-
-def test_full_uvd_targets_and_objective_use_independent_reverse_trace_slots():
-    model = make_uninitialized_model(
-        depth_queries=1,
-        points=2,
-        hands=1,
-        full_points=3,
-    )
-    model.lambda_uvd_full_relative = 0.1
-    examples = [
-        {
-            "uvd_full": np.asarray(
-                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-                dtype=np.float32,
-            ),
-            "uvd_full_valid_mask": np.asarray([True, True]),
-            "uvd_full_time": np.asarray([1.0, 0.25], dtype=np.float32),
-        }
-    ]
-
-    packed = model._prepare_full_uvd_targets(examples, torch.device("cpu"))
-    pred = torch.zeros(1, 3, 3)
-    losses = model._compute_full_uvd_losses(pred, packed)
-
-    assert packed.target.shape == (1, 3, 3)
-    assert packed.times[0].tolist() == [1.0, 0.25, 0.0]
-    assert losses["absolute"] > 0
-    assert losses["relative"] > 0
-    torch.testing.assert_close(
-        losses["total"],
-        losses["absolute"] + 0.1 * losses["relative"],
-    )
 
 
 def test_zero_geometry_preserves_correct_shape_and_mask():
@@ -357,60 +291,6 @@ def test_shuffle_moves_the_whole_geometry_bundle_without_moving_native_tokens():
         [10.0, 1.0, 2.0, 3.0, 4.0],
     ]
     assert shuffled.permutation.tolist() == [1, 0]
-
-
-def test_whole_geometry_shuffle_moves_full_and_local_uvd_together():
-    model = make_uninitialized_model(
-        depth_queries=1,
-        points=2,
-        hands=1,
-        include_depth=True,
-        full_points=1,
-    )
-    split = GeometryHiddenSplit(
-        native=torch.tensor([[[0.0]], [[10.0]]]),
-        depth_current=torch.tensor([[[1.0]], [[11.0]]]),
-        depth_future=torch.tensor([[[2.0]], [[12.0]]]),
-        uvd_full=torch.tensor([[[30.0]], [[130.0]]]),
-        uvd=torch.tensor([[[3.0], [4.0]], [[13.0], [14.0]]]),
-    )
-
-    shuffled = model._build_intervention_condition(
-        split,
-        native_attention_mask=torch.ones(2, 1, dtype=torch.bool),
-        name="within_task_shuffle",
-        permutation=torch.tensor([1, 0]),
-    )
-
-    assert shuffled.condition[:, :, 0].tolist() == [
-        [0.0, 11.0, 12.0, 130.0, 13.0, 14.0],
-        [10.0, 1.0, 2.0, 30.0, 3.0, 4.0],
-    ]
-
-
-def test_zero_geometry_zeros_full_and_local_uvd_without_changing_length():
-    model = make_uninitialized_model(
-        depth_queries=1,
-        points=2,
-        hands=1,
-        include_depth=True,
-        full_points=1,
-    )
-    split = GeometryHiddenSplit(
-        native=torch.tensor([[[0.0]]]),
-        depth_current=torch.tensor([[[1.0]]]),
-        depth_future=torch.tensor([[[2.0]]]),
-        uvd_full=torch.tensor([[[30.0]]]),
-        uvd=torch.tensor([[[3.0], [4.0]]]),
-    )
-
-    zero = model._build_intervention_condition(
-        split,
-        native_attention_mask=torch.ones(1, 1, dtype=torch.bool),
-        name="zero_geometry",
-    )
-
-    assert zero.condition.flatten().tolist() == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 
 @pytest.mark.parametrize(
@@ -805,45 +685,6 @@ def test_predict_geometry_does_not_require_ground_truth_uvd_fields():
     output = model.predict_geometry([{"image": [], "lang": "move"}])
 
     assert output["uvd"].shape == (1, 2, 3)
-
-
-def test_predict_geometry_exposes_reverse_full_uvd_when_configured():
-    model = make_uninitialized_model(
-        depth_queries=1,
-        points=2,
-        hands=1,
-        full_points=3,
-    )
-    qwen_inputs = {"input_ids": torch.ones(1, 2, dtype=torch.long)}
-    split = model._split_geometry_hidden(
-        torch.arange(9, dtype=torch.float32).view(1, 9, 1),
-        native_token_count=2,
-    )
-    model._build_native_inputs = MethodType(
-        lambda self, examples, inference: (
-            qwen_inputs,
-            torch.ones(1, 2, dtype=torch.bool),
-        ),
-        model,
-    )
-    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
-    model._decode_geometry = MethodType(
-        lambda self, hidden, inputs: (
-            torch.ones(1, 1, 2, 2),
-            torch.ones(1, 1, 2, 2),
-            torch.ones(1, 2, 3),
-        ),
-        model,
-    )
-    model._predict_full_uvd = MethodType(
-        lambda self, hidden: torch.full((1, 3, 3), 0.5),
-        model,
-    )
-
-    output = model.predict_geometry([{"image": [], "lang": "move"}])
-
-    assert output["uvd"].shape == (1, 2, 3)
-    assert output["uvd_full"].shape == (1, 3, 3)
 
 
 def test_old_mean_pooling_v2_checkpoint_is_rejected_explicitly():

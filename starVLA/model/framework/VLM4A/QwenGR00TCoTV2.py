@@ -29,7 +29,6 @@ from starVLA.model.modules.geometric_cot_v2 import (
     append_geometry_slots,
     build_depth_summary_interventions,
     build_geometry_full_attention_mask,
-    pack_full_uvd_targets_time_major,
     pack_uvd_targets_time_major,
 )
 from starVLA.model.modules.qwen35_geometry_forward import forward_qwen35_with_geometry
@@ -45,7 +44,6 @@ class GeometryHiddenSplit:
     depth_current: torch.Tensor
     depth_future: torch.Tensor
     uvd: torch.Tensor
-    uvd_full: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -62,15 +60,15 @@ class GeometryActionCondition:
 _GEOMETRY_SHUFFLE_SPECS: dict[str, tuple[str, frozenset[str]]] = {
     "within_task_shuffle": (
         "within_task_shuffle",
-        frozenset({"depth_current", "depth_future", "uvd_full", "uvd"}),
+        frozenset({"depth_current", "depth_future", "uvd"}),
     ),
     "cross_task_swap": (
         "cross_task_swap",
-        frozenset({"depth_current", "depth_future", "uvd_full", "uvd"}),
+        frozenset({"depth_current", "depth_future", "uvd"}),
     ),
 }
 for _component_name, _components in {
-    "uvd": frozenset({"uvd_full", "uvd"}),
+    "uvd": frozenset({"uvd"}),
     "current_depth": frozenset({"depth_current"}),
     "future_depth": frozenset({"depth_future"}),
     "depth": frozenset({"depth_current", "depth_future"}),
@@ -196,7 +194,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             depth_query_count=int(geometry.get("depth_query_count", 8)),
             uvd_points_per_hand=int(points_per_hand),
             hand_count=int(geometry.get("uvd_hand_count", 1)),
-            full_uvd_points_per_hand=int(geometry.get("full_uvd_num_points", 0)),
         )
         self.uvd_hand_count = int(self.geometry_layout.hand_count)
         self.uvd_token_order = "time_major"
@@ -219,10 +216,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         self.lambda_depth_future = float(geometry.get("lambda_depth_future", 0.15))
         self.lambda_uvd = float(geometry.get("lambda_uvd", 0.62))
         self.lambda_uvd_relative = float(geometry.get("lambda_uvd_relative", 0.1))
-        self.lambda_uvd_full = float(geometry.get("lambda_uvd_full", 0.0))
-        self.lambda_uvd_full_relative = float(
-            geometry.get("lambda_uvd_full_relative", 0.1)
-        )
 
         backend = str(geometry.get("full_attention_backend", "sdpa"))
         if backend != "sdpa":
@@ -275,17 +268,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
     def _prepare_uvd_targets(self, examples: List[dict], device: torch.device) -> PackedUVDTargets:
         return pack_uvd_targets_time_major(examples, self.geometry_layout, device=device)
 
-    def _prepare_full_uvd_targets(
-        self,
-        examples: List[dict],
-        device: torch.device,
-    ) -> PackedUVDTargets:
-        return pack_full_uvd_targets_time_major(
-            examples,
-            self.geometry_layout,
-            device=device,
-        )
-
     def _compute_uvd_losses(
         self,
         pred: torch.Tensor,
@@ -304,24 +286,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             "total": absolute + self.lambda_uvd_relative * relative,
         }
 
-    def _compute_full_uvd_losses(
-        self,
-        pred: torch.Tensor,
-        packed: PackedUVDTargets,
-    ) -> dict[str, torch.Tensor]:
-        absolute = uvd_regression_loss(pred, packed.target, packed.valid)
-        relative = uvd_adjacent_relative_loss(
-            pred,
-            packed.target,
-            packed.valid,
-            hand_count=self.geometry_layout.hand_count,
-        )
-        return {
-            "absolute": absolute,
-            "relative": relative,
-            "total": absolute + self.lambda_uvd_full_relative * relative,
-        }
-
     def _split_geometry_hidden(
         self,
         last_hidden: torch.Tensor,
@@ -337,7 +301,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             depth_current=last_hidden[:, slices.depth_current],
             depth_future=last_hidden[:, slices.depth_future],
             uvd=last_hidden[:, slices.uvd],
-            uvd_full=last_hidden[:, slices.uvd_full],
         )
 
     def _build_action_condition(
@@ -353,8 +316,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         geometry_condition = []
         if include_depth:
             geometry_condition.extend([split.depth_current, split.depth_future])
-        if split.uvd_full is not None and int(split.uvd_full.shape[1]) > 0:
-            geometry_condition.append(split.uvd_full)
         geometry_condition.append(split.uvd)
         condition = torch.cat([split.native, *geometry_condition], dim=1)
         if native_attention_mask is None:
@@ -376,8 +337,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             "depth_future": split.depth_future,
             "uvd": split.uvd,
         }
-        if split.uvd_full is not None:
-            tensors["uvd_full"] = split.uvd_full
         native = split.native
         if native.ndim != 3:
             raise ValueError(f"native geometry split must be rank 3, got {tuple(native.shape)}")
@@ -474,11 +433,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                                if "depth_current" in components else split.depth_current),
                 depth_future=(split.depth_future.index_select(0, donor_indices)
                               if "depth_future" in components else split.depth_future),
-                uvd_full=(
-                    split.uvd_full.index_select(0, donor_indices)
-                    if split.uvd_full is not None and "uvd_full" in components
-                    else split.uvd_full
-                ),
                 uvd=(split.uvd.index_select(0, donor_indices)
                      if "uvd" in components else split.uvd),
             )
@@ -489,11 +443,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 native=split.native,
                 depth_current=torch.zeros_like(split.depth_current),
                 depth_future=torch.zeros_like(split.depth_future),
-                uvd_full=(
-                    None
-                    if split.uvd_full is None
-                    else torch.zeros_like(split.uvd_full)
-                ),
                 uvd=torch.zeros_like(split.uvd),
             )
         elif name == "uvd_only" and include_depth:
@@ -501,7 +450,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 native=split.native,
                 depth_current=torch.zeros_like(split.depth_current),
                 depth_future=torch.zeros_like(split.depth_future),
-                uvd_full=split.uvd_full,
                 uvd=split.uvd,
             )
         elif name == "depth_only" and include_depth:
@@ -509,11 +457,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 native=split.native,
                 depth_current=split.depth_current,
                 depth_future=split.depth_future,
-                uvd_full=(
-                    None
-                    if split.uvd_full is None
-                    else torch.zeros_like(split.uvd_full)
-                ),
                 uvd=torch.zeros_like(split.uvd),
             )
 
@@ -631,11 +574,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         raw = self.uvd_head(_cast_to_module_dtype(tokens, self.uvd_head))
         return torch.cat([torch.sigmoid(raw[..., :2]), F.softplus(raw[..., 2:3])], dim=-1)
 
-    def _predict_full_uvd(self, split: GeometryHiddenSplit) -> torch.Tensor | None:
-        if split.uvd_full is None or int(split.uvd_full.shape[1]) == 0:
-            return None
-        return self._predict_uvd(split.uvd_full)
-
     def _pool_depth_summaries(
         self,
         split: GeometryHiddenSplit,
@@ -738,14 +676,8 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
     def forward(self, examples: List[dict] = None, **kwargs) -> dict[str, torch.Tensor]:
         qwen_inputs, native_attention_mask = self._build_native_inputs(examples, inference=False)
         packed = self._prepare_uvd_targets(examples, qwen_inputs["input_ids"].device)
-        packed_full = (
-            self._prepare_full_uvd_targets(examples, qwen_inputs["input_ids"].device)
-            if self.geometry_layout.full_uvd_token_count
-            else None
-        )
         split = self._run_geometry_backbone(qwen_inputs)
         depth_current, depth_future, uvd = self._decode_geometry(split, qwen_inputs)
-        uvd_full = self._predict_full_uvd(split)
         condition, condition_mask = self._build_action_condition(
             split,
             native_attention_mask=native_attention_mask,
@@ -770,13 +702,7 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             lambda_depth_future=self.lambda_depth_future,
             lambda_uvd=self.lambda_uvd,
         )
-        full_losses = None
-        if packed_full is not None:
-            if uvd_full is None:
-                raise RuntimeError("configured full-UVD slots produced no prediction")
-            full_losses = self._compute_full_uvd_losses(uvd_full, packed_full)
-            total_loss = total_loss + self.lambda_uvd_full * full_losses["total"]
-        output = {
+        return {
             "action_loss": action_loss,
             "depth_current_loss": depth_current_loss,
             "depth_future_loss": depth_future_loss,
@@ -785,15 +711,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             "uvd_relative_loss": uvd_losses["relative"],
             "total_loss": total_loss,
         }
-        if full_losses is not None:
-            output.update(
-                {
-                    "uvd_full_loss": full_losses["total"],
-                    "uvd_full_absolute_loss": full_losses["absolute"],
-                    "uvd_full_relative_loss": full_losses["relative"],
-                }
-            )
-        return output
 
     @torch.inference_mode()
     def predict_geometry(self, examples: List[dict]) -> dict[str, torch.Tensor]:
@@ -802,11 +719,7 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         qwen_inputs, _ = self._build_native_inputs(examples, inference=True)
         split = self._run_geometry_backbone(qwen_inputs)
         depth_current, depth_future, uvd = self._decode_geometry(split, qwen_inputs)
-        output = {"depth_current": depth_current, "depth_future": depth_future, "uvd": uvd}
-        uvd_full = self._predict_full_uvd(split)
-        if uvd_full is not None:
-            output["uvd_full"] = uvd_full
-        return output
+        return {"depth_current": depth_current, "depth_future": depth_future, "uvd": uvd}
 
     @torch.inference_mode()
     def predict_geometry_diagnostics(
@@ -839,10 +752,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             "depth_current_pool_weights": current_weights,
             "depth_future_pool_weights": future_weights,
         }
-        uvd_full = self._predict_full_uvd(split)
-        if uvd_full is not None:
-            output["uvd_full"] = uvd_full
-            output["uvd_full_tokens"] = split.uvd_full
         if include_decoder_interventions:
             interventions = {}
             variants = build_depth_summary_interventions(current_summary, future_summary)

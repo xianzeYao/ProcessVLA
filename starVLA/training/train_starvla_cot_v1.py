@@ -133,30 +133,6 @@ class CotV1Trainer(VLATrainer):
                 * float(getattr(self.model, "lambda_uvd_relative", 0.0))
                 * metrics["uvd_relative_loss"]
             )
-        if "uvd_full_loss" in output_dict:
-            full_weight = float(getattr(self.model, "lambda_uvd_full", 0.0))
-            metrics["uvd_full_loss"] = output_dict["uvd_full_loss"].item()
-            metrics["weighted_uvd_full_loss"] = (
-                full_weight * metrics["uvd_full_loss"]
-            )
-        if "uvd_full_absolute_loss" in output_dict:
-            full_weight = float(getattr(self.model, "lambda_uvd_full", 0.0))
-            metrics["uvd_full_absolute_loss"] = output_dict[
-                "uvd_full_absolute_loss"
-            ].item()
-            metrics["weighted_uvd_full_absolute_loss"] = (
-                full_weight * metrics["uvd_full_absolute_loss"]
-            )
-        if "uvd_full_relative_loss" in output_dict:
-            full_weight = float(getattr(self.model, "lambda_uvd_full", 0.0))
-            metrics["uvd_full_relative_loss"] = output_dict[
-                "uvd_full_relative_loss"
-            ].item()
-            metrics["weighted_uvd_full_relative_loss"] = (
-                full_weight
-                * float(getattr(self.model, "lambda_uvd_full_relative", 0.0))
-                * metrics["uvd_full_relative_loss"]
-            )
         if "uvd_temporal_loss" in output_dict:
             metrics["uvd_temporal_loss"] = output_dict["uvd_temporal_loss"].item()
             metrics["weighted_uvd_temporal_loss"] = (
@@ -175,7 +151,6 @@ class CotV1Trainer(VLATrainer):
             metrics["weighted_depth_current_loss"]
             + metrics["weighted_depth_future_loss"]
             + metrics["weighted_uvd_loss"]
-            + metrics.get("weighted_uvd_full_loss", 0.0)
         )
         action_scale = max(abs(metrics["weighted_action_loss"]), 1.0e-12)
         total_weighted_scale = action_scale + weighted_aux_loss

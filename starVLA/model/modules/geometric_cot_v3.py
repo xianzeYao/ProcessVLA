@@ -72,7 +72,6 @@ class LandmarkGeometryTokenLayout:
             native=slice(0, native_token_count),
             depth_current=slice(current_start, future_start),
             depth_future=slice(future_start, uvd_start),
-            uvd_full=slice(uvd_start, uvd_start),
             uvd=slice(uvd_start, uvd_start + self.uvd_token_count),
         )
 

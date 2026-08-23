@@ -66,26 +66,6 @@ class _V2LossModel(_FourLossModel):
         }
 
 
-class _V2FullLossModel(_V2LossModel):
-    lambda_uvd_full = 0.2
-    lambda_uvd_full_relative = 0.1
-
-    def forward(self, examples):
-        output = super().forward(examples)
-        full_absolute = 0.375 * self.scale.square()
-        full_relative = 0.5 * self.scale.square()
-        full = full_absolute + self.lambda_uvd_full_relative * full_relative
-        output.update(
-            {
-                "uvd_full_loss": full,
-                "uvd_full_absolute_loss": full_absolute,
-                "uvd_full_relative_loss": full_relative,
-                "total_loss": output["total_loss"] + self.lambda_uvd_full * full,
-            }
-        )
-        return output
-
-
 class _V3LossModel(_FourLossModel):
     lambda_uvd_temporal = 0.1
     lambda_uvd_shape = 0.2
@@ -191,35 +171,6 @@ def test_cot_trainer_logs_v2_uvd_absolute_and_relative_components():
     assert metrics["uvd_loss"] == pytest.approx(0.15)
     assert metrics["weighted_uvd_absolute_loss"] == pytest.approx(0.62 * 0.125)
     assert metrics["weighted_uvd_relative_loss"] == pytest.approx(0.62 * 0.1 * 0.25)
-
-
-def test_cot_trainer_logs_and_balances_reverse_full_uvd_components():
-    model = _V2FullLossModel()
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-    config = OmegaConf.create(
-        {
-            "datasets": {"vla_data": {"per_device_batch_size": 1}},
-            "trainer": {
-                "gradient_clipping": 1.0,
-                "test_diagnostics": {"enabled": False, "log_module_gradients": False},
-            },
-        }
-    )
-    trainer = CotV1Trainer(config, model, [], optimizer, _Scheduler(), _Accelerator())
-
-    metrics = trainer._train_step([])
-
-    assert metrics["uvd_full_loss"] == pytest.approx(0.425)
-    assert metrics["uvd_full_absolute_loss"] == pytest.approx(0.375)
-    assert metrics["uvd_full_relative_loss"] == pytest.approx(0.5)
-    assert metrics["weighted_uvd_full_loss"] == pytest.approx(0.2 * 0.425)
-    assert metrics["weighted_uvd_full_absolute_loss"] == pytest.approx(0.2 * 0.375)
-    assert metrics["weighted_uvd_full_relative_loss"] == pytest.approx(
-        0.2 * 0.1 * 0.5
-    )
-    assert metrics["weighted_aux_loss"] == pytest.approx(
-        0.14 * 0.5 + 0.15 * 0.25 + 0.62 * 0.15 + 0.2 * 0.425
-    )
 
 
 def test_cot_trainer_logs_v3_uvd_temporal_and_shape_components():

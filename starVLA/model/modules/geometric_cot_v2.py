@@ -57,7 +57,6 @@ class GeometrySequenceSlices:
     native: slice
     depth_current: slice
     depth_future: slice
-    uvd_full: slice
     uvd: slice
 
 
@@ -68,7 +67,6 @@ class GeometryTokenLayout:
     depth_query_count: int
     uvd_points_per_hand: int
     hand_count: int = 1
-    full_uvd_points_per_hand: int = 0
 
     def __post_init__(self) -> None:
         if int(self.depth_query_count) < 1:
@@ -77,27 +75,14 @@ class GeometryTokenLayout:
             raise ValueError(f"uvd_points_per_hand must be at least 2, got {self.uvd_points_per_hand}")
         if int(self.hand_count) < 1:
             raise ValueError(f"hand_count must be positive, got {self.hand_count}")
-        if int(self.full_uvd_points_per_hand) < 0:
-            raise ValueError(
-                "full_uvd_points_per_hand must be non-negative, "
-                f"got {self.full_uvd_points_per_hand}"
-            )
 
     @property
     def uvd_token_count(self) -> int:
         return int(self.uvd_points_per_hand) * int(self.hand_count)
 
     @property
-    def full_uvd_token_count(self) -> int:
-        return int(self.full_uvd_points_per_hand) * int(self.hand_count)
-
-    @property
     def geometry_token_count(self) -> int:
-        return (
-            2 * int(self.depth_query_count)
-            + self.full_uvd_token_count
-            + self.uvd_token_count
-        )
+        return 2 * int(self.depth_query_count) + self.uvd_token_count
 
     @property
     def geometry_current_slice(self) -> slice:
@@ -110,13 +95,8 @@ class GeometryTokenLayout:
 
     @property
     def geometry_uvd_slice(self) -> slice:
-        start = 2 * int(self.depth_query_count) + self.full_uvd_token_count
-        return slice(start, start + self.uvd_token_count)
-
-    @property
-    def geometry_full_uvd_slice(self) -> slice:
         start = 2 * int(self.depth_query_count)
-        return slice(start, start + self.full_uvd_token_count)
+        return slice(start, start + self.uvd_token_count)
 
     def sequence_slices(self, native_token_count: int) -> GeometrySequenceSlices:
         native_token_count = int(native_token_count)
@@ -124,13 +104,11 @@ class GeometryTokenLayout:
             raise ValueError(f"native_token_count must be positive, got {native_token_count}")
         current_start = native_token_count
         future_start = current_start + int(self.depth_query_count)
-        full_uvd_start = future_start + int(self.depth_query_count)
-        uvd_start = full_uvd_start + self.full_uvd_token_count
+        uvd_start = future_start + int(self.depth_query_count)
         return GeometrySequenceSlices(
             native=slice(0, native_token_count),
             depth_current=slice(current_start, future_start),
-            depth_future=slice(future_start, full_uvd_start),
-            uvd_full=slice(full_uvd_start, uvd_start),
+            depth_future=slice(future_start, uvd_start),
             uvd=slice(uvd_start, uvd_start + self.uvd_token_count),
         )
 
@@ -153,18 +131,6 @@ def build_time_major_hand_ids(layout: GeometryTokenLayout, *, device: torch.devi
     )
 
 
-def build_time_major_full_hand_ids(
-    layout: GeometryTokenLayout,
-    *,
-    device: torch.device | None = None,
-) -> torch.Tensor:
-    """Return time-major hand IDs for reverse full-UVD slots."""
-
-    return torch.arange(int(layout.hand_count), device=device, dtype=torch.long).repeat(
-        int(layout.full_uvd_points_per_hand)
-    )
-
-
 def build_time_major_default_times(
     layout: GeometryTokenLayout,
     *,
@@ -174,24 +140,6 @@ def build_time_major_default_times(
     """Return normalized UVD times repeated for every hand at each time."""
 
     times = torch.linspace(0.0, 1.0, int(layout.uvd_points_per_hand), device=device, dtype=dtype)
-    return times.repeat_interleave(int(layout.hand_count))
-
-
-def build_time_major_default_full_times(
-    layout: GeometryTokenLayout,
-    *,
-    device: torch.device | None = None,
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    """Return descending physical times for goal-to-current full-UVD slots."""
-
-    times = torch.linspace(
-        1.0,
-        0.0,
-        int(layout.full_uvd_points_per_hand),
-        device=device,
-        dtype=dtype,
-    )
     return times.repeat_interleave(int(layout.hand_count))
 
 
@@ -207,11 +155,6 @@ class GeometryTokenEmbedding(nn.Module):
         )
         self.future_depth_queries = nn.Parameter(
             torch.randn(1, int(layout.depth_query_count), self.hidden_dim) * 0.02
-        )
-        self.full_trajectory_seed = (
-            nn.Parameter(torch.randn(1, 1, self.hidden_dim) * 0.02)
-            if layout.full_uvd_token_count
-            else None
         )
         self.trajectory_seed = nn.Parameter(torch.randn(1, 1, self.hidden_dim) * 0.02)
         self.time_embedding = nn.Sequential(
@@ -229,8 +172,6 @@ class GeometryTokenEmbedding(nn.Module):
         batch_size: int,
         uvd_times: torch.Tensor | None = None,
         uvd_hand_ids: torch.Tensor | None = None,
-        full_uvd_times: torch.Tensor | None = None,
-        full_uvd_hand_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch_size = int(batch_size)
         if batch_size < 1:
@@ -261,57 +202,11 @@ class GeometryTokenEmbedding(nn.Module):
 
         current = self.current_depth_queries.expand(batch_size, -1, -1)
         future = self.future_depth_queries.expand(batch_size, -1, -1)
-        full_trajectory = current[:, :0]
-        if self.full_trajectory_seed is not None:
-            full_expected_shape = (batch_size, self.layout.full_uvd_token_count)
-            if full_uvd_times is None:
-                full_uvd_times = build_time_major_default_full_times(
-                    self.layout,
-                    device=device,
-                    dtype=dtype,
-                ).unsqueeze(0).expand(batch_size, -1)
-            else:
-                full_uvd_times = full_uvd_times.to(device=device, dtype=dtype)
-                if tuple(full_uvd_times.shape) != full_expected_shape:
-                    raise ValueError(
-                        f"full_uvd_times must have shape {full_expected_shape}, "
-                        f"got {tuple(full_uvd_times.shape)}"
-                    )
-            if full_uvd_hand_ids is None:
-                full_uvd_hand_ids = build_time_major_full_hand_ids(
-                    self.layout,
-                    device=device,
-                ).unsqueeze(0).expand(batch_size, -1)
-            else:
-                full_uvd_hand_ids = full_uvd_hand_ids.to(device=device, dtype=torch.long)
-                if tuple(full_uvd_hand_ids.shape) != full_expected_shape:
-                    raise ValueError(
-                        f"full_uvd_hand_ids must have shape {full_expected_shape}, "
-                        f"got {tuple(full_uvd_hand_ids.shape)}"
-                    )
-            if torch.any(full_uvd_hand_ids < 0) or torch.any(
-                full_uvd_hand_ids >= int(self.layout.hand_count)
-            ):
-                raise ValueError(
-                    f"full_uvd_hand_ids must be in [0, {self.layout.hand_count})"
-                )
-            full_trajectory = self.full_trajectory_seed.expand(
-                batch_size,
-                self.layout.full_uvd_token_count,
-                -1,
-            )
-            full_trajectory = full_trajectory + self.time_embedding(
-                full_uvd_times.unsqueeze(-1)
-            )
-            if self.hand_embedding is not None:
-                full_trajectory = full_trajectory + self.hand_embedding(
-                    full_uvd_hand_ids
-                ).to(dtype=full_trajectory.dtype)
         trajectory = self.trajectory_seed.expand(batch_size, self.layout.uvd_token_count, -1)
         trajectory = trajectory + self.time_embedding(uvd_times.unsqueeze(-1))
         if self.hand_embedding is not None:
             trajectory = trajectory + self.hand_embedding(uvd_hand_ids).to(dtype=trajectory.dtype)
-        return torch.cat([current, future, full_trajectory, trajectory], dim=1)
+        return torch.cat([current, future, trajectory], dim=1)
 
 
 def append_geometry_slots(
@@ -393,28 +288,13 @@ def build_geometry_full_attention_mask(
         & (key_positions >= slices.depth_future.start)
         & (key_positions < slices.depth_future.stop)
     )
-    def same_group_time(group: slice) -> torch.Tensor:
-        query_in_group = (query_positions >= group.start) & (query_positions < group.stop)
-        key_in_group = (key_positions >= group.start) & (key_positions < group.stop)
-        query_time = torch.div(
-            query_positions - group.start,
-            int(layout.hand_count),
-            rounding_mode="floor",
-        )
-        key_time = torch.div(
-            key_positions - group.start,
-            int(layout.hand_count),
-            rounding_mode="floor",
-        )
-        return query_in_group & key_in_group & (query_time == key_time)
+    query_is_uvd = (query_positions >= slices.uvd.start) & (query_positions < slices.uvd.stop)
+    key_is_uvd = (key_positions >= slices.uvd.start) & (key_positions < slices.uvd.stop)
+    query_time = torch.div(query_positions - slices.uvd.start, int(layout.hand_count), rounding_mode="floor")
+    key_time = torch.div(key_positions - slices.uvd.start, int(layout.hand_count), rounding_mode="floor")
+    same_uvd_time = query_is_uvd & key_is_uvd & (query_time == key_time)
 
-    allowed = (
-        allowed
-        | current_full
-        | future_full
-        | same_group_time(slices.uvd_full)
-        | same_group_time(slices.uvd)
-    )
+    allowed = allowed | current_full | future_full | same_uvd_time
     key_valid = appended_attention_mask.to(dtype=torch.bool)[:, None, None, :]
     return allowed[None, None, :, :] & key_valid
 
@@ -427,108 +307,47 @@ def pack_uvd_targets_time_major(
 ) -> PackedUVDTargets:
     """Pack `[time, hand, 3]` labels into fixed `time-major` UVD slots."""
 
-    return _pack_uvd_targets_time_major(
-        examples,
-        points_per_hand=int(layout.uvd_points_per_hand),
-        hand_count=int(layout.hand_count),
-        value_key="uvd",
-        valid_key="uvd_valid_mask",
-        time_key="uvd_time",
-        default_reverse_time=False,
-        device=device,
-    )
-
-
-def pack_full_uvd_targets_time_major(
-    examples: list[dict[str, Any]],
-    layout: GeometryTokenLayout,
-    *,
-    device: torch.device,
-) -> PackedUVDTargets:
-    """Pack reverse full-UVD labels into their independent fixed slots."""
-
-    if int(layout.full_uvd_points_per_hand) < 1:
-        raise ValueError("full_uvd_points_per_hand must be positive when packing full UVD")
-    return _pack_uvd_targets_time_major(
-        examples,
-        points_per_hand=int(layout.full_uvd_points_per_hand),
-        hand_count=int(layout.hand_count),
-        value_key="uvd_full",
-        valid_key="uvd_full_valid_mask",
-        time_key="uvd_full_time",
-        default_reverse_time=True,
-        device=device,
-    )
-
-
-def _pack_uvd_targets_time_major(
-    examples: list[dict[str, Any]],
-    *,
-    points_per_hand: int,
-    hand_count: int,
-    value_key: str,
-    valid_key: str,
-    time_key: str,
-    default_reverse_time: bool,
-    device: torch.device,
-) -> PackedUVDTargets:
-    """Pack one named UVD group into fixed time-major slots."""
-
     batch_size = len(examples)
-    token_count = int(points_per_hand) * int(hand_count)
-    target = torch.zeros(batch_size, token_count, 3, device=device, dtype=torch.float32)
-    valid = torch.zeros(batch_size, token_count, device=device, dtype=torch.bool)
-    times = torch.zeros(batch_size, token_count, device=device, dtype=torch.float32)
-    hand_ids = torch.arange(hand_count, device=device, dtype=torch.long).repeat(
-        points_per_hand
-    ).unsqueeze(0).expand(batch_size, -1)
+    target = torch.zeros(batch_size, layout.uvd_token_count, 3, device=device, dtype=torch.float32)
+    valid = torch.zeros(batch_size, layout.uvd_token_count, device=device, dtype=torch.bool)
+    times = torch.zeros(batch_size, layout.uvd_token_count, device=device, dtype=torch.float32)
+    hand_ids = build_time_major_hand_ids(layout, device=device).unsqueeze(0).expand(batch_size, -1)
 
     for batch_index, example in enumerate(examples):
-        uvd = np.asarray(example[value_key], dtype=np.float32)
-        uvd_valid = np.asarray(example[valid_key], dtype=np.bool_)
+        uvd = np.asarray(example["uvd"], dtype=np.float32)
+        uvd_valid = np.asarray(example["uvd_valid_mask"], dtype=np.bool_)
         if uvd.ndim == 2:
             uvd = uvd[:, None, :]
         if uvd.ndim != 3 or uvd.shape[-1] != 3:
-            raise ValueError(
-                f"{value_key} must have shape [T,3] or [T,H,3], got {uvd.shape}"
-            )
+            raise ValueError(f"uvd must have shape [T,3] or [T,H,3], got {uvd.shape}")
         if uvd_valid.ndim == 1:
             uvd_valid = uvd_valid[:, None]
         if uvd_valid.shape != uvd.shape[:2]:
+            raise ValueError(f"uvd_valid_mask must have shape {uvd.shape[:2]}, got {uvd_valid.shape}")
+        if uvd.shape[0] > int(layout.uvd_points_per_hand):
             raise ValueError(
-                f"{valid_key} must have shape {uvd.shape[:2]}, got {uvd_valid.shape}"
+                f"uvd has {uvd.shape[0]} time points but the fixed layout allows "
+                f"{layout.uvd_points_per_hand}"
             )
-        if uvd.shape[0] > points_per_hand:
+        if uvd.shape[1] != int(layout.hand_count):
             raise ValueError(
-                f"{value_key} has {uvd.shape[0]} time points but the fixed layout allows "
-                f"{points_per_hand}"
-            )
-        if uvd.shape[1] != hand_count:
-            raise ValueError(
-                f"{value_key} must contain exactly {hand_count} hands for this layout, "
-                f"got {uvd.shape[1]}"
+                f"uvd must contain exactly {layout.hand_count} hands for this layout, got {uvd.shape[1]}"
             )
 
         count = int(uvd.shape[0])
-        default_times = (
-            np.linspace(1.0, 0.0, count, dtype=np.float32)
-            if default_reverse_time and count > 1
-            else np.linspace(0.0, 1.0, count, dtype=np.float32)
-            if count > 1
-            else np.zeros(count, dtype=np.float32)
-        )
         example_times = np.asarray(
-            example.get(time_key, default_times),
+            example.get(
+                "uvd_time",
+                np.linspace(0.0, 1.0, count, dtype=np.float32) if count > 1 else np.zeros(count, dtype=np.float32),
+            ),
             dtype=np.float32,
         )
         if example_times.shape != (count,):
-            raise ValueError(
-                f"{time_key} must have shape {(count,)}, got {example_times.shape}"
-            )
+            raise ValueError(f"uvd_time must have shape {(count,)}, got {example_times.shape}")
 
         for time_index in range(count):
             for hand_index in range(int(uvd.shape[1])):
-                token_index = time_index * hand_count + hand_index
+                token_index = time_index * int(layout.hand_count) + hand_index
                 target[batch_index, token_index] = torch.as_tensor(uvd[time_index, hand_index], device=device)
                 valid[batch_index, token_index] = bool(uvd_valid[time_index, hand_index])
                 times[batch_index, token_index] = float(example_times[time_index])

@@ -92,36 +92,6 @@ def sample_real_uvd_indices(start: int, end: int, k: int) -> np.ndarray:
     return start + offsets
 
 
-def sample_reverse_uvd_indices(
-    start: int,
-    end: int,
-    *,
-    stride: int,
-    max_points: int,
-) -> np.ndarray:
-    """Return real frame indices from ``end`` back to ``start`` at a fixed stride."""
-
-    start = int(start)
-    end = int(end)
-    stride = int(stride)
-    max_points = int(max_points)
-    if end < start:
-        raise ValueError(f"end must be >= start, got start={start}, end={end}")
-    if stride < 1:
-        raise ValueError(f"stride must be positive, got {stride}")
-    if max_points < 1:
-        raise ValueError(f"max_points must be positive, got {max_points}")
-
-    indices = np.arange(end, start - 1, -stride, dtype=np.int64)
-    if indices[-1] != start:
-        indices = np.concatenate([indices, np.asarray([start], dtype=np.int64)])
-    if len(indices) > max_points:
-        raise ValueError(
-            f"reverse UVD trace needs {len(indices)} points but capacity is {max_points}"
-        )
-    return indices
-
-
 def transform_uvd_to_model_space(
     uvd_pixels: np.ndarray,
     *,
@@ -284,7 +254,7 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
         boundary_clamp = np.asarray(boundary_clamp, dtype=np.bool_) & valid
         effective_horizon = max(future_index - base_index, 1)
         uvd_time = ((sample_indices - base_index) / float(effective_horizon)).astype(np.float32)
-        targets = {
+        return {
             "depth_current": current_depth[None].astype(np.float32),
             "depth_future": future_depth[None].astype(np.float32),
             "depth_current_valid": current_valid[None].astype(np.bool_),
@@ -297,60 +267,6 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
             "uvd_time": uvd_time,
             "uvd_endpoint_indices": np.asarray([0, len(sample_indices) - 1], dtype=np.int64),
         }
-
-        full_capacity = int(self._cot_option("full_uvd_num_points", 0))
-        if full_capacity > 0:
-            full_stride = int(self._cot_option("full_uvd_stride", 4))
-            full_indices = sample_reverse_uvd_indices(
-                base_index,
-                len(depth) - 1,
-                stride=full_stride,
-                max_points=full_capacity,
-            )
-            full_uvd_pixels = eef_uvd[full_indices]
-            full_uvd, full_boundary_clamp = transform_uvd_to_model_space(
-                full_uvd_pixels,
-                source_width=int(depth.shape[-1]),
-                source_height=int(depth.shape[-2]),
-                target_width=target_size,
-                target_height=target_size,
-                depth_scale=depth_scale,
-                return_boundary_clamp_mask=True,
-            )
-            full_valid = eef_valid[full_indices].astype(np.bool_)
-            full_finite_positive = (
-                np.isfinite(full_uvd_pixels).all(axis=-1)
-                & (full_uvd_pixels[..., 2] > 0.0)
-            )
-            full_in_frame = (
-                (full_uvd_pixels[..., 0] >= 0.0)
-                & (full_uvd_pixels[..., 0] <= float(depth.shape[-1] - 1))
-                & (full_uvd_pixels[..., 1] >= 0.0)
-                & (full_uvd_pixels[..., 1] <= float(depth.shape[-2] - 1))
-            )
-            full_out_of_frame = full_finite_positive & ~full_in_frame
-            full_boundary_clamp = (
-                np.asarray(full_boundary_clamp, dtype=np.bool_) & full_valid
-            )
-            full_horizon = max((len(depth) - 1) - base_index, 1)
-            full_time = (
-                (full_indices - base_index) / float(full_horizon)
-            ).astype(np.float32)
-            targets.update(
-                {
-                    "uvd_full": full_uvd.astype(np.float32),
-                    "uvd_full_valid_mask": full_valid,
-                    "uvd_full_out_of_frame_mask": full_out_of_frame.astype(np.bool_),
-                    "uvd_full_boundary_clamp_mask": full_boundary_clamp,
-                    "uvd_full_frame_indices": full_indices.astype(np.int64),
-                    "uvd_full_time": full_time,
-                    "uvd_full_endpoint_indices": np.asarray(
-                        [0, len(full_indices) - 1],
-                        dtype=np.int64,
-                    ),
-                }
-            )
-        return targets
 
     def _pack_sample(self, data: dict) -> dict:
         sample = super()._pack_sample(data)
