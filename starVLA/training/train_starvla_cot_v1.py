@@ -50,6 +50,22 @@ class CotV1Trainer(VLATrainer):
 
         return int(getattr(model, "landmark_count", getattr(model, "uvd_hand_count", 1)))
 
+    def _extra_objective_metrics(
+        self,
+        output_dict: dict[str, torch.Tensor],
+    ) -> tuple[dict[str, float], float]:
+        return {}, 0.0
+
+    def _extra_geometry_metrics(
+        self,
+        *,
+        model,
+        predictions: dict,
+        examples: list[dict],
+        diagnostic_config,
+    ) -> dict[str, float]:
+        return {}
+
 
     def _log_metrics(self, metrics):
         super()._log_metrics(metrics)
@@ -147,10 +163,15 @@ class CotV1Trainer(VLATrainer):
                 * float(getattr(self.model, "lambda_uvd_shape", 0.0))
                 * metrics["uvd_shape_loss"]
             )
+        extra_metrics, weighted_extra_loss = self._extra_objective_metrics(
+            output_dict
+        )
+        metrics.update(extra_metrics)
         weighted_aux_loss = (
             metrics["weighted_depth_current_loss"]
             + metrics["weighted_depth_future_loss"]
             + metrics["weighted_uvd_loss"]
+            + weighted_extra_loss
         )
         action_scale = max(abs(metrics["weighted_action_loss"]), 1.0e-12)
         total_weighted_scale = action_scale + weighted_aux_loss
@@ -246,6 +267,14 @@ class CotV1Trainer(VLATrainer):
                     depth_scale=float(model.uvd_depth_scale),
                 )
             )
+        geometry_metrics.update(
+            self._extra_geometry_metrics(
+                model=model,
+                predictions=predictions,
+                examples=self._diagnostic_examples,
+                diagnostic_config=diagnostic_config,
+            )
+        )
         step_metrics.update({f"diagnostic/{key}": value for key, value in geometry_metrics.items()})
         if self.accelerator.is_main_process:
             output_dir = Path(self.config.output_dir)

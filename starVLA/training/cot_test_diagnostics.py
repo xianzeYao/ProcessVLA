@@ -208,6 +208,9 @@ def collect_batch_valid_ratios(examples: list[dict]) -> dict[str, float]:
         ("uvd_valid_mask", "data/uvd_valid_ratio"),
         ("uvd_out_of_frame_mask", "data/uvd_out_of_frame_ratio"),
         ("uvd_boundary_clamp_mask", "data/uvd_boundary_clamp_ratio"),
+        ("uvd_coarse_valid_mask", "data/uvd_coarse_valid_ratio"),
+        ("uvd_coarse_out_of_frame_mask", "data/uvd_coarse_out_of_frame_ratio"),
+        ("uvd_coarse_boundary_clamp_mask", "data/uvd_coarse_boundary_clamp_ratio"),
     ):
         values = [np.asarray(example[key], dtype=np.float32).mean() for example in examples if key in example]
         if values:
@@ -223,9 +226,15 @@ def _diagnostic_module_parameter_ids(model: torch.nn.Module) -> dict[str, set[in
     module_paths = {
         "query": "geometry_query",
         "depth_decoder": "depth_decoder",
-        "uvd_head": "uvd_head",
         "action_model": "action_model",
     }
+    for group, attribute in (
+        ("uvd_head", "uvd_head"),
+        ("local_uvd_head", "local_uvd_head"),
+        ("coarse_uvd_head", "coarse_uvd_head"),
+    ):
+        if getattr(unwrapped, attribute, None) is not None:
+            module_paths[group] = attribute
     groups = {}
     for group, module_path in module_paths.items():
         module = getattr(unwrapped, module_path, None)
