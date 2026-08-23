@@ -337,8 +337,9 @@ coarse 16 和 stride 2 做同样的 model/data 一致性校验。
 geometry token；RoboCasa 从 depth 16 + local 12 变为 depth 16 + coarse 32 + local 32，
 因此必须分别测量，不能套用 LIBERO 比例。若任一 benchmark 的 median `model_ms` 超过对应
 V2 的 1.5 倍、出现周期性 OOM/NaN 或显存持续增长，则停止该正式训练并先定位数据等待、
-attention backend、诊断 cadence 或 allocator 行为。通过后再分别在 tmux 中启动正式 run；
-若 GPU 资源不能同时容纳两者，则先启动用户指定的 benchmark，不擅自抢占正在使用的 GPU。
+attention backend、诊断 cadence 或 allocator 行为。两套实现和 smoke 都在本范围内；当前明确
+授权的正式长训是 LIBERO，因此通过 gate 后先在 tmux 启动 LIBERO。RoboCasa 保持可直接启动
+状态，除非用户进一步指定，否则不擅自占用另一组 GPU 启动 100k 长训。
 
 ## 验收标准
 
@@ -347,5 +348,5 @@ attention backend、诊断 cadence 或 allocator 行为。通过后再分别在 
 - LIBERO 和 RoboCasa 各一个真实 batch 验证 local/coarse 索引、validity、loss 和预测 shape。
 - smoke run 无 NaN/OOM，coarse/local head 与 token 参数都有非零梯度。
 - 两套 timing gate 有记录且不触发 1.5× 停止条件。
-- 代码与配置提交后，才启动 tmux 正式训练，并分别回报 session、run directory、log 和初始
-  指标。
+- 代码与配置提交后，才启动 tmux LIBERO 正式训练并回报 session、run directory、log 和初始
+  指标；RoboCasa 回报已通过的 smoke/timing 结果及正式启动命令。
