@@ -6,17 +6,18 @@
 `QwenGR00TCoTV2` no-query + depth-conditioned 架构，但把轨迹推理明确拆成两层：
 
 ```text
-VLM / 大脑：coarse UVD，16 点，stride 2
+VLM / 大脑：coarse UVD，与 action/local 点数相同，stride 2
         ↓
 局部规划 / 小脑：local UVD，与 action horizon 对齐，stride 1
         ↓
 动作头：沿用各 benchmark 的 action horizon
 ```
 
-两条 UVD 都从当前时刻向未来正向预测。LIBERO 使用 action/local horizon 8；RoboCasa
-沿用现有 action horizon 16，并使用 local horizon 16。两边都使用 16 个 stride-2 coarse
-点。这里的 coarse “完整”是指覆盖固定的
-32-step 规划窗口，而不是从当前帧覆盖到整个 episode 结束。旧的 128 点、stride-4、
+两条 UVD 都从当前时刻向未来正向预测。LIBERO 使用 action/local/coarse points 8；RoboCasa
+沿用现有 action horizon 16，并使用 local/coarse points 16。Coarse 的 stride 为 2，因此
+物理规划窗口恒为 action horizon 的两倍：LIBERO 16 steps，RoboCasa 32 steps。这里的
+coarse “完整”是指覆盖固定的两倍 action window，而不是从当前帧覆盖到整个 episode 结束。
+旧的 128 点、stride-4、
 终点到当前帧的反向 full-UVD 方案只保留在 Git 历史中，不再作为活动配置或 V2 功能。
 
 ## 目标
@@ -26,7 +27,7 @@ VLM / 大脑：coarse UVD，16 点，stride 2
 - 保持训练和推理都是同一条单次 causal forward，不引入 teacher forcing 的暴露偏差。
 - 把新架构、数据字段、配置、训练入口和测试放在 V4，恢复 V2 的原始行为和 checkpoint
   contract。
-- 用固定、全监督的 coarse 16 和 local 8/16 slots 避免 episode 尾部出现仅少量有效点、
+- 用固定、全监督、同点数的 coarse/local slots 避免 episode 尾部出现仅少量有效点、
   其余 slot 无监督。
 
 ## 非目标
@@ -43,7 +44,7 @@ VLM / 大脑：coarse UVD，16 点，stride 2
 
 | Benchmark | Hands | Action horizon | Local points/stride | Coarse points/stride |
 |---|---:|---:|---:|---:|
-| LIBERO | 1 | 8 | 8 / 1 | 16 / 2 |
+| LIBERO | 1 | 8 | 8 / 1 | 8 / 2 |
 | RoboCasa Fourier | 2 | 16 | 16 / 1 | 16 / 2 |
 
 动作监督保持现有 benchmark 定义。future depth 的目标帧为
@@ -77,14 +78,15 @@ LIBERO episode 中部为 `[t+1, t+2, ..., t+8]`，RoboCasa 为
 
 ### Coarse UVD
 
-Coarse UVD 固定为 16 个 stride-2 future-state waypoint：
+Coarse UVD 固定为 `H` 个 stride-2 future-state waypoint：
 
 ```text
-coarse_offset[j] = 2 * (j + 1)                  j = 0..15
+coarse_offset[j] = 2 * (j + 1)                  j = 0..H-1
 coarse_index[j]  = min(t + coarse_offset[j], T)
 ```
 
-即 episode 中部为 `[t+2, t+4, ..., t+32]`，覆盖 local/action 窗口以及其后的长期意图。
+LIBERO episode 中部为 `[t+2, t+4, ..., t+16]`，RoboCasa 为
+`[t+2, t+4, ..., t+32]`，均覆盖 local/action 窗口及同等长度的后续意图。
 数据字段使用独立、无歧义的名字：
 
 - `uvd_coarse`
@@ -95,7 +97,7 @@ coarse_index[j]  = min(t + coarse_offset[j], T)
 - `uvd_coarse_time`
 - `uvd_coarse_endpoint_indices`
 
-`uvd_coarse_time[j] = (j + 1) / 16`。
+`uvd_coarse_time[j] = (j + 1) / H`。
 
 ### Episode 尾部 terminal-repeat
 
@@ -104,8 +106,7 @@ coarse_index[j]  = min(t + coarse_offset[j], T)
 
 ```text
 local indices  = [147, 147, 147, 147, 147, 147, 147, 147]
-coarse indices = [147, 147, 147, 147, 147, 147, 147, 147,
-                  147, 147, 147, 147, 147, 147, 147, 147]
+coarse indices = [147, 147, 147, 147, 147, 147, 147, 147]
 ```
 
 这些重复位置继续参与监督；不能因为 horizon 越界而把它们标成 padding/invalid。这样模型
@@ -125,7 +126,7 @@ LIBERO 单手配置的完整序列为：
 [native image/language]
 [depth_current × 8]
 [depth_future × 8]
-[uvd_coarse × 16]
+[uvd_coarse × 8]
 [uvd_local × 8]
 ```
 
@@ -162,7 +163,7 @@ coarse hidden -> coarse UVD head -> sigmoid(u,v), softplus(d)
 local hidden  -> local UVD head  -> sigmoid(u,v), softplus(d)
 ```
 
-第一版不采用 ACoT EAR 的 flow head。固定 16/8 或 16/16 query 已经给出确定长度，query
+第一版不采用 ACoT EAR 的 flow head。固定 8/8 或 16/16 query 已经给出确定长度，query
 的数量就是预测点数；无需 EOS、长度分类器或变长生成。
 
 ### Action condition
@@ -193,9 +194,9 @@ L_total = 1.0  * L_action
         + 0.20 * L_coarse
 ```
 
-每项损失只按自己的有效坐标/segment 做 mean normalization，不能因 coarse 有 16 点而把其
-权重隐式放大 2 倍。terminal-repeat slots 是有意监督，因此会进入 mean；投影无效的 slots
-仍由 validity mask 排除。
+每项损失只按自己的有效坐标/segment 做 mean normalization，避免手数、horizon 或有效点数
+改变时隐式改变 loss 权重。terminal-repeat slots 是有意监督，因此会进入 mean；投影无效的
+slots 仍由 validity mask 排除。
 
 第一版不加显式 cross-scale consistency loss。LIBERO 的 `+2,+4,+6,+8` 以及 RoboCasa 的
 `+2,+4,...,+16` 重合物理帧本来就分别有 ground-truth 监督，额外强绑两个 head 会让问题
@@ -253,7 +254,7 @@ V4 使用独立入口：
 - `starVLA/model/modules/geometric_cot_v4.py`
 - `starVLA/model/framework/VLM4A/QwenGR00TCoTV4.py`
 - `starVLA/training/train_starvla_cot_v4.py`
-- `examples/modelExtensions/CoT/configs/qwen35_gr00t_libero_CoT_v4_q0_depthcond_coarse16_local8.yaml`
+- `examples/modelExtensions/CoT/configs/qwen35_gr00t_libero_CoT_v4_q0_depthcond_coarse8_local8.yaml`
 - `examples/modelExtensions/CoT/configs/qwen35_gr00t_robocasa_fourier_CoT_v4_q0_depthcond_coarse16_local16.yaml`
 - `examples/modelExtensions/CoT/scripts/run_qwen35_gr00t_CoT_v4_common.sh`
 - `examples/modelExtensions/CoT/scripts/run_qwen35_gr00t_libero_CoT_v4.sh`
@@ -285,7 +286,7 @@ framework:
     depth_query_count: 8
     include_depth_in_action_condition: true
     local_uvd_num_points: 8
-    coarse_uvd_num_points: 16
+    coarse_uvd_num_points: 8
     coarse_uvd_stride: 2
     lambda_uvd: 0.62
     lambda_uvd_relative: 0.1
@@ -298,12 +299,12 @@ datasets:
     cot_geometry:
       action_horizon: 8
       local_uvd_num_points: 8
-      coarse_uvd_num_points: 16
+      coarse_uvd_num_points: 8
       coarse_uvd_stride: 2
       terminal_repeat: true
 ```
 
-V4 对这些结构字段做 fail-fast 校验：首个配置必须是 action horizon 8、local 8、coarse 16、
+V4 对这些结构字段做 fail-fast 校验：首个配置必须是 action horizon 8、local 8、coarse 8、
 stride 2 和 `terminal_repeat: true`，model/data 两侧点数不一致时启动即报错。
 
 RoboCasa V4 配置继承现有
@@ -316,12 +317,12 @@ coarse 16 和 stride 2 做同样的 model/data 一致性校验。
 
 实现采用独立 V4 测试，至少覆盖：
 
-1. LIBERO 中部精确得到 local `[t+1..t+8]`，RoboCasa 得到 local `[t+1..t+16]`，
-   两者 coarse 都为 `[t+2,t+4,..,t+32]`；
+1. LIBERO 中部精确得到 local `[t+1..t+8]`、coarse `[t+2,t+4,..,t+16]`；RoboCasa
+   得到 local `[t+1..t+16]`、coarse `[t+2,t+4,..,t+32]`；
 2. 两个 benchmark 的 episode 尾部所有越界 slot 重复 terminal 帧并保留监督，几何无效性
    正确传播；
 3. local/coarse 的 target shape、time、frame index 和 time-major packing；
-4. token 数量和顺序：LIBERO 为 depth 8+8、coarse 16、local 8；RoboCasa 为
+4. token 数量和顺序：LIBERO 为 depth 8+8、coarse 8、local 8；RoboCasa 为
    depth 8+8、coarse 16×2 hands、local 16×2 hands；
 5. attention 方向为 coarse→local，反向读取被禁止；
 6. separate seed、time embedding、head 和 loss 梯度都非零；
@@ -332,7 +333,7 @@ coarse 16 和 stride 2 做同样的 model/data 一致性校验。
 11. 两套 V4 YAML dry-run 都能解析到独立 trainer、dataset 和 framework。
 
 每个 benchmark 启动正式训练前都运行短 smoke/timing gate：相同 GPU 数、batch 和诊断开关
-下比较对应 V2 q0-depth 与 V4 的稳定段 `model_ms` 和峰值显存。LIBERO 相比 V2 增加 20 个
+下比较对应 V2 q0-depth 与 V4 的稳定段 `model_ms` 和峰值显存。LIBERO 相比 V2 增加 12 个
 geometry token；RoboCasa 从 depth 16 + local 12 变为 depth 16 + coarse 32 + local 32，
 因此必须分别测量，不能套用 LIBERO 比例。若任一 benchmark 的 median `model_ms` 超过对应
 V2 的 1.5 倍、出现周期性 OOM/NaN 或显存持续增长，则停止该正式训练并先定位数据等待、
