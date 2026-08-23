@@ -4,7 +4,7 @@
 
 **Goal:** Build an isolated QwenGR00TCoTV4 for LIBERO and RoboCasa in which a forward stride-2 coarse UVD plan causally precedes a dense local UVD plan and the action head, while restoring V2/V3 to their pre-reverse-full behavior.
 
-**Architecture:** V4 keeps the V2 no-query, depth-conditioned Qwen path and appends `[depth_current, depth_future, coarse, local]` query groups. For action horizon `H`, local predicts `H` points at offsets `1..H`, coarse predicts `H` points at offsets `2,4,..,2H`, and both use terminal-repeat rather than horizon padding. LIBERO uses `H=8`, one hand; RoboCasa uses `H=16`, two hands in time-major order.
+**Architecture:** V4 keeps the V2 q0 action-query ablation and depth-conditioned Qwen path, then appends `[depth_current, depth_future, coarse, local]` geometry-query groups. For action horizon `H`, local predicts `H` points at offsets `1..H`, coarse predicts `H` points at offsets `2,4,..,2H`, and both use terminal-repeat rather than horizon padding. LIBERO uses `H=8`, one hand; RoboCasa uses `H=16`, two hands in time-major order.
 
 **Tech Stack:** Python 3.10+, PyTorch, NumPy, OmegaConf, Hugging Face Transformers/Qwen3.5, Accelerate, DeepSpeed ZeRO-2, pytest, Bash, tmux.
 
@@ -17,7 +17,7 @@
 - Local indices are `min(t + j + 1, T)`; coarse indices are `min(t + 2*(j + 1), T)`.
 - Horizon overflow repeats terminal frame `T` and stays supervised; only genuine projection/depth validity may mask a repeated point.
 - Geometry order is `[native, depth_current, depth_future, coarse, local]`; coarse cannot read local, while every local token can read the complete coarse group.
-- Coarse and local use separate learned seeds, time-embedding MLPs, regression heads, losses, outputs, token diagnostics, and gradient diagnostics.
+- Coarse and local use separate per-slot learned query tensors, time-embedding MLPs, regression heads, losses, outputs, token diagnostics, and gradient diagnostics.
 - The first V4 uses direct UVD regression only: no flow head, ground-truth coarse teacher forcing, object anchor, reverse trajectory, or cross-scale consistency loss.
 - Loss weights are action `1.0`, current depth `0.14`, future depth `0.15`, local UVD `0.62`, coarse UVD `0.20`; each UVD group uses absolute plus `0.1 * relative` loss with its own masked mean.
 - LIBERO and RoboCasa both receive unit tests, config dry-runs, real smoke runs, and timing gates. Only the already authorized LIBERO 60k formal run is started automatically; RoboCasa 100k is left ready to launch.
@@ -506,9 +506,13 @@ def test_local_reads_all_coarse_but_coarse_cannot_read_local():
     assert not mask[slices.uvd_coarse.stop - 1, slices.uvd_local.start]
 
 
-def test_scales_have_independent_seed_time_mlp_and_head_inputs():
+def test_scales_have_independent_per_slot_queries_and_time_mlps():
     module = GeometryTokenEmbedding(hidden_dim=8, layout=GeometryTokenLayout(1, 2, 2, 1))
-    assert module.coarse_trajectory_seed is not module.local_trajectory_seed
+    assert module.coarse_queries.shape == (1, 2, 8)
+    assert module.local_queries.shape == (1, 2, 8)
+    assert module.coarse_queries is not module.local_queries
+    assert not torch.equal(module.coarse_queries[:, 0], module.coarse_queries[:, 1])
+    assert not torch.equal(module.local_queries[:, 0], module.local_queries[:, 1])
     assert module.coarse_time_embedding is not module.local_time_embedding
 ```
 

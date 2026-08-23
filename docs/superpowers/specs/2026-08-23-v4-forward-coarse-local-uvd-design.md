@@ -3,7 +3,7 @@
 ## 状态与结论
 
 本设计取代当前 V2 上的 reverse full-UVD 实验。V4 基于已经验证过的
-`QwenGR00TCoTV2` no-query + depth-conditioned 架构，但把轨迹推理明确拆成两层：
+`QwenGR00TCoTV2` 的 q0 action-query ablation + depth-conditioned 架构，但把轨迹推理明确拆成两层：
 
 ```text
 VLM / 大脑：coarse UVD，与 action/local 点数相同，stride 2
@@ -140,9 +140,10 @@ RoboCasa 双手采用 time-major 顺序，完整序列为：
 [uvd_local × (16 times × 2 hands)]
 ```
 
-几何 token 仍是可学习 query/seed token，并加入对应尺度的固定时间 embedding。Coarse 和
-local 使用独立的 seed、time-embedding MLP 和回归 head，避免两个时间尺度在同一个 query
-族或 decoder 中互相抢占表示能力。
+几何 token 是逐 slot 可独立学习的 query tensor，并加入对应尺度的固定时间 embedding。
+Coarse 和 local 使用两套独立的 per-slot queries、time-embedding MLP 和回归 head，避免两个
+时间尺度在同一个 query 族或 decoder 中互相抢占表示能力。这里的 q0 仅表示 action query
+token 数为 0，不表示 coarse/local 没有 learnable query。
 
 attention 保持 V2 的 group-causal 规则：
 
@@ -325,7 +326,7 @@ coarse 16 和 stride 2 做同样的 model/data 一致性校验。
 4. token 数量和顺序：LIBERO 为 depth 8+8、coarse 8、local 8；RoboCasa 为
    depth 8+8、coarse 16×2 hands、local 16×2 hands；
 5. attention 方向为 coarse→local，反向读取被禁止；
-6. separate seed、time embedding、head 和 loss 梯度都非零；
+6. separate per-slot query、time embedding、head 和 loss 梯度都非零；
 7. action condition 在 q0-depth 下包含 depth、coarse 和 local；
 8. total-loss 权重及每组 mean normalization 正确；
 9. RoboCasa 左右手的 time-major packing、pinch 字段选择和 dial validity mask 保持正确；
