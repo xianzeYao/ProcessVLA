@@ -348,7 +348,22 @@ def _pad_uvd_examples(
     for batch_index, example in enumerate(examples):
         uvd = np.asarray(example["uvd"], dtype=np.float32)
         uvd_valid = np.asarray(example["uvd_valid_mask"], dtype=np.bool_)
-        if uvd.ndim == 2:
+        if uvd.ndim == 4:
+            if uvd.shape[-1] != 3 or uvd_valid.shape != uvd.shape[:-1]:
+                raise ValueError(
+                    "structured uvd/valid must have shapes [T,H,K,3]/[T,H,K], "
+                    f"got {uvd.shape}/{uvd_valid.shape}"
+                )
+            combined_tracks = int(uvd.shape[1]) * int(uvd.shape[2])
+            if combined_tracks != hand_count:
+                raise ValueError(
+                    "structured UVD combined track count H*K must equal the "
+                    f"explicit diagnostic hand_count={hand_count}, got "
+                    f"{uvd.shape[1]}*{uvd.shape[2]}={combined_tracks}"
+                )
+            uvd = uvd.reshape(uvd.shape[0], combined_tracks, 3)
+            uvd_valid = uvd_valid.reshape(uvd_valid.shape[0], combined_tracks)
+        elif uvd.ndim == 2:
             uvd = uvd[:, None, :]
         if uvd_valid.ndim == 1:
             uvd_valid = uvd_valid[:, None]

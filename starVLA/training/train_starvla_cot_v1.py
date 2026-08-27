@@ -46,9 +46,15 @@ class CotV1Trainer(VLATrainer):
 
     @staticmethod
     def _uvd_track_count(model) -> int:
-        """Resolve V3 landmarks before the V1/V2 hand-count compatibility field."""
+        """Prefer an explicit temporal-track count, then legacy compatibility fields."""
 
-        return int(getattr(model, "landmark_count", getattr(model, "uvd_hand_count", 1)))
+        return int(
+            getattr(
+                model,
+                "uvd_track_count",
+                getattr(model, "landmark_count", getattr(model, "uvd_hand_count", 1)),
+            )
+        )
 
     def _extra_objective_metrics(
         self,
