@@ -223,3 +223,15 @@ def summarize_sidecar(sidecar: HandLRWSidecar) -> dict[str, float]:
         np.mean(np.all(sidecar.agentview_in_frame, axis=(1, 2)))
     )
     return metrics
+
+
+from starVLA.robocasa_hand_lrw_cli import (  # noqa: E402
+    main,
+    parse_args,
+    run,
+    select_episode_ids,
+)
+
+
+if __name__ == "__main__":
+    main()
