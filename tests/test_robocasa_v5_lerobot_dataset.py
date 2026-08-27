@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import MethodType, SimpleNamespace
 
 import numpy as np
@@ -11,6 +12,34 @@ from starVLA.dataloader.robocasa_v5_lerobot_datasets import (
     RoboCasaV5CoTLeRobotSingleDataset,
 )
 from starVLA.robocasa_hand_lrw import hand_lrw_path
+
+
+def _write_complete_metadata(root, total_episodes: int = 1):
+    (root / "meta").mkdir(parents=True, exist_ok=True)
+    (root / "meta" / "info.json").write_text(
+        json.dumps(
+            {
+                "total_episodes": total_episodes,
+                "geometry_paths": {
+                    "hand_lrw": (
+                        "geometry/hand_lrw/chunk-{episode_chunk:03d}/"
+                        "episode_{episode_index:06d}.npz"
+                    )
+                },
+                "hand_lrw": {
+                    "version": 1,
+                    "complete": True,
+                    "total_episodes": total_episodes,
+                    "axes": ["frame", "hand", "landmark", "coordinate"],
+                    "hand_order": ["left", "right"],
+                    "landmark_order": ["thumb", "index", "wrist"],
+                    "frame": "world",
+                    "uvd_camera": "agentview",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_sidecar(root, episode_id: int, frame_count: int = 5):
@@ -38,6 +67,7 @@ def _write_sidecar(root, episode_id: int, frame_count: int = 5):
 
 
 def _uninitialized_dataset(tmp_path, *, frame_count: int = 5):
+    _write_complete_metadata(tmp_path)
     np.savez(
         tmp_path / "depth.npz",
         depth_m=np.ones((frame_count, 8, 8), dtype=np.float32),
@@ -57,6 +87,18 @@ def _uninitialized_dataset(tmp_path, *, frame_count: int = 5):
         ]
     )
     return dataset
+
+
+def test_loader_rejects_sidecars_from_an_unfinalized_task(tmp_path):
+    dataset = _uninitialized_dataset(tmp_path)
+    _write_sidecar(tmp_path, 0)
+    info_path = tmp_path / "meta" / "info.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["hand_lrw"]["complete"] = False
+    info_path.write_text(json.dumps(info), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="complete LRW sidecars"):
+        dataset._load_episode_geometry(0)
 
 
 def test_loader_keeps_time_hand_landmark_axes_and_dial_mask(tmp_path):

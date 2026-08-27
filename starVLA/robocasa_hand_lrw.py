@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -13,6 +14,11 @@ from starVLA.gripper_triangle import project_world_to_agentview_uvd
 
 HAND_NAMES = ("left", "right")
 LANDMARK_NAMES = ("thumb", "index", "wrist")
+GEOMETRY_PATH_TEMPLATE = (
+    "geometry/hand_lrw/chunk-{episode_chunk:03d}/"
+    "episode_{episode_index:06d}.npz"
+)
+HAND_LRW_METADATA_VERSION = 1
 LANDMARK_BODY_NAMES = (
     (
         "gripper0_left_L_thumb_distal_link",
@@ -43,6 +49,50 @@ class HandLRWSidecar:
     agentview_uvd_pixels: np.ndarray
     agentview_projection_valid: np.ndarray
     agentview_in_frame: np.ndarray
+
+
+def hand_lrw_metadata(total_episodes: int) -> dict[str, Any]:
+    """Return the completion marker shared by generation and training."""
+
+    total_episodes = int(total_episodes)
+    if total_episodes < 1:
+        raise ValueError(f"total_episodes must be positive, got {total_episodes}")
+    return {
+        "version": HAND_LRW_METADATA_VERSION,
+        "complete": True,
+        "total_episodes": total_episodes,
+        "axes": ["frame", "hand", "landmark", "coordinate"],
+        "hand_order": list(HAND_NAMES),
+        "landmark_order": list(LANDMARK_NAMES),
+        "frame": "world",
+        "uvd_camera": "agentview",
+    }
+
+
+def validate_hand_lrw_dataset_metadata(
+    dataset_root: str | Path,
+) -> dict[str, Any]:
+    """Require an exact task-level marker proving every sidecar validated."""
+
+    info_path = Path(dataset_root) / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(info_path)
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    try:
+        total_episodes = int(info["total_episodes"])
+        geometry_path = info["geometry_paths"]["hand_lrw"]
+        observed = info["hand_lrw"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"{info_path} does not advertise complete LRW sidecars"
+        ) from error
+    expected = hand_lrw_metadata(total_episodes)
+    if geometry_path != GEOMETRY_PATH_TEMPLATE or observed != expected:
+        raise ValueError(
+            f"{info_path} does not advertise complete LRW sidecars: "
+            f"expected path={GEOMETRY_PATH_TEMPLATE!r} and metadata={expected!r}"
+        )
+    return info
 
 
 def hand_lrw_path(dataset_root: str | Path, episode_id: int) -> Path:
@@ -206,12 +256,16 @@ def load_hand_lrw_sidecar(
 
 
 __all__ = [
+    "GEOMETRY_PATH_TEMPLATE",
     "HAND_NAMES",
+    "HAND_LRW_METADATA_VERSION",
     "LANDMARK_BODY_NAMES",
     "LANDMARK_NAMES",
     "HandLRWSidecar",
     "hand_lrw_path",
+    "hand_lrw_metadata",
     "load_hand_lrw_sidecar",
     "project_hand_lrw_world_to_agentview_uvd",
+    "validate_hand_lrw_dataset_metadata",
     "validate_hand_lrw_payload",
 ]

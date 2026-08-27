@@ -198,11 +198,42 @@ def test_metadata_waits_for_every_episode_and_records_axis_order(tmp_path: Path)
         "episode_{episode_index:06d}.npz"
     )
     assert updated["hand_lrw"] == {
+        "version": 1,
+        "complete": True,
+        "total_episodes": 2,
+        "axes": ["frame", "hand", "landmark", "coordinate"],
         "hand_order": ["left", "right"],
         "landmark_order": ["thumb", "index", "wrist"],
         "frame": "world",
         "uvd_camera": "agentview",
     }
+
+
+def test_metadata_finalization_rejects_an_arbitrary_episode_subset(
+    tmp_path: Path,
+) -> None:
+    from examples.modelExtensions.CoT.scripts.build_robocasa_hand_lrw_sidecars import (
+        EpisodeSidecarSpec,
+        finalize_geometry_metadata,
+        write_sidecar_atomic,
+    )
+
+    info_path = tmp_path / "meta" / "info.json"
+    info_path.parent.mkdir(parents=True)
+    info_path.write_text(json.dumps({"total_episodes": 2}), encoding="utf-8")
+    write_sidecar_atomic(
+        hand_lrw_path(tmp_path, 1),
+        valid_payload(),
+        frame_count=2,
+        width=64,
+        height=32,
+        overwrite=False,
+    )
+
+    with pytest.raises(ValueError, match="exactly episodes 0..1"):
+        finalize_geometry_metadata(
+            tmp_path, [EpisodeSidecarSpec(1, 2, 64, 32)]
+        )
 
 
 def test_summary_keeps_each_hands_geometry_and_masks_separate() -> None:

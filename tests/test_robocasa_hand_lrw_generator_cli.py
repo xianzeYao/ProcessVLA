@@ -196,6 +196,80 @@ def test_rejects_ambiguous_episode_mapping(
         resolve_episode_source(task_root, 0)
 
 
+@pytest.mark.parametrize("indices", [[100, 102], [101, 100]])
+def test_rejects_noncontiguous_or_reordered_episode_frames(
+    tmp_path: Path, indices: list[int]
+) -> None:
+    from starVLA.robocasa_hand_lrw_cli import (
+        discover_task_roots,
+        episode_parquet_path,
+        resolve_episode_source,
+    )
+
+    dataset_root, hdf5_root, _ = create_task_fixture(tmp_path)
+    task_root = discover_task_roots(
+        dataset_root,
+        hdf5_root,
+        task_names=[FOURIER_TASKS[0].basename],
+    )[0]
+    path = episode_parquet_path(task_root.dataset_path, 0)
+    frame = pd.read_parquet(path)
+    frame["index"] = indices
+    frame.to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="index.*ordered contiguous"):
+        resolve_episode_source(task_root, 0)
+
+
+def test_full_task_rejects_duplicate_source_demo_mapping(tmp_path: Path) -> None:
+    from examples.modelExtensions.CoT.scripts.build_robocasa_hand_lrw_sidecars import (
+        write_sidecar_atomic,
+    )
+    from starVLA.robocasa_hand_lrw_cli import (
+        episode_parquet_path,
+        run,
+    )
+
+    dataset_root, hdf5_root, task_root = create_task_fixture(tmp_path)
+    path = episode_parquet_path(task_root, 1)
+    frame = pd.read_parquet(path)
+    frame["source.hdf5_demo_id"] = "demo_0"
+    frame.to_parquet(path, index=False)
+
+    write_sidecar_atomic(
+        hand_lrw_path(task_root, 0),
+        valid_payload(),
+        frame_count=2,
+        width=64,
+        height=32,
+        overwrite=False,
+    )
+    report_path = tmp_path / "duplicate.json"
+
+    with pytest.raises(RuntimeError, match="1 sidecar episode.*failed validation"):
+        run(
+            [
+                "--dataset-root",
+                str(dataset_root),
+                "--hdf5-root",
+                str(hdf5_root),
+                "--task",
+                FOURIER_TASKS[0].basename,
+                "--validate-only",
+                "--report-path",
+                str(report_path),
+            ]
+        )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["totals"]["failed_episodes"] == 1
+    assert report["generation_errors"][0]["episode"].endswith("episode_000001")
+    assert (
+        "duplicate source.hdf5_demo_id demo_0"
+        in report["generation_errors"][0]["error"]
+    )
+
+
 def test_validate_only_reports_missing_then_finalizes_complete_task(
     tmp_path: Path,
 ) -> None:
@@ -252,6 +326,64 @@ def test_validate_only_reports_missing_then_finalizes_complete_task(
     assert result["missing"] == []
     info = json.loads((task_root / "meta" / "info.json").read_text())
     assert "hand_lrw" in info["geometry_paths"]
+    assert info["hand_lrw"]["complete"] is True
+    assert info["hand_lrw"]["total_episodes"] == 2
+
+    hand_lrw_path(task_root, 1).write_bytes(b"corrupt sidecar")
+    stale_report = tmp_path / "stale.json"
+    with pytest.raises(RuntimeError, match="1 sidecar.*failed validation"):
+        run([*common, "--report-path", str(stale_report)])
+
+    stale = json.loads(stale_report.read_text(encoding="utf-8"))
+    assert stale["totals"]["corrupt_episodes"] == 1
+    assert stale["totals"]["failed_episodes"] == 1
+    info = json.loads((task_root / "meta" / "info.json").read_text())
+    assert "hand_lrw" not in info.get("geometry_paths", {})
+    assert "hand_lrw" not in info
+
+
+def test_corrupt_existing_sidecar_has_one_terminal_failure(tmp_path: Path) -> None:
+    from examples.modelExtensions.CoT.scripts.build_robocasa_hand_lrw_sidecars import (
+        write_sidecar_atomic,
+    )
+    from starVLA.robocasa_hand_lrw_cli import run
+
+    dataset_root, hdf5_root, task_root = create_task_fixture(tmp_path)
+    corrupt_path = hand_lrw_path(task_root, 0)
+    corrupt_path.parent.mkdir(parents=True)
+    corrupt_path.write_bytes(b"not an npz")
+    write_sidecar_atomic(
+        hand_lrw_path(task_root, 1),
+        valid_payload(),
+        frame_count=2,
+        width=64,
+        height=32,
+        overwrite=False,
+    )
+    report_path = tmp_path / "corrupt.json"
+
+    with pytest.raises(RuntimeError, match="1 sidecar.*failed validation"):
+        run(
+            [
+                "--dataset-root",
+                str(dataset_root),
+                "--hdf5-root",
+                str(hdf5_root),
+                "--task",
+                FOURIER_TASKS[0].basename,
+                "--report-path",
+                str(report_path),
+            ],
+            env_factory=lambda path: None,
+            reset_to=lambda env, state: None,
+        )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["totals"]["failed_episodes"] == 1
+    assert report["totals"]["corrupt_episodes"] == 1
+    assert report["totals"]["generation_error_episodes"] == 0
+    assert len(report["corrupt"]) == 1
+    assert report["generation_errors"] == []
 
 
 def test_partial_validate_never_advertises_task_metadata(tmp_path: Path) -> None:

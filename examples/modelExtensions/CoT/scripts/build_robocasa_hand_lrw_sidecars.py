@@ -13,19 +13,15 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from starVLA.robocasa_hand_lrw import (
+    GEOMETRY_PATH_TEMPLATE,
     HAND_NAMES,
     LANDMARK_BODY_NAMES,
     LANDMARK_NAMES,
     HandLRWSidecar,
+    hand_lrw_metadata,
     hand_lrw_path,
     load_hand_lrw_sidecar,
     validate_hand_lrw_payload,
-)
-
-
-GEOMETRY_PATH_TEMPLATE = (
-    "geometry/hand_lrw/chunk-{episode_chunk:03d}/"
-    "episode_{episode_index:06d}.npz"
 )
 
 
@@ -161,8 +157,18 @@ def finalize_geometry_metadata(
 
     root = Path(dataset_root)
     specs = list(episode_specs)
-    if not specs:
-        raise ValueError("at least one episode sidecar must be validated")
+    info_path = root / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(info_path)
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    total_episodes = int(info["total_episodes"])
+    observed_ids = [int(spec.episode_id) for spec in specs]
+    expected_ids = list(range(total_episodes))
+    if observed_ids != expected_ids:
+        raise ValueError(
+            f"metadata finalization requires exactly episodes 0..{total_episodes - 1} "
+            f"in order, got {observed_ids}"
+        )
     for spec in specs:
         load_hand_lrw_sidecar(
             hand_lrw_path(root, spec.episode_id),
@@ -171,19 +177,28 @@ def finalize_geometry_metadata(
             height=spec.height,
         )
 
-    info_path = root / "meta" / "info.json"
+    geometry_paths = dict(info.get("geometry_paths", {}))
+    geometry_paths["hand_lrw"] = GEOMETRY_PATH_TEMPLATE
+    info["geometry_paths"] = geometry_paths
+    info["hand_lrw"] = hand_lrw_metadata(total_episodes)
+    _write_json_atomic(info_path, info)
+    return info_path
+
+
+def revoke_geometry_metadata(dataset_root: str | Path) -> Path:
+    """Atomically remove a stale completion marker after a failed full audit."""
+
+    info_path = Path(dataset_root) / "meta" / "info.json"
     if not info_path.is_file():
         raise FileNotFoundError(info_path)
     info = json.loads(info_path.read_text(encoding="utf-8"))
     geometry_paths = dict(info.get("geometry_paths", {}))
-    geometry_paths["hand_lrw"] = GEOMETRY_PATH_TEMPLATE
-    info["geometry_paths"] = geometry_paths
-    info["hand_lrw"] = {
-        "hand_order": list(HAND_NAMES),
-        "landmark_order": list(LANDMARK_NAMES),
-        "frame": "world",
-        "uvd_camera": "agentview",
-    }
+    geometry_paths.pop("hand_lrw", None)
+    if geometry_paths:
+        info["geometry_paths"] = geometry_paths
+    else:
+        info.pop("geometry_paths", None)
+    info.pop("hand_lrw", None)
     _write_json_atomic(info_path, info)
     return info_path
 

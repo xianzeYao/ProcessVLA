@@ -180,6 +180,25 @@ def _one_value(frame: Any, column: str) -> Any:
     return values[0]
 
 
+def _validate_episode_frame_order(frame: Any) -> None:
+    """Require Parquet rows to preserve the source state's temporal order."""
+
+    if "index" not in frame.columns:
+        raise ValueError("episode parquet is missing required column index")
+    observed = np.asarray(frame["index"])
+    if not np.issubdtype(observed.dtype, np.number):
+        raise ValueError("index must be an ordered contiguous integer sequence")
+    if not np.isfinite(observed).all():
+        raise ValueError("index must be an ordered contiguous integer sequence")
+    integral = observed.astype(np.int64)
+    if not np.array_equal(observed, integral):
+        raise ValueError("index must be an ordered contiguous integer sequence")
+    if len(integral) > 1 and not np.all(np.diff(integral) == 1):
+        raise ValueError(
+            "index must be an ordered contiguous integer sequence with step 1"
+        )
+
+
 def resolve_episode_source(task_root: TaskRoot, episode_id: int) -> EpisodeSource:
     """Validate one rerender episode's source-demo and camera mapping."""
 
@@ -189,6 +208,7 @@ def resolve_episode_source(task_root: TaskRoot, episode_id: int) -> EpisodeSourc
     frame = pd.read_parquet(episode_parquet_path(task_root.dataset_path, episode_id))
     if frame.empty:
         raise ValueError(f"episode {episode_id} parquet is empty")
+    _validate_episode_frame_order(frame)
     observed_episode = int(_one_value(frame, "episode_index"))
     if observed_episode != episode_id:
         raise ValueError(
@@ -309,6 +329,7 @@ def run(
         _write_json_atomic,
         extract_bilateral_lrw_world,
         finalize_geometry_metadata,
+        revoke_geometry_metadata,
         summarize_sidecar,
         write_sidecar_atomic,
     )
@@ -322,6 +343,7 @@ def run(
     h5_open = h5_open or _default_h5_open
 
     selected: dict[str, list[EpisodeSource]] = {}
+    requested: dict[str, list[int]] = {}
     selection_errors: list[dict[str, str]] = []
     for task_root in task_roots:
         episode_ids = select_episode_ids(
@@ -330,6 +352,7 @@ def run(
             episode_end=args.episode_end,
             max_episodes=args.max_episodes,
         )
+        requested[task_root.task.basename] = episode_ids
         sources: list[EpisodeSource] = []
         for episode_id in episode_ids:
             try:
@@ -339,6 +362,24 @@ def run(
                     {
                         "episode": f"{task_root.task.basename}/episode_{episode_id:06d}",
                         "error": str(error),
+                    }
+                )
+        first_episode_by_demo: dict[str, int] = {}
+        for source in sources:
+            first_episode = first_episode_by_demo.setdefault(
+                source.demo_id, source.episode_id
+            )
+            if first_episode != source.episode_id:
+                selection_errors.append(
+                    {
+                        "episode": (
+                            f"{task_root.task.basename}/"
+                            f"episode_{source.episode_id:06d}"
+                        ),
+                        "error": (
+                            f"duplicate source.hdf5_demo_id {source.demo_id}; "
+                            f"already mapped by episode_{first_episode:06d}"
+                        ),
                     }
                 )
         selected[task_root.task.basename] = sources
@@ -365,16 +406,10 @@ def run(
                             width=source.width,
                             height=source.height,
                         )
-                    except Exception as error:
-                        generation_errors.append(
-                            {
-                                "episode": (
-                                    f"{task_root.task.basename}/"
-                                    f"episode_{source.episode_id:06d}"
-                                ),
-                                "error": str(error),
-                            }
-                        )
+                    except Exception:
+                        # The validation pass below assigns the sole terminal
+                        # status, so this is reported as corrupt only once.
+                        continue
                     else:
                         skipped_count += 1
                     continue
@@ -502,8 +537,8 @@ def run(
             validated_count += 1
             validated_frames += source.frame_count
 
-        selected_ids = [source.episode_id for source in sources]
-        complete_selection = selected_ids == list(range(task_root.total_episodes))
+        requested_ids = requested[task_root.task.basename]
+        complete_selection = requested_ids == list(range(task_root.total_episodes))
         task_failed = any(
             label.startswith(f"{task_root.task.basename}/")
             for label in missing
@@ -524,6 +559,8 @@ def run(
             ]
             finalize_geometry_metadata(task_root.dataset_path, specs)
             metadata_finalized = True
+        elif complete_selection and task_failed:
+            revoke_geometry_metadata(task_root.dataset_path)
         task_reports[task_root.task.basename] = {
             "selected_episodes": len(sources),
             "selected_frames": int(sum(source.frame_count for source in sources)),
@@ -531,7 +568,10 @@ def run(
             "metadata_finalized": metadata_finalized,
         }
 
-    failure_count = len(missing) + len(corrupt) + len(generation_errors)
+    failure_labels = set(missing)
+    failure_labels.update(item["episode"] for item in corrupt)
+    failure_labels.update(item["episode"] for item in generation_errors)
+    failure_count = len(failure_labels)
     report: dict[str, Any] = {
         "status": "success" if failure_count == 0 else "failed",
         "dataset_root": str(Path(args.dataset_root)),
@@ -547,6 +587,10 @@ def run(
             "skipped_episodes": skipped_count,
             "validated_episodes": validated_count,
             "validated_frames": validated_frames,
+            "missing_episodes": len(missing),
+            "corrupt_episodes": len(corrupt),
+            "generation_error_episodes": len(generation_errors),
+            "failed_episodes": failure_count,
         },
         "tasks": task_reports,
         "missing": missing,

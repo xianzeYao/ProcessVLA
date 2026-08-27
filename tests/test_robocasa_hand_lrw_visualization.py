@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from starVLA.dataloader.robocasa_fourier_tasks import FOURIER_TASKS
 from starVLA.robocasa_hand_lrw import hand_lrw_path
@@ -87,7 +88,9 @@ def test_fixed_seed_selects_ten_distinct_tasks_and_six_v2_frames(
     dataset_root = tmp_path / "rerender"
     for task_index in range(12):
         make_visual_task(dataset_root, task_index)
-    roots = discover_visual_task_roots(dataset_root)
+    roots = discover_visual_task_roots(
+        dataset_root, allow_incomplete_preflight=True
+    )
 
     first = select_audit_windows(
         roots,
@@ -183,6 +186,7 @@ def test_run_writes_selection_before_render_and_preserves_failed_sample(
             "42",
             "--task-count",
             "10",
+            "--allow-incomplete-preflight",
         ],
         frame_loader=frame_loader,
         raise_on_error=False,
@@ -220,6 +224,7 @@ def test_success_records_full_uvd_axes_and_invalid_counts(tmp_path: Path) -> Non
             "9",
             "--task-count",
             "10",
+            "--allow-incomplete-preflight",
         ],
         frame_loader=lambda path, frame_index: np.zeros(
             (32, 64, 3), dtype=np.uint8
@@ -237,3 +242,15 @@ def test_success_records_full_uvd_axes_and_invalid_counts(tmp_path: Path) -> Non
     assert record["invalid_projection_count"] == 0
     assert record["out_of_frame_count"] == 0
     assert (output_root / "contact_sheet.jpg").is_file()
+
+
+def test_formal_audit_rejects_incomplete_task_roots(tmp_path: Path) -> None:
+    from examples.modelExtensions.CoT.scripts.visualize_robocasa_hand_lrw_sidecars import (
+        discover_visual_task_roots,
+    )
+
+    dataset_root = tmp_path / "rerender"
+    make_visual_task(dataset_root, 0)
+
+    with pytest.raises(FileNotFoundError, match="all 24 canonical tasks"):
+        discover_visual_task_roots(dataset_root)

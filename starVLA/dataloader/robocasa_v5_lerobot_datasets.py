@@ -16,16 +16,28 @@ from starVLA.dataloader.robocasa_lerobot_datasets import (
     RoboCasaGR1DataConfig,
     dataset_specs,
 )
-from starVLA.robocasa_hand_lrw import hand_lrw_path, load_hand_lrw_sidecar
+from starVLA.robocasa_hand_lrw import (
+    hand_lrw_path,
+    load_hand_lrw_sidecar,
+    validate_hand_lrw_dataset_metadata,
+)
 
 
 class RoboCasaV5CoTLeRobotSingleDataset(CoTLeRobotSingleDataset):
     """V2 sampling and depth targets backed by bilateral LRW sidecars."""
 
+    def __init__(self, dataset_path: str | Path, *args: Any, **kwargs: Any) -> None:
+        validate_hand_lrw_dataset_metadata(dataset_path)
+        super().__init__(dataset_path, *args, **kwargs)
+        self._hand_lrw_metadata_validated = True
+
     def _load_episode_geometry(
         self,
         trajectory_id: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if not getattr(self, "_hand_lrw_metadata_validated", False):
+            validate_hand_lrw_dataset_metadata(self.dataset_path)
+            self._hand_lrw_metadata_validated = True
         cached = self._cot_cache.get(trajectory_id)
         if cached is not None:
             return cached

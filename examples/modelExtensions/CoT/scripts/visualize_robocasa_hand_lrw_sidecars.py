@@ -20,6 +20,7 @@ from starVLA.robocasa_hand_lrw import (
     LANDMARK_NAMES,
     hand_lrw_path,
     load_hand_lrw_sidecar,
+    validate_hand_lrw_dataset_metadata,
 )
 from starVLA.robocasa_hand_lrw_cli import FOURIER_TASKS
 
@@ -60,15 +61,21 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def discover_visual_task_roots(dataset_root: str | Path) -> list[VisualTaskRoot]:
+def discover_visual_task_roots(
+    dataset_root: str | Path,
+    *,
+    allow_incomplete_preflight: bool = False,
+) -> list[VisualTaskRoot]:
     """Discover available canonical task roots without training dependencies."""
 
     root = Path(dataset_root)
     tasks: list[VisualTaskRoot] = []
+    missing: list[str] = []
     for task in FOURIER_TASKS:
         dataset_path = root / task.official_dataset_name
         info_path = dataset_path / "meta" / "info.json"
         if not info_path.is_file():
+            missing.append(task.basename)
             continue
         info = json.loads(info_path.read_text(encoding="utf-8"))
         try:
@@ -88,6 +95,14 @@ def discover_visual_task_roots(dataset_root: str | Path) -> list[VisualTaskRoot]
                 video_path_template=video_template,
             )
         )
+    if missing and not allow_incomplete_preflight:
+        raise FileNotFoundError(
+            "formal LRW audit requires all 24 canonical tasks; "
+            f"missing {missing} below {root}"
+        )
+    if not allow_incomplete_preflight:
+        for task_root in tasks:
+            validate_hand_lrw_dataset_metadata(task_root.dataset_path)
     if not tasks:
         raise FileNotFoundError(f"no canonical RoboCasa task roots below {root}")
     return tasks
@@ -411,6 +426,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task-count", type=int, default=10)
     parser.add_argument("--action-horizon", type=int, default=16)
     parser.add_argument("--uvd-num-points", type=int, default=6)
+    parser.add_argument(
+        "--allow-incomplete-preflight",
+        action="store_true",
+        help="allow geometry spot-checks before all task sidecars are finalized",
+    )
     return parser.parse_args(argv)
 
 
@@ -423,7 +443,10 @@ def run(
     args = parse_args(argv)
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
-    task_roots = discover_visual_task_roots(args.dataset_root)
+    task_roots = discover_visual_task_roots(
+        args.dataset_root,
+        allow_incomplete_preflight=bool(args.allow_incomplete_preflight),
+    )
     selections = select_audit_windows(
         task_roots,
         seed=args.seed,
@@ -438,6 +461,7 @@ def run(
         "task_count": int(args.task_count),
         "action_horizon": int(args.action_horizon),
         "uvd_num_points": int(args.uvd_num_points),
+        "allow_incomplete_preflight": bool(args.allow_incomplete_preflight),
         "hand_order": list(HAND_NAMES),
         "landmark_order": list(LANDMARK_NAMES),
         "selections": [_selection_json(selection) for selection in selections],
