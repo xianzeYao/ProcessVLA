@@ -16,6 +16,7 @@ from libero.libero.envs import OffScreenRenderEnv
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from examples.simBenchmarks.LIBERO.eval_files.model2libero_interface import ModelClient
+from starVLA.libero_image_views import select_libero_image_views
 
 try:
     from .eval_utils import validate_task_range
@@ -49,6 +50,7 @@ class Args:
     log_path: str = "experiments/libero/logs"
     save_video: bool = False
     video_views: str = "all"  # Options: agentview, all
+    image_views: str = "all"  # Policy input. Options: agentview, all
     episode_result_path: Optional[str] = None
 
     seed: int = 7
@@ -84,6 +86,8 @@ def eval_libero(args: Args) -> None:
     logging.info("Arguments: %s", json.dumps(dataclasses.asdict(args), indent=2))
     if args.video_views not in {"agentview", "all"}:
         raise ValueError(f"Unknown video_views={args.video_views!r}; expected 'agentview' or 'all'.")
+    if args.image_views not in {"agentview", "all"}:
+        raise ValueError(f"Unknown image_views={args.image_views!r}; expected 'agentview' or 'all'.")
     np.random.seed(args.seed)
 
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -181,7 +185,7 @@ def eval_libero(args: Args) -> None:
                                 replay_wrist_images.append(wrist_img)
 
                         example_dict = {
-                            "image": [img, wrist_img],
+                            "image": select_libero_image_views([img, wrist_img], args.image_views),
                             "lang": str(task_description),
                         }
                         response = client_model.step(example=example_dict, step=step)

@@ -17,6 +17,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../../" && pwd)"
 EVAL_SCRIPT="${SCRIPT_DIR}/eval_libero.py"
 AGGREGATE_SCRIPT="${SCRIPT_DIR}/aggregate_results.py"
 CHECKPOINT_UTILS="${REPO_ROOT}/examples/simBenchmarks/eval_common/checkpoint_utils.py"
+PROCESS_CLEANUP="${REPO_ROOT}/examples/simBenchmarks/eval_common/child_process_cleanup.sh"
+source "${PROCESS_CLEANUP}"
 
 MODEL_DIR="${MODEL_DIR:-/root/data/yxz/outputs/qwen35_gr00t_libero_baseline}"
 CKPT_NAME="${CKPT_NAME:-}"
@@ -30,6 +32,7 @@ BASE_PORT="${BASE_PORT:-6694}"
 NUM_TRIALS_PER_TASK="${NUM_TRIALS_PER_TASK:-50}"
 SAVE_VIDEO="${SAVE_VIDEO:-0}"
 VIDEO_VIEWS="${VIDEO_VIEWS:-all}"
+IMAGE_VIEWS="${IMAGE_VIEWS:-all}"
 USE_BF16="${USE_BF16:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 MUJOCO_GL_VALUE="${MUJOCO_GL_VALUE:-egl}"
@@ -87,7 +90,7 @@ mkdir -p "${LOG_DIR}" "${VIDEO_DIR}" "${RESULT_DIR}"
 
 echo "[libero] checkpoint=${CKPT}"
 echo "[libero] suites=${SUITE_LIST[*]} gpus=${GPUS} base_port=${BASE_PORT}"
-echo "[libero] trials_per_task=${NUM_TRIALS_PER_TASK} save_video=${SAVE_VIDEO} video_views=${VIDEO_VIEWS}"
+echo "[libero] trials_per_task=${NUM_TRIALS_PER_TASK} save_video=${SAVE_VIDEO} video_views=${VIDEO_VIEWS} image_views=${IMAGE_VIEWS}"
 echo "[libero] output=${RUN_DIR}"
 if [[ "${DRY_RUN}" == "1" ]]; then
   for index in "${!SUITE_LIST[@]}"; do
@@ -101,12 +104,7 @@ SERVER_PIDS=()
 WORKER_PIDS=()
 JOB_LABELS=()
 cleanup() {
-  local pid
-  for pid in "${WORKER_PIDS[@]:-}" "${SERVER_PIDS[@]:-}"; do
-    [[ -n "${pid}" ]] || continue
-    kill "${pid}" 2>/dev/null || true
-  done
-  wait 2>/dev/null || true
+  cleanup_owned_processes
 }
 trap cleanup EXIT INT TERM
 
@@ -137,6 +135,7 @@ for index in "${!SUITE_LIST[@]}"; do
   CUDA_VISIBLE_DEVICES="${gpu}" "${server_cmd[@]}" >"${server_log}" 2>&1 &
   server_pid="$!"
   SERVER_PIDS+=("${server_pid}")
+  remember_owned_process "${server_pid}" || true
   wait_for_server "${port}" "${server_pid}"
 done
 
@@ -152,11 +151,14 @@ for index in "${!SUITE_LIST[@]}"; do
   worker_cmd=("${LIBERO_PYTHON}" "${EVAL_SCRIPT}" --args.pretrained-path "${CKPT}"
     --args.host 127.0.0.1 --args.port "${port}" --args.task-suite-name "${suite}"
     --args.num-trials-per-task "${NUM_TRIALS_PER_TASK}" --args.video-out-path "${video_dir}"
-    --args.video-views "${VIDEO_VIEWS}" --args.log-path "${LOG_DIR}" --args.result-path "${result_path}")
+    --args.video-views "${VIDEO_VIEWS}" --args.image-views "${IMAGE_VIEWS}"
+    --args.log-path "${LOG_DIR}" --args.result-path "${result_path}")
   if [[ "${SAVE_VIDEO}" == "1" ]]; then worker_cmd+=(--args.save-video); else worker_cmd+=(--args.no-save-video); fi
   echo "[libero] worker ${label} port=${port}"
   CUDA_VISIBLE_DEVICES="${gpu}" "${worker_cmd[@]}" >"${worker_log}" 2>&1 &
-  WORKER_PIDS+=("$!")
+  worker_pid="$!"
+  WORKER_PIDS+=("${worker_pid}")
+  remember_owned_process "${worker_pid}" || true
 done
 
 failed=0
@@ -165,6 +167,7 @@ for index in "${!WORKER_PIDS[@]}"; do
     echo "[libero] worker failed: ${JOB_LABELS[index]}" >&2
     failed=1
   fi
+  forget_owned_process "${WORKER_PIDS[index]}"
 done
 if ((failed)); then
   echo "[libero] at least one worker failed; no aggregate was produced" >&2

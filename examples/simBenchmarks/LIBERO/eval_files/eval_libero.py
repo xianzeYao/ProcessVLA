@@ -15,6 +15,7 @@ from libero.libero.envs import OffScreenRenderEnv
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from examples.simBenchmarks.LIBERO.eval_files.model2libero_interface import ModelClient
+from starVLA.libero_image_views import select_libero_image_views
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -48,6 +49,7 @@ class Args:
     video_out_path: str = "experiments/libero/logs"  # Path to save videos
     save_video: bool = True
     video_views: str = "all"  # Options: agentview, all
+    image_views: str = "all"  # Policy input. Options: agentview, all
     log_path: str = "experiments/libero/logs"
     result_path: str | None = None
 
@@ -67,6 +69,8 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Arguments: {json.dumps(dataclasses.asdict(args), indent=4)}")
     if args.video_views not in {"agentview", "all"}:
         raise ValueError(f"Unknown video_views={args.video_views!r}; expected 'agentview' or 'all'.")
+    if args.image_views not in {"agentview", "all"}:
+        raise ValueError(f"Unknown image_views={args.image_views!r}; expected 'agentview' or 'all'.")
 
     # Set random seed
     np.random.seed(args.seed)
@@ -175,9 +179,12 @@ def eval_libero(args: Args) -> None:
                     "instruction": [str(task_description)],
                 }
 
-                # align key with model API --> two images provided here --> check training
+                policy_images = select_libero_image_views(
+                    [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
+                    args.image_views,
+                )
                 example_dict = {
-                    "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
+                    "image": policy_images,
                     "lang": observation["instruction"][0],
                 }
 
@@ -326,6 +333,6 @@ if __name__ == "__main__":
         datefmt="%m/%d [%H:%M:%S]",
         force=True,
     )
-    if os.getenv("DEBUG", False):
+    if os.getenv("DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
         start_debugpy_once()
     tyro.cli(eval_libero)

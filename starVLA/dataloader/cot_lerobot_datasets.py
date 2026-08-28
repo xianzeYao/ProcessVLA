@@ -10,6 +10,7 @@ from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotMixtureDataset, Mod
 from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 from starVLA.dataloader.gr00t_lerobot.transform.base import ComposedModalityTransform
 from starVLA.dataloader.gr00t_lerobot.transform.state_action import StateActionToTensor, StateActionTransform
+from starVLA.libero_image_views import select_libero_image_views
 
 
 LIBERO_COT_DATASETS = (
@@ -35,6 +36,9 @@ class LiberoCoTDataConfig:
     observation_indices = [0]
     action_indices = list(range(8))
     state_indices = [0]
+
+    def __init__(self, image_views: str = "all") -> None:
+        self.video_keys = select_libero_image_views(self.video_keys, image_views)
 
     def modality_config(self):
         return {
@@ -65,7 +69,7 @@ def get_vla_dataset(
     **kwargs,
 ):
     root = Path(str(data_cfg.data_root_dir))
-    data_config = LiberoCoTDataConfig()
+    data_config = LiberoCoTDataConfig(image_views=str(data_cfg.get("image_views", "all")))
     video_backend = data_cfg.get("video_backend", "torchvision_av")
     delete_pause_frame = bool(data_cfg.get("delete_pause_frame", False))
     mixture = []
