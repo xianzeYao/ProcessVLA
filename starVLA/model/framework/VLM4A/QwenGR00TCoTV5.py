@@ -1,4 +1,4 @@
-"""RoboCasa CoT V5 with decoder-expanded bilateral hand configurations."""
+"""CoT V5 with decoder-expanded single- or dual-hand configurations."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from starVLA.model.tools import FRAMEWORK_REGISTRY
 
 @FRAMEWORK_REGISTRY.register("QwenGR00TCoTV5")
 class Qwen_GR00T_CoT_V5(Qwen_GR00T_CoT_V2):
-    """Decode thumb/index/wrist for both hands from 12 Qwen trajectory states."""
+    """Decode three landmarks per hand from compact Qwen trajectory states."""
 
     def __init__(self, config=None, **kwargs) -> None:
         super().__init__(config=config, **kwargs)

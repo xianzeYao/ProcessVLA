@@ -1,4 +1,4 @@
-"""VLA trainer entry point for RoboCasa QwenGR00TCoTV5."""
+"""VLA trainer entry point for QwenGR00TCoTV5."""
 
 from __future__ import annotations
 

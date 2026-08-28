@@ -1,4 +1,4 @@
-"""Decoder-only bilateral LRW expansion for RoboCasa CoT V5."""
+"""Decoder-only three-landmark expansion for single- or dual-hand CoT V5."""
 
 from __future__ import annotations
 
@@ -26,14 +26,14 @@ class HandConfigurationTokenLayout(GeometryTokenLayout):
     landmark_count: int = 3
 
     def __post_init__(self) -> None:
-        super().__post_init__()
-        if int(self.hand_count) != 2:
+        if int(self.hand_count) not in {1, 2}:
             raise ValueError(
-                f"hand_count must be exactly 2 for bilateral LRW, got {self.hand_count}"
+                f"hand_count must be one or two, got {self.hand_count}"
             )
+        super().__post_init__()
         if int(self.landmark_count) != 3:
             raise ValueError(
-                "landmark_count must be exactly 3 for [thumb,index,wrist], "
+                "landmark_count must be exactly 3 for one hand configuration, "
                 f"got {self.landmark_count}"
             )
 
@@ -58,7 +58,7 @@ def build_time_major_hand_landmark_ids(
     *,
     device: torch.device | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return IDs in `[L_left,R_left,W_left,L_right,R_right,W_right]` order."""
+    """Return time-major hand and landmark IDs for every decoded point."""
 
     per_time_hand = torch.arange(
         int(layout.hand_count), device=device, dtype=torch.long
@@ -93,7 +93,7 @@ def pack_hand_lrw_targets_time_major(
     *,
     device: torch.device,
 ) -> PackedHandLRWTargets:
-    """Strictly pack `[T,2,3,3]` labels into fixed 36-point supervision."""
+    """Pack strict `[T,H,3,3]` labels into fixed decoder supervision."""
 
     batch_size = len(examples)
     target = torch.zeros(
@@ -130,8 +130,10 @@ def pack_hand_lrw_targets_time_major(
         )
         if uvd.ndim != 4 or uvd.shape[1:] != expected_tail:
             raise ValueError(
-                "uvd must have shape [T,2,3,3] in [time,hand,landmark,coord] "
-                f"order, got {uvd.shape}"
+                "uvd must have shape "
+                f"[T,{layout.hand_count},{layout.landmark_count},3] in "
+                "[time,hand,landmark,coord] order, "
+                f"got {uvd.shape}"
             )
         count = int(uvd.shape[0])
         if count > int(layout.uvd_points_per_hand):
@@ -168,8 +170,9 @@ def pack_hand_lrw_targets_time_major(
             example_hand_ids, canonical_hand_ids
         ):
             raise ValueError(
-                "uvd_hand_ids must have shape [T,2,3] with each time equal to "
-                "[[0,0,0],[1,1,1]]"
+                "uvd_hand_ids must have shape "
+                f"[T,{layout.hand_count},{layout.landmark_count}] with canonical "
+                "hand IDs"
             )
         example_landmark_ids = np.asarray(
             example.get("uvd_landmark_ids"), dtype=np.int64
@@ -179,8 +182,9 @@ def pack_hand_lrw_targets_time_major(
             or not np.array_equal(example_landmark_ids, canonical_landmark_ids)
         ):
             raise ValueError(
-                "uvd_landmark_ids must have shape [T,2,3] with each hand equal "
-                "to [0,1,2]"
+                "uvd_landmark_ids must have shape "
+                f"[T,{layout.hand_count},{layout.landmark_count}] with each hand "
+                "equal to [0,1,2]"
             )
 
         points_per_time = int(layout.hand_count) * int(layout.landmark_count)
@@ -205,7 +209,7 @@ def pack_hand_lrw_targets_time_major(
 
 
 class HandLRWDecoder(nn.Module):
-    """Expand each Qwen `(time,hand)` state into thumb/index/wrist UVD."""
+    """Expand each Qwen `(time,hand)` state into three landmark UVD points."""
 
     def __init__(self, hidden_dim: int, landmark_count: int = 3) -> None:
         super().__init__()

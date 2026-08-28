@@ -20,19 +20,25 @@ from starVLA.model.modules.geometric_cot_v5 import (
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 
 
-def make_model(*, points: int = 2, include_depth: bool = True, hidden_dim: int = 4):
+def make_model(
+    *,
+    points: int = 2,
+    hand_count: int = 2,
+    include_depth: bool = True,
+    hidden_dim: int = 4,
+):
     model = Qwen_GR00T_CoT_V5.__new__(Qwen_GR00T_CoT_V5)
     nn.Module.__init__(model)
     model.geometry_layout = HandConfigurationTokenLayout(
         depth_query_count=1,
         uvd_points_per_hand=points,
-        hand_count=2,
+        hand_count=hand_count,
         landmark_count=3,
     )
     model.include_depth_in_action_condition = include_depth
-    model.uvd_hand_count = 2
+    model.uvd_hand_count = hand_count
     model.landmark_count = 3
-    model.uvd_track_count = 6
+    model.uvd_track_count = hand_count * 3
     model.uvd_token_order = "time_major"
     model.lambda_uvd_temporal = 0.1
     model.lambda_uvd_shape = 0.0
@@ -87,6 +93,26 @@ def test_v5_is_registered_and_keeps_action_condition_at_12_uvd_tokens():
     assert condition.shape == (1, 5 + 8 + 8 + 12, 4)
     assert mask.shape == condition.shape[:2]
     assert model._predict_uvd(split.uvd).shape == (1, 36, 3)
+
+
+def test_libero_v5_action_condition_uses_four_uvd_states_without_depth_states():
+    model = make_model(points=4, hand_count=1, include_depth=False)
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 5, 4),
+        depth_current=torch.full((1, 8, 4), 1.0),
+        depth_future=torch.full((1, 8, 4), 2.0),
+        uvd=torch.full((1, 4, 4), 3.0),
+    )
+
+    condition, mask = model._build_action_condition(
+        split, native_attention_mask=torch.ones(1, 5, dtype=torch.bool)
+    )
+
+    assert condition.shape == (1, 9, 4)
+    assert torch.equal(condition[:, :5], split.native)
+    assert torch.equal(condition[:, 5:], split.uvd)
+    assert mask.tolist() == [[True] * 9]
+    assert model._predict_uvd(split.uvd).shape == (1, 12, 3)
 
 
 def test_v5_packs_36_targets_but_exposes_only_12_qwen_uvd_slots():

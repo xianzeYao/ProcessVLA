@@ -58,3 +58,34 @@ def test_build_dataloader_routes_only_the_explicit_robocasa_v5_selector(
     assert isinstance(dataloader, torch.utils.data.DataLoader)
     assert dataloader.batch_size == 3
     assert dataloader.dataset is fake_v5.get_vla_dataset()
+
+
+def test_build_dataloader_routes_the_explicit_libero_v5_selector(
+    monkeypatch, tmp_path
+):
+    fake_v5 = _fake_dataset_module()
+    monkeypatch.setitem(
+        sys.modules,
+        "starVLA.dataloader.libero_v5_lerobot_datasets",
+        fake_v5,
+    )
+    cfg = OmegaConf.create(
+        {
+            "output_dir": str(tmp_path),
+            "datasets": {
+                "vla_data": {
+                    "per_device_batch_size": 2,
+                    "num_workers": 0,
+                }
+            },
+        }
+    )
+
+    dataloader = build_dataloader(
+        cfg,
+        dataset_py="libero_v5_lerobot_datasets",
+    )
+
+    assert isinstance(dataloader, torch.utils.data.DataLoader)
+    assert dataloader.batch_size == 2
+    assert dataloader.dataset is fake_v5.get_vla_dataset()

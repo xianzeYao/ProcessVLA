@@ -44,6 +44,20 @@ def _example(time_count: int = 2) -> dict:
     }
 
 
+def _single_hand_example(time_count: int = 2) -> dict:
+    bilateral = _example(time_count)
+    return {
+        "uvd": bilateral["uvd"][:, :1].copy(),
+        "uvd_valid_mask": bilateral["uvd_valid_mask"][:, :1].copy(),
+        "uvd_time": bilateral["uvd_time"].copy(),
+        "uvd_hand_ids": np.zeros((time_count, 1, 3), dtype=np.int64),
+        "uvd_landmark_ids": np.broadcast_to(
+            np.asarray([[[0, 1, 2]]], dtype=np.int64),
+            (time_count, 1, 3),
+        ).copy(),
+    }
+
+
 def test_layout_keeps_12_qwen_tokens_but_declares_36_outputs():
     layout = HandConfigurationTokenLayout(
         depth_query_count=8,
@@ -56,6 +70,30 @@ def test_layout_keeps_12_qwen_tokens_but_declares_36_outputs():
     assert layout.output_point_count == 36
     assert layout.geometry_token_count == 28
     assert layout.geometry_uvd_slice == slice(16, 28)
+
+
+def test_single_hand_layout_keeps_one_qwen_token_per_time_and_three_outputs():
+    layout = HandConfigurationTokenLayout(
+        depth_query_count=8,
+        uvd_points_per_hand=4,
+        hand_count=1,
+        landmark_count=3,
+    )
+
+    assert layout.uvd_token_count == 4
+    assert layout.output_point_count == 12
+    assert layout.geometry_token_count == 20
+    assert layout.geometry_uvd_slice == slice(16, 20)
+
+
+@pytest.mark.parametrize("hand_count", [0, 3])
+def test_layout_rejects_hand_counts_outside_single_or_bilateral(hand_count):
+    with pytest.raises(ValueError, match="one or two"):
+        HandConfigurationTokenLayout(
+            depth_query_count=1,
+            uvd_points_per_hand=2,
+            hand_count=hand_count,
+        )
 
 
 def test_time_major_ids_match_lrw_order_within_each_hand_token():
@@ -102,6 +140,32 @@ def test_packer_flattens_time_hand_landmark_and_pads_only_as_invalid():
     assert packed.times[0, :12].tolist() == [0.25] * 6 + [0.75] * 6
     assert packed.hand_ids[0].tolist() == [0, 0, 0, 1, 1, 1] * 3
     assert packed.landmark_ids[0].tolist() == [0, 1, 2, 0, 1, 2] * 3
+
+
+def test_packer_accepts_single_hand_lrw_targets_in_time_major_order():
+    layout = HandConfigurationTokenLayout(
+        depth_query_count=1,
+        uvd_points_per_hand=2,
+        hand_count=1,
+    )
+
+    packed = pack_hand_lrw_targets_time_major(
+        [_single_hand_example()], layout, device=torch.device("cpu")
+    )
+
+    assert packed.target.shape == (1, 6, 3)
+    assert packed.target[0].tolist() == [
+        [0, 1, 2],
+        [1, 2, 3],
+        [2, 3, 4],
+        [100, 101, 102],
+        [101, 102, 103],
+        [102, 103, 104],
+    ]
+    assert packed.valid[0].tolist() == [True, True, True, True, True, False]
+    assert packed.times[0].tolist() == [0.25] * 3 + [0.75] * 3
+    assert packed.hand_ids[0].tolist() == [0, 0, 0] * 2
+    assert packed.landmark_ids[0].tolist() == [0, 1, 2] * 2
 
 
 @pytest.mark.parametrize(

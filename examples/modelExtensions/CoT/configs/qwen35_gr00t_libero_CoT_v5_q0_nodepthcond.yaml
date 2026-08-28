@@ -1,0 +1,100 @@
+run_id: qwen35_gr00t_libero_CoT_v5_q0_nodepthcond_lrw_8gpu_bs16
+run_root_dir: /root/data/yxz/outputs
+seed: 42
+wandb_entity: yao-xian-ze
+wandb_project: CoT
+is_debug: false
+version_id: '0.21'
+framework:
+  name: QwenGR00TCoTV5
+  qwenvl:
+    base_vlm: /root/data/yxz/models/Qwen3.5-4B
+    attn_implementation: flash_attention_2
+  action_model:
+    action_model_type: DiT-B
+    hidden_size: 1024
+    add_pos_embed: true
+    max_seq_len: 1024
+    action_dim: 7
+    state_dim: 7
+    action_horizon: 8
+    repeated_diffusion_steps: 8
+    noise_beta_alpha: 1.5
+    noise_beta_beta: 1.0
+    noise_s: 0.999
+    num_timestep_buckets: 1000
+    num_inference_timesteps: 4
+    num_target_vision_tokens: 0
+    diffusion_model_cfg:
+      dropout: 0.2
+      final_dropout: true
+      interleave_self_attention: true
+      norm_type: ada_norm
+      num_layers: 16
+      output_dim: 1024
+      positional_embeddings: null
+  geometry:
+    depth_query_count: 8
+    # Keep depth prediction as auxiliary spatial supervision, but condition the
+    # action expert only on native Qwen states and four compact UVD time states.
+    include_depth_in_action_condition: false
+    full_attention_backend: sdpa
+    uvd_num_points: 4
+    uvd_hand_count: 1
+    landmark_count: 3
+    uvd_depth_scale: 1.0
+    depth_decoder_features: 256
+    depth_decoder_stages: 3
+    depth_output_size: 224
+    lambda_action: 1.0
+    lambda_depth_current: 0.14
+    lambda_depth_future: 0.15
+    lambda_uvd: 0.62
+    lambda_uvd_temporal: 0.1
+    lambda_uvd_shape: 0.0
+datasets:
+  vla_data:
+    dataset_py: libero_v5_lerobot_datasets
+    data_root_dir: /root/data/yxz/datasets/libero_rerender
+    data_mix: libero_cot_all
+    CoT_prompt: "Your task is {instruction}. To identify the key objects for your task. Locate their bounding boxes in [x1,y1,x2,y2] format."
+    per_device_batch_size: 16
+    video_backend: torchvision_av
+    num_workers: 4
+    persistent_workers: true
+    prefetch_factor: 2
+    include_state: false
+    cot_geometry:
+      action_horizon: 8
+      # Four sampled times; each time token jointly decodes physical [L,R,W].
+      uvd_num_points: 4
+      image_size: 224
+      uvd_depth_scale: 1.0
+      episode_cache_size: 1
+trainer:
+  max_train_steps: 60000
+  num_warmup_steps: 5000
+  save_interval: 10000
+  eval_interval: 100
+  learning_rate:
+    base: 2.5e-05
+    qwen_vl_interface: 1.0e-05
+    action_model: 0.0001
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 1.0e-06
+  freeze_modules: ''
+  gradient_clipping: 1.0
+  logging_frequency: 10
+  gradient_accumulation_steps: 1
+  test_diagnostics:
+    enabled: true
+    log_module_gradients: true
+    module_gradient_interval: 100
+    log_token_utilization: true
+    log_decoder_reliance: true
+    log_uvd_time_metrics: true
+  optimizer:
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 1.0e-08
