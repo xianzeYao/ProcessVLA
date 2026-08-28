@@ -171,6 +171,7 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
         self._cot_data_cfg = data_cfg or {}
         cache_size = int(self._cot_option("episode_cache_size", 1))
         self._cot_cache = _EpisodeGeometryCache(cache_size)
+        self._cot_wrist_depth_cache = _EpisodeGeometryCache(cache_size)
         self._cot_current_trajectory_id: int | None = None
         self._cot_current_base_index: int | None = None
         super().__init__(*args, data_cfg=data_cfg, **kwargs)
@@ -208,6 +209,44 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
         self._cot_cache.put(trajectory_id, episode_geometry)
         return episode_geometry
 
+    def _reconstruct_wrist_depth(self) -> bool:
+        enabled = self._cot_option("reconstruct_wrist_depth", False)
+        if not isinstance(enabled, bool):
+            raise ValueError(
+                "reconstruct_wrist_depth must be a boolean, "
+                f"got {enabled!r}"
+            )
+        return enabled
+
+    def _load_episode_wrist_depth(self, trajectory_id: int) -> np.ndarray:
+        cache = getattr(self, "_cot_wrist_depth_cache", None)
+        if cache is None:
+            cache = _EpisodeGeometryCache(
+                int(self._cot_option("episode_cache_size", 1))
+            )
+            self._cot_wrist_depth_cache = cache
+        cached = cache.get(trajectory_id)
+        if cached is not None:
+            return cached
+        if self.curr_traj_data is None:
+            raise RuntimeError("trajectory data is not loaded")
+        key = "observation.depth.wrist_m_path"
+        if key not in self.curr_traj_data.columns:
+            raise KeyError(
+                f"{key!r} is required when reconstruct_wrist_depth is enabled"
+            )
+        wrist_depth = _read_npz_array(
+            self.dataset_path / str(self.curr_traj_data.iloc[0][key]),
+            "depth_m",
+        )
+        if wrist_depth.ndim != 3:
+            raise ValueError(
+                "wrist depth must have shape [T,H,W], "
+                f"got {wrist_depth.shape}"
+            )
+        cache.put(trajectory_id, wrist_depth)
+        return wrist_depth
+
     def _geometry_targets(self) -> dict[str, np.ndarray]:
         if self._cot_current_trajectory_id is None or self._cot_current_base_index is None:
             raise RuntimeError("CoT dataset sample position is not initialized")
@@ -217,6 +256,14 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
         depth, eef_uvd, eef_valid, _ = self._load_episode_geometry(trajectory_id)
         if len(depth) == 0:
             raise RuntimeError(f"trajectory {trajectory_id} has no depth frames")
+        wrist_depth = None
+        if self._reconstruct_wrist_depth():
+            wrist_depth = self._load_episode_wrist_depth(trajectory_id)
+            if len(wrist_depth) != len(depth):
+                raise ValueError(
+                    "wrist and agent depth frame counts differ: "
+                    f"wrist={len(wrist_depth)}, agent={len(depth)}"
+                )
         base_index = min(base_index, len(depth) - 1)
         future_index = min(base_index + horizon, len(depth) - 1)
         k = int(self._cot_option("uvd_num_points", int(np.floor(0.3 * horizon)) + 2))
@@ -254,7 +301,7 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
         boundary_clamp = np.asarray(boundary_clamp, dtype=np.bool_) & valid
         effective_horizon = max(future_index - base_index, 1)
         uvd_time = ((sample_indices - base_index) / float(effective_horizon)).astype(np.float32)
-        return {
+        targets = {
             "depth_current": current_depth[None].astype(np.float32),
             "depth_future": future_depth[None].astype(np.float32),
             "depth_current_valid": current_valid[None].astype(np.bool_),
@@ -267,6 +314,26 @@ class CoTLeRobotSingleDataset(LeRobotSingleDataset):
             "uvd_time": uvd_time,
             "uvd_endpoint_indices": np.asarray([0, len(sample_indices) - 1], dtype=np.int64),
         }
+        if wrist_depth is not None:
+            wrist_current = wrist_depth[base_index]
+            wrist_future = wrist_depth[future_index]
+            wrist_current_valid = np.isfinite(wrist_current) & (wrist_current > 0.0)
+            wrist_future_valid = np.isfinite(wrist_future) & (wrist_future > 0.0)
+            wrist_current, wrist_current_valid = _resize_depth(
+                wrist_current, wrist_current_valid, target_hw
+            )
+            wrist_future, wrist_future_valid = _resize_depth(
+                wrist_future, wrist_future_valid, target_hw
+            )
+            targets.update(
+                {
+                    "wrist_depth_current": wrist_current[None].astype(np.float32),
+                    "wrist_depth_future": wrist_future[None].astype(np.float32),
+                    "wrist_depth_current_valid": wrist_current_valid[None].astype(np.bool_),
+                    "wrist_depth_future_valid": wrist_future_valid[None].astype(np.bool_),
+                }
+            )
+        return targets
 
     def _pack_sample(self, data: dict) -> dict:
         sample = super()._pack_sample(data)

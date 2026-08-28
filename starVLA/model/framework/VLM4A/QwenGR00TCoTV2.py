@@ -186,6 +186,10 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             geometry.get("include_depth_in_action_condition", False),
             name="include_depth_in_action_condition",
         )
+        self.reconstruct_wrist_depth = _require_boolean_option(
+            geometry.get("reconstruct_wrist_depth", False),
+            name="reconstruct_wrist_depth",
+        )
         hidden_dim = int(self.qwen_vl_interface.model.config.hidden_size)
         points_per_hand = geometry.get("uvd_num_points", None)
         if points_per_hand is None:
@@ -199,10 +203,21 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         self.uvd_token_order = "time_major"
         self.geometry_tokens = GeometryTokenEmbedding(hidden_dim=hidden_dim, layout=self.geometry_layout)
         self.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=hidden_dim)
+        depth_decoder_features = int(geometry.get("depth_decoder_features", 256))
+        depth_decoder_stages = int(geometry.get("depth_decoder_stages", 3))
         self.depth_decoder = SharedFiLMConvStack(
             hidden_dim=hidden_dim,
-            features=int(geometry.get("depth_decoder_features", 256)),
-            stage_count=int(geometry.get("depth_decoder_stages", 3)),
+            features=depth_decoder_features,
+            stage_count=depth_decoder_stages,
+        )
+        self.wrist_depth_decoder = (
+            SharedFiLMConvStack(
+                hidden_dim=hidden_dim,
+                features=depth_decoder_features,
+                stage_count=depth_decoder_stages,
+            )
+            if self.reconstruct_wrist_depth
+            else None
         )
         self.uvd_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
@@ -214,6 +229,12 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         self.lambda_action = float(geometry.get("lambda_action", 1.0))
         self.lambda_depth_current = float(geometry.get("lambda_depth_current", 0.14))
         self.lambda_depth_future = float(geometry.get("lambda_depth_future", 0.15))
+        self.lambda_wrist_depth_current = float(
+            geometry.get("lambda_wrist_depth_current", self.lambda_depth_current)
+        )
+        self.lambda_wrist_depth_future = float(
+            geometry.get("lambda_wrist_depth_future", self.lambda_depth_future)
+        )
         self.lambda_uvd = float(geometry.get("lambda_uvd", 0.62))
         self.lambda_uvd_relative = float(geometry.get("lambda_uvd_relative", 0.1))
 
@@ -554,21 +575,60 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             native_token_count=native_token_count,
         )
 
+    def _image_tokens(
+        self,
+        native_hidden: torch.Tensor,
+        input_ids: torch.Tensor,
+        *,
+        view_index: int,
+        view_name: str,
+    ) -> tuple[torch.Tensor, tuple[int, int]]:
+        view_index = int(view_index)
+        if view_index < 0:
+            raise ValueError(f"view_index must be non-negative, got {view_index}")
+        image_token_id = int(self.qwen_vl_interface.model.config.image_token_id)
+        runs = [_extract_contiguous_runs(row, image_token_id) for row in input_ids]
+        if not runs or any(len(sample_runs) <= view_index for sample_runs in runs):
+            counts = [len(sample_runs) for sample_runs in runs]
+            raise RuntimeError(
+                f"Qwen3.5 output lacks {view_name} image-token span at index "
+                f"{view_index}; per-sample spans={counts}"
+            )
+        selected = [sample_runs[view_index] for sample_runs in runs]
+        lengths = [int(run.numel()) for run in selected]
+        if len(set(lengths)) != 1:
+            raise RuntimeError(
+                f"batched {view_name} image token lengths differ: {lengths}"
+            )
+        positions = torch.stack(selected, dim=0).to(native_hidden.device)
+        batch_indices = torch.arange(
+            native_hidden.shape[0], device=native_hidden.device
+        )[:, None]
+        return native_hidden[batch_indices, positions], _infer_patch_hw(lengths[0])
+
     def _main_image_tokens(
         self,
         native_hidden: torch.Tensor,
         input_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, tuple[int, int]]:
-        image_token_id = int(self.qwen_vl_interface.model.config.image_token_id)
-        runs = [_extract_contiguous_runs(row, image_token_id) for row in input_ids]
-        if not runs or any(len(sample_runs) == 0 for sample_runs in runs):
-            raise RuntimeError("Qwen3.5 output contains no image-token span")
-        lengths = [int(sample_runs[0].numel()) for sample_runs in runs]
-        if len(set(lengths)) != 1:
-            raise RuntimeError(f"batched main image token lengths differ: {lengths}")
-        positions = torch.stack([sample_runs[0] for sample_runs in runs], dim=0).to(native_hidden.device)
-        batch_indices = torch.arange(native_hidden.shape[0], device=native_hidden.device)[:, None]
-        return native_hidden[batch_indices, positions], _infer_patch_hw(lengths[0])
+        return self._image_tokens(
+            native_hidden,
+            input_ids,
+            view_index=0,
+            view_name="main",
+        )
+
+    def _wrist_image_tokens(
+        self,
+        native_hidden: torch.Tensor,
+        input_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, tuple[int, int]]:
+        return self._image_tokens(
+            native_hidden,
+            input_ids,
+            view_index=1,
+            view_name="wrist",
+        )
 
     def _predict_uvd(self, tokens: torch.Tensor) -> torch.Tensor:
         raw = self.uvd_head(_cast_to_module_dtype(tokens, self.uvd_head))
@@ -614,6 +674,67 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             ),
         )
         return depth_current, depth_future
+
+    def _decode_wrist_depth_summaries(
+        self,
+        image_tokens: torch.Tensor,
+        *,
+        patch_hw: tuple[int, int],
+        current_summary: torch.Tensor,
+        future_summary: torch.Tensor,
+        timing_callback: Callable[[str, Callable[[], Any]], Any] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        decoder = self.wrist_depth_decoder
+        if decoder is None:
+            raise RuntimeError(
+                "wrist_depth_decoder is unavailable because "
+                "reconstruct_wrist_depth is disabled"
+            )
+
+        def timed(name: str, fn: Callable[[], Any]) -> Any:
+            return timing_callback(name, fn) if timing_callback is not None else fn()
+
+        output_hw = (self.depth_output_size, self.depth_output_size)
+        wrist_current = timed(
+            "wrist_depth_current_ms",
+            lambda: decoder(
+                image_tokens,
+                patch_hw=patch_hw,
+                query=current_summary,
+                output_hw=output_hw,
+            ),
+        )
+        wrist_future = timed(
+            "wrist_depth_future_ms",
+            lambda: decoder(
+                image_tokens,
+                patch_hw=patch_hw,
+                query=future_summary,
+                output_hw=output_hw,
+            ),
+        )
+        return wrist_current, wrist_future
+
+    def _decode_wrist_depth(
+        self,
+        split: GeometryHiddenSplit,
+        qwen_inputs: dict,
+        *,
+        timing_callback: Callable[[str, Callable[[], Any]], Any] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if not bool(getattr(self, "reconstruct_wrist_depth", False)):
+            raise RuntimeError("reconstruct_wrist_depth is disabled")
+        wrist_tokens, patch_hw = self._wrist_image_tokens(
+            split.native, qwen_inputs["input_ids"]
+        )
+        current_summary, future_summary, _, _ = self._pool_depth_summaries(split)
+        return self._decode_wrist_depth_summaries(
+            wrist_tokens,
+            patch_hw=patch_hw,
+            current_summary=current_summary,
+            future_summary=future_summary,
+            timing_callback=timing_callback,
+        )
 
     def _decode_geometry(
         self,
@@ -678,6 +799,11 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         packed = self._prepare_uvd_targets(examples, qwen_inputs["input_ids"].device)
         split = self._run_geometry_backbone(qwen_inputs)
         depth_current, depth_future, uvd = self._decode_geometry(split, qwen_inputs)
+        wrist_depth = (
+            self._decode_wrist_depth(split, qwen_inputs)
+            if bool(getattr(self, "reconstruct_wrist_depth", False))
+            else None
+        )
         condition, condition_mask = self._build_action_condition(
             split,
             native_attention_mask=native_attention_mask,
@@ -690,6 +816,33 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         depth_future_valid = torch.as_tensor(np.stack([x["depth_future_valid"] for x in examples]), device=device)
         depth_current_loss = masked_smooth_l1_loss(depth_current, depth_current_target, depth_current_valid)
         depth_future_loss = masked_smooth_l1_loss(depth_future, depth_future_target, depth_future_valid)
+        wrist_losses: dict[str, torch.Tensor] = {}
+        if wrist_depth is not None:
+            wrist_current, wrist_future = wrist_depth
+            wrist_current_target = torch.as_tensor(
+                np.stack([x["wrist_depth_current"] for x in examples]),
+                device=device,
+            )
+            wrist_future_target = torch.as_tensor(
+                np.stack([x["wrist_depth_future"] for x in examples]),
+                device=device,
+            )
+            wrist_current_valid = torch.as_tensor(
+                np.stack([x["wrist_depth_current_valid"] for x in examples]),
+                device=device,
+            )
+            wrist_future_valid = torch.as_tensor(
+                np.stack([x["wrist_depth_future_valid"] for x in examples]),
+                device=device,
+            )
+            wrist_losses = {
+                "wrist_depth_current_loss": masked_smooth_l1_loss(
+                    wrist_current, wrist_current_target, wrist_current_valid
+                ),
+                "wrist_depth_future_loss": masked_smooth_l1_loss(
+                    wrist_future, wrist_future_target, wrist_future_valid
+                ),
+            }
         uvd_losses = self._compute_uvd_losses(uvd, packed)
         uvd_loss = uvd_losses["total"]
         total_loss = aggregate_cot_total_loss(
@@ -702,7 +855,15 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             lambda_depth_future=self.lambda_depth_future,
             lambda_uvd=self.lambda_uvd,
         )
-        return {
+        if wrist_losses:
+            total_loss = (
+                total_loss
+                + self.lambda_wrist_depth_current
+                * wrist_losses["wrist_depth_current_loss"]
+                + self.lambda_wrist_depth_future
+                * wrist_losses["wrist_depth_future_loss"]
+            )
+        output = {
             "action_loss": action_loss,
             "depth_current_loss": depth_current_loss,
             "depth_future_loss": depth_future_loss,
@@ -711,6 +872,8 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             "uvd_relative_loss": uvd_losses["relative"],
             "total_loss": total_loss,
         }
+        output.update(wrist_losses)
+        return output
 
     @torch.inference_mode()
     def predict_geometry(self, examples: List[dict]) -> dict[str, torch.Tensor]:
@@ -719,7 +882,22 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         qwen_inputs, _ = self._build_native_inputs(examples, inference=True)
         split = self._run_geometry_backbone(qwen_inputs)
         depth_current, depth_future, uvd = self._decode_geometry(split, qwen_inputs)
-        return {"depth_current": depth_current, "depth_future": depth_future, "uvd": uvd}
+        output = {
+            "depth_current": depth_current,
+            "depth_future": depth_future,
+            "uvd": uvd,
+        }
+        if bool(getattr(self, "reconstruct_wrist_depth", False)):
+            wrist_current, wrist_future = self._decode_wrist_depth(
+                split, qwen_inputs
+            )
+            output.update(
+                {
+                    "wrist_depth_current": wrist_current,
+                    "wrist_depth_future": wrist_future,
+                }
+            )
+        return output
 
     @torch.inference_mode()
     def predict_geometry_diagnostics(

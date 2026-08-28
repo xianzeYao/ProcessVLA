@@ -660,6 +660,138 @@ def test_geometry_backbone_api_cannot_accept_ground_truth_times_or_validity():
     assert list(parameters) == ["self", "qwen_inputs"]
 
 
+def test_v2_forward_adds_optional_wrist_losses_without_depth_in_action_condition():
+    model = make_uninitialized_model(
+        depth_queries=1, points=2, hands=1, include_depth=False
+    )
+    torch.nn.Module.__init__(model)
+    model.reconstruct_wrist_depth = True
+    model.lambda_action = 1.0
+    model.lambda_depth_current = 0.07
+    model.lambda_depth_future = 0.075
+    model.lambda_wrist_depth_current = 0.07
+    model.lambda_wrist_depth_future = 0.075
+    model.lambda_uvd = 0.62
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 4),
+        depth_current=torch.ones(1, 1, 4),
+        depth_future=torch.ones(1, 1, 4),
+        uvd=torch.zeros(1, 2, 4),
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._prepare_uvd_targets = MethodType(
+        lambda self, examples, device: None, model
+    )
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+    model._decode_geometry = MethodType(
+        lambda self, hidden, inputs: (
+            torch.zeros(1, 1, 2, 2),
+            torch.zeros(1, 1, 2, 2),
+            torch.zeros(1, 2, 3),
+        ),
+        model,
+    )
+    model._decode_wrist_depth = MethodType(
+        lambda self, hidden, inputs: (
+            torch.zeros(1, 1, 2, 2),
+            torch.zeros(1, 1, 2, 2),
+        ),
+        model,
+    )
+    model._compute_uvd_losses = MethodType(
+        lambda self, pred, packed: {
+            "absolute": torch.tensor(0.0),
+            "relative": torch.tensor(0.0),
+            "total": torch.tensor(0.0),
+        },
+        model,
+    )
+    observed = {}
+
+    def action_loss(self, condition, condition_mask, examples):
+        observed["condition_length"] = int(condition.shape[1])
+        return torch.tensor(2.0)
+
+    model._action_loss = MethodType(action_loss, model)
+    example = {
+        "depth_current": np.zeros((1, 2, 2), dtype=np.float32),
+        "depth_future": np.zeros((1, 2, 2), dtype=np.float32),
+        "depth_current_valid": np.ones((1, 2, 2), dtype=np.bool_),
+        "depth_future_valid": np.ones((1, 2, 2), dtype=np.bool_),
+        "wrist_depth_current": np.ones((1, 2, 2), dtype=np.float32),
+        "wrist_depth_future": np.full((1, 2, 2), 2.0, dtype=np.float32),
+        "wrist_depth_current_valid": np.ones((1, 2, 2), dtype=np.bool_),
+        "wrist_depth_future_valid": np.ones((1, 2, 2), dtype=np.bool_),
+    }
+
+    output = model.forward([example])
+
+    assert observed["condition_length"] == 4
+    torch.testing.assert_close(
+        output["wrist_depth_current_loss"], torch.tensor(0.5)
+    )
+    torch.testing.assert_close(
+        output["wrist_depth_future_loss"], torch.tensor(1.5)
+    )
+    torch.testing.assert_close(
+        output["total_loss"], torch.tensor(2.0 + 0.07 * 0.5 + 0.075 * 1.5)
+    )
+
+
+def test_predict_geometry_returns_optional_wrist_depth_maps():
+    model = make_uninitialized_model(depth_queries=1, points=2, hands=1)
+    model.reconstruct_wrist_depth = True
+    qwen_inputs = {"input_ids": torch.ones(1, 2, dtype=torch.long)}
+    split = model._split_geometry_hidden(
+        torch.arange(6, dtype=torch.float32).view(1, 6, 1),
+        native_token_count=2,
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            qwen_inputs, torch.ones(1, 2, dtype=torch.bool)
+        ),
+        model,
+    )
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+    model._decode_geometry = MethodType(
+        lambda self, hidden, inputs: (
+            torch.ones(1, 1, 2, 2),
+            torch.full((1, 1, 2, 2), 2.0),
+            torch.ones(1, 2, 3),
+        ),
+        model,
+    )
+    model._decode_wrist_depth = MethodType(
+        lambda self, hidden, inputs: (
+            torch.full((1, 1, 2, 2), 3.0),
+            torch.full((1, 1, 2, 2), 4.0),
+        ),
+        model,
+    )
+
+    output = model.predict_geometry([{"image": [], "lang": "move"}])
+
+    assert set(output) == {
+        "depth_current",
+        "depth_future",
+        "wrist_depth_current",
+        "wrist_depth_future",
+        "uvd",
+    }
+    torch.testing.assert_close(
+        output["wrist_depth_current"], torch.full((1, 1, 2, 2), 3.0)
+    )
+    torch.testing.assert_close(
+        output["wrist_depth_future"], torch.full((1, 1, 2, 2), 4.0)
+    )
+
+
 def test_predict_geometry_does_not_require_ground_truth_uvd_fields():
     model = make_uninitialized_model(depth_queries=1, points=2, hands=1)
     qwen_inputs = {"input_ids": torch.ones(1, 2, dtype=torch.long)}
@@ -724,11 +856,60 @@ def test_partial_reload_cannot_bypass_old_v2_checkpoint_rejection(tmp_path):
 class _CountingDepthDecoder(torch.nn.Module):
     def __init__(self):
         super().__init__()
+        self.image_tokens = []
         self.queries = []
 
     def forward(self, image_tokens, *, patch_hw, query, output_hw):
+        self.image_tokens.append(image_tokens.detach().clone())
         self.queries.append(query.detach().clone())
         return query[:, :1, None, None].expand(-1, 1, *output_hw)
+
+
+def test_wrist_decoder_uses_second_image_span_and_shared_temporal_summaries():
+    model = make_uninitialized_model(depth_queries=2, points=2, hands=1)
+    torch.nn.Module.__init__(model)
+    model.reconstruct_wrist_depth = True
+    model.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=2)
+    with torch.no_grad():
+        model.depth_attention_pool.score.weight.zero_()
+    model.wrist_depth_decoder = _CountingDepthDecoder()
+    model.depth_output_size = 2
+    model.qwen_vl_interface = SimpleNamespace(
+        model=SimpleNamespace(config=SimpleNamespace(image_token_id=99))
+    )
+    native_hidden = torch.tensor(
+        [[[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [0.0, 0.0],
+          [20.0, 20.0], [21.0, 21.0], [0.0, 0.0]]]
+    )
+    input_ids = torch.tensor([[1, 99, 99, 2, 99, 99, 3]])
+    split = GeometryHiddenSplit(
+        native=native_hidden,
+        depth_current=torch.tensor([[[1.0, 0.0], [3.0, 0.0]]]),
+        depth_future=torch.tensor([[[10.0, 0.0], [14.0, 0.0]]]),
+        uvd=torch.zeros(1, 2, 2),
+    )
+
+    wrist_current, wrist_future = model._decode_wrist_depth(
+        split, {"input_ids": input_ids}
+    )
+
+    assert len(model.wrist_depth_decoder.image_tokens) == 2
+    torch.testing.assert_close(
+        model.wrist_depth_decoder.image_tokens[0],
+        torch.tensor([[[20.0, 20.0], [21.0, 21.0]]]),
+    )
+    torch.testing.assert_close(
+        model.wrist_depth_decoder.image_tokens[1],
+        model.wrist_depth_decoder.image_tokens[0],
+    )
+    torch.testing.assert_close(
+        model.wrist_depth_decoder.queries[0], torch.tensor([[2.0, 0.0]])
+    )
+    torch.testing.assert_close(
+        model.wrist_depth_decoder.queries[1], torch.tensor([[12.0, 0.0]])
+    )
+    assert wrist_current.shape == (1, 1, 2, 2)
+    assert wrist_future.shape == (1, 1, 2, 2)
 
 
 def make_diagnostic_model():

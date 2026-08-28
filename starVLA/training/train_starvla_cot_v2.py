@@ -24,7 +24,36 @@ from starVLA.training.trainer_utils.config_tracker import wrap_config
 
 
 class CotV2Trainer(CotV1Trainer):
-    """Reuse the established CoT lifecycle with the independent V2 framework."""
+    """Reuse the CoT lifecycle and log optional V2 wrist-depth objectives."""
+
+    def _extra_objective_metrics(
+        self,
+        output_dict,
+    ) -> tuple[dict[str, float], float]:
+        keys = (
+            "wrist_depth_current_loss",
+            "wrist_depth_future_loss",
+        )
+        present = [key in output_dict for key in keys]
+        if not any(present):
+            return {}, 0.0
+        if not all(present):
+            missing = [key for key in keys if key not in output_dict]
+            raise KeyError(f"incomplete wrist-depth objective: missing {missing}")
+
+        current = output_dict["wrist_depth_current_loss"].item()
+        future = output_dict["wrist_depth_future_loss"].item()
+        weighted_current = self.model.lambda_wrist_depth_current * current
+        weighted_future = self.model.lambda_wrist_depth_future * future
+        return (
+            {
+                "wrist_depth_current_loss": current,
+                "wrist_depth_future_loss": future,
+                "weighted_wrist_depth_current_loss": weighted_current,
+                "weighted_wrist_depth_future_loss": weighted_future,
+            },
+            weighted_current + weighted_future,
+        )
 
 
 def main(cfg) -> None:

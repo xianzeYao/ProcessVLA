@@ -7,6 +7,7 @@ from torch import nn
 
 import starVLA.training.train_starvla_cot_v1 as cot_trainer_module
 from starVLA.training.train_starvla_cot_v1 import CotV1Trainer
+from starVLA.training.train_starvla_cot_v2 import CotV2Trainer
 
 
 class _FourLossModel(nn.Module):
@@ -64,6 +65,24 @@ class _V2LossModel(_FourLossModel):
             "uvd_relative_loss": uvd_relative,
             "total_loss": total,
         }
+
+
+class _WristDepthLossModel(_V2LossModel):
+    lambda_wrist_depth_current = 0.07
+    lambda_wrist_depth_future = 0.075
+
+    def forward(self, examples):
+        output = super().forward(examples)
+        wrist_current = 0.75 * self.scale.square()
+        wrist_future = 0.5 * self.scale.square()
+        output["wrist_depth_current_loss"] = wrist_current
+        output["wrist_depth_future_loss"] = wrist_future
+        output["total_loss"] = (
+            output["total_loss"]
+            + self.lambda_wrist_depth_current * wrist_current
+            + self.lambda_wrist_depth_future * wrist_future
+        )
+        return output
 
 
 class _V3LossModel(_FourLossModel):
@@ -171,6 +190,41 @@ def test_cot_trainer_logs_v2_uvd_absolute_and_relative_components():
     assert metrics["uvd_loss"] == pytest.approx(0.15)
     assert metrics["weighted_uvd_absolute_loss"] == pytest.approx(0.62 * 0.125)
     assert metrics["weighted_uvd_relative_loss"] == pytest.approx(0.62 * 0.1 * 0.25)
+
+
+def test_v2_trainer_logs_both_weighted_wrist_depth_losses():
+    model = _WristDepthLossModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    config = OmegaConf.create(
+        {
+            "datasets": {"vla_data": {"per_device_batch_size": 1}},
+            "trainer": {
+                "gradient_clipping": 1.0,
+                "test_diagnostics": {
+                    "enabled": False,
+                    "log_module_gradients": False,
+                },
+            },
+        }
+    )
+    trainer = CotV2Trainer(
+        config, model, [], optimizer, _Scheduler(), _Accelerator()
+    )
+
+    metrics = trainer._train_step([])
+
+    assert metrics["wrist_depth_current_loss"] == pytest.approx(0.75)
+    assert metrics["wrist_depth_future_loss"] == pytest.approx(0.5)
+    assert metrics["weighted_wrist_depth_current_loss"] == pytest.approx(
+        0.07 * 0.75
+    )
+    assert metrics["weighted_wrist_depth_future_loss"] == pytest.approx(
+        0.075 * 0.5
+    )
+    expected_base_aux = 0.14 * 0.5 + 0.15 * 0.25 + 0.62 * 0.15
+    assert metrics["weighted_aux_loss"] == pytest.approx(
+        expected_base_aux + 0.07 * 0.75 + 0.075 * 0.5
+    )
 
 
 def test_cot_trainer_logs_v3_uvd_temporal_and_shape_components():

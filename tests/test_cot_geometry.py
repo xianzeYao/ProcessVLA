@@ -1,11 +1,16 @@
 
 import inspect
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import MethodType
 
 import numpy as np
+import pandas as pd
 import starVLA.dataloader.gr00t_lerobot.cot_geometry as cot_geometry_module
 
 from starVLA.dataloader.gr00t_lerobot.cot_geometry import (
+    CoTLeRobotSingleDataset,
     _EpisodeGeometryCache,
     project_eef_to_agentview_uvd,
     sample_real_uvd_indices,
@@ -56,6 +61,76 @@ class CotGeometryTest(unittest.TestCase):
         cache.put(1, payload)
 
         self.assertEqual(cache.get(1)[0].dtype, np.float16)
+
+    def test_optional_wrist_depth_targets_use_current_and_future_episode_frames(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wrist_depth = np.asarray(
+                [
+                    [[2.0, 0.0], [np.nan, 4.0]],
+                    [[6.0, 7.0], [8.0, 9.0]],
+                    [[10.0, 11.0], [12.0, 13.0]],
+                ],
+                dtype=np.float32,
+            )
+            np.savez_compressed(root / "wrist_depth.npz", depth_m=wrist_depth)
+            dataset = CoTLeRobotSingleDataset.__new__(CoTLeRobotSingleDataset)
+            dataset._dataset_path = root
+            dataset.curr_traj_data = pd.DataFrame(
+                {
+                    "observation.depth.wrist_m_path": ["wrist_depth.npz"] * 3,
+                }
+            )
+            dataset._cot_current_trajectory_id = 7
+            dataset._cot_current_base_index = 0
+            dataset._cot_data_cfg = {
+                "cot_geometry": {
+                    "action_horizon": 1,
+                    "uvd_num_points": 2,
+                    "image_size": 2,
+                    "uvd_depth_scale": 1.0,
+                    "episode_cache_size": 1,
+                    "reconstruct_wrist_depth": True,
+                }
+            }
+            dataset._cot_wrist_depth_cache = _EpisodeGeometryCache(1)
+            agent_depth = np.ones((3, 2, 2), dtype=np.float32)
+            eef_uvd = np.asarray(
+                [[0.0, 0.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
+                dtype=np.float32,
+            )
+            dataset._load_episode_geometry = MethodType(
+                lambda self, trajectory_id: (
+                    agent_depth,
+                    eef_uvd,
+                    np.ones(3, dtype=np.bool_),
+                    np.zeros((3, 7), dtype=np.float32),
+                ),
+                dataset,
+            )
+
+            targets = dataset._geometry_targets()
+
+        self.assertIn("wrist_depth_current", targets)
+        self.assertIn("wrist_depth_future", targets)
+        self.assertEqual(targets["wrist_depth_current"].shape, (1, 2, 2))
+        self.assertEqual(targets["wrist_depth_future"].shape, (1, 2, 2))
+        np.testing.assert_allclose(
+            targets["wrist_depth_current"],
+            [[[2.0, 0.0], [0.0, 4.0]]],
+        )
+        np.testing.assert_allclose(
+            targets["wrist_depth_future"],
+            [[[6.0, 7.0], [8.0, 9.0]]],
+        )
+        np.testing.assert_array_equal(
+            targets["wrist_depth_current_valid"],
+            [[[True, False], [False, True]]],
+        )
+        np.testing.assert_array_equal(
+            targets["wrist_depth_future_valid"],
+            np.ones((1, 2, 2), dtype=np.bool_),
+        )
 
     def test_project_world_eef_to_camera_uvd_uses_camera_z_depth(self):
         k = np.array([[100.0, 0.0, 32.0], [0.0, 100.0, 16.0], [0.0, 0.0, 1.0]], dtype=np.float32)

@@ -133,3 +133,68 @@ def test_libero_q0_depth_condition_config_changes_only_the_condition_inputs():
 
     depth_condition["run_id"] = baseline["run_id"]
     assert depth_condition == baseline
+
+def test_libero_q32_wrist_depth_config_keeps_depth_out_of_action_expert():
+    config_path = (
+        ROOT
+        / "examples/modelExtensions/CoT/configs"
+        / "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_wristdepth.yaml"
+    )
+    assert config_path.exists(), f"missing wrist-depth config: {config_path}"
+    cfg = OmegaConf.load(config_path)
+
+    assert cfg.run_id == (
+        "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_wristdepth_8gpu_bs16"
+    )
+    assert cfg.framework.name == "QwenGR00TCoTV2"
+    assert cfg.framework.action_model.num_target_vision_tokens == 32
+    assert cfg.framework.geometry.include_depth_in_action_condition is False
+    assert cfg.framework.geometry.reconstruct_wrist_depth is True
+    depth_weights = (
+        cfg.framework.geometry.lambda_depth_current,
+        cfg.framework.geometry.lambda_depth_future,
+        cfg.framework.geometry.lambda_wrist_depth_current,
+        cfg.framework.geometry.lambda_wrist_depth_future,
+    )
+    assert depth_weights == (0.0725,) * 4
+    assert sum(depth_weights) == 0.29
+    assert cfg.datasets.vla_data.dataset_py == "cot_lerobot_datasets"
+    assert cfg.datasets.vla_data.cot_geometry.reconstruct_wrist_depth is True
+    assert cfg.trainer.max_train_steps == 60000
+
+
+def test_libero_q32_wrist_depth_launcher_dry_run_uses_v2_trainer():
+    script = (
+        ROOT
+        / "examples/modelExtensions/CoT/scripts"
+        / "run_qwen35_gr00t_libero_CoT_v2_q32_wristdepth.sh"
+    )
+    assert script.exists(), f"missing wrist-depth launcher: {script}"
+    result = subprocess.run(
+        ["bash", str(script), "--trainer.max_train_steps=7"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "DRY_RUN": "1",
+            "NUM_PROCESSES": "8",
+            "MAIN_PROCESS_PORT": "29539",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "starVLA/training/train_starvla_cot_v2.py" in result.stdout
+    assert (
+        "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_wristdepth.yaml"
+        in result.stdout
+    )
+    assert (
+        "--run_id "
+        "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_wristdepth_8gpu_bs16"
+        in result.stdout
+    )
+    assert "--num_processes 8" in result.stdout
+    assert "--main_process_port 29539" in result.stdout
+    assert "--trainer.max_train_steps=7" in result.stdout

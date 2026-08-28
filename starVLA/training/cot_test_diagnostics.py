@@ -205,6 +205,8 @@ def collect_batch_valid_ratios(examples: list[dict]) -> dict[str, float]:
     for key, name in (
         ("depth_current_valid", "data/depth_current_valid_ratio"),
         ("depth_future_valid", "data/depth_future_valid_ratio"),
+        ("wrist_depth_current_valid", "data/wrist_depth_current_valid_ratio"),
+        ("wrist_depth_future_valid", "data/wrist_depth_future_valid_ratio"),
         ("uvd_valid_mask", "data/uvd_valid_ratio"),
         ("uvd_out_of_frame_mask", "data/uvd_out_of_frame_ratio"),
         ("uvd_boundary_clamp_mask", "data/uvd_boundary_clamp_ratio"),

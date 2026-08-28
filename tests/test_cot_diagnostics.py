@@ -199,6 +199,8 @@ class CotDiagnosticsTest(unittest.TestCase):
     def test_batch_diagnostics_report_uvd_boundary_reasons(self):
         examples = [
             {
+                "wrist_depth_current_valid": np.asarray([[True, False]]),
+                "wrist_depth_future_valid": np.asarray([[True, True]]),
                 "uvd_valid_mask": np.asarray([True, False, True]),
                 "uvd_out_of_frame_mask": np.asarray([False, True, False]),
                 "uvd_boundary_clamp_mask": np.asarray([False, False, True]),
@@ -207,6 +209,8 @@ class CotDiagnosticsTest(unittest.TestCase):
 
         metrics = collect_batch_valid_ratios(examples)
 
+        self.assertAlmostEqual(metrics["data/wrist_depth_current_valid_ratio"], 0.5)
+        self.assertAlmostEqual(metrics["data/wrist_depth_future_valid_ratio"], 1.0)
         self.assertAlmostEqual(metrics["data/uvd_valid_ratio"], 2.0 / 3.0)
         self.assertAlmostEqual(metrics["data/uvd_out_of_frame_ratio"], 1.0 / 3.0)
         self.assertAlmostEqual(metrics["data/uvd_boundary_clamp_ratio"], 1.0 / 3.0)
