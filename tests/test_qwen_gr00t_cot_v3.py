@@ -273,31 +273,78 @@ def test_v3_predict_action_with_return_geometry_reuses_its_action_forward() -> N
     assert backbone_calls == 2
     assert decode_calls == 1
 
-def test_v2_return_geometry_has_stable_v3_only_error() -> None:
+def test_v2_predict_action_with_return_geometry_reuses_its_action_forward() -> None:
     model = Qwen_GR00T_CoT_V2.__new__(Qwen_GR00T_CoT_V2)
     model.geometry_layout = GeometryTokenLayout(
         depth_query_count=1,
         uvd_points_per_hand=2,
-        hand_count=1,
+        hand_count=2,
     )
     model.config = SimpleNamespace(
         framework=SimpleNamespace(action_model={"state_dim": 0})
     )
-    calls: list[str] = []
+    qwen_inputs = {"input_ids": torch.ones(1, 2, dtype=torch.long)}
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 4),
+        depth_current=torch.zeros(1, 1, 4),
+        depth_future=torch.zeros(1, 1, 4),
+        uvd=torch.zeros(1, 4, 4),
+    )
+    backbone_calls = 0
+    decode_calls = 0
+    expected_uvd = torch.arange(12, dtype=torch.bfloat16).reshape(1, 4, 3)
 
-    def unexpected(name: str):
-        def fail(*args, **kwargs):
-            calls.append(name)
-            pytest.fail(f"{name} must not run for a V2 geometry request")
+    def run_backbone(self, inputs):
+        nonlocal backbone_calls
+        backbone_calls += 1
+        return split
 
-        return fail
+    def decode_geometry(self, hidden, inputs, *, timing_callback=None):
+        nonlocal decode_calls
+        decode_calls += 1
+        return None, torch.ones(1, 1, 2, 2), expected_uvd
 
-    model._build_native_inputs = MethodType(unexpected("preprocess"), model)
-    model._run_geometry_backbone = MethodType(unexpected("backbone"), model)
-    model._build_action_condition = MethodType(unexpected("action_condition"), model)
-    model.action_model = SimpleNamespace(predict_action=unexpected("action_expert"))
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            qwen_inputs,
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._run_geometry_backbone = MethodType(run_backbone, model)
+    model._decode_geometry = MethodType(decode_geometry, model)
+    model._build_action_condition = MethodType(
+        lambda self, hidden, native_attention_mask: (
+            torch.zeros(1, 2, 4),
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model.action_model = SimpleNamespace(
+        predict_action=lambda condition, state, encoder_attention_mask: torch.zeros(1, 2, 7)
+    )
 
-    with pytest.raises(ValueError, match="supported only by QwenGR00TCoTV3"):
-        model.predict_action([{"image": [], "lang": "move"}], return_geometry=True)
+    result = model.predict_action(
+        [{"image": [], "lang": "move"}], return_geometry=True
+    )
 
-    assert calls == []
+    assert backbone_calls == 1
+    assert decode_calls == 1
+    assert set(result["geometry"]) == {
+        "depth_current",
+        "depth_future",
+        "uvd",
+        "uvd_time",
+        "uvd_landmark_ids",
+    }
+    assert result["geometry"]["depth_current"] is None
+    torch.testing.assert_close(
+        result["geometry"]["uvd"], expected_uvd, rtol=0.0, atol=0.0
+    )
+    torch.testing.assert_close(
+        result["geometry"]["uvd_time"],
+        torch.tensor([[0.0, 0.0, 1.0, 1.0]]),
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert result["geometry"]["uvd_landmark_ids"].tolist() == [[0, 1, 0, 1]]

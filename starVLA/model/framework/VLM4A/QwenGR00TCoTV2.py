@@ -194,10 +194,20 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         points_per_hand = geometry.get("uvd_num_points", None)
         if points_per_hand is None:
             points_per_hand = int(math.floor(0.3 * int(self.action_horizon))) + 2
+        enable_current_depth = _require_boolean_option(
+            geometry.get("enable_current_depth", True),
+            name="enable_current_depth",
+        )
+        enable_future_depth = _require_boolean_option(
+            geometry.get("enable_future_depth", True),
+            name="enable_future_depth",
+        )
         self.geometry_layout = GeometryTokenLayout(
             depth_query_count=int(geometry.get("depth_query_count", 8)),
             uvd_points_per_hand=int(points_per_hand),
             hand_count=int(geometry.get("uvd_hand_count", 1)),
+            enable_current_depth=enable_current_depth,
+            enable_future_depth=enable_future_depth,
         )
         self.uvd_hand_count = int(self.geometry_layout.hand_count)
         self.uvd_token_order = "time_major"
@@ -637,9 +647,22 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
     def _pool_depth_summaries(
         self,
         split: GeometryHiddenSplit,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        current_summary, current_weights = self.depth_attention_pool(split.depth_current)
-        future_summary, future_weights = self.depth_attention_pool(split.depth_future)
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
+        current_summary, current_weights = (
+            self.depth_attention_pool(split.depth_current)
+            if split.depth_current.shape[1] > 0
+            else (None, None)
+        )
+        future_summary, future_weights = (
+            self.depth_attention_pool(split.depth_future)
+            if split.depth_future.shape[1] > 0
+            else (None, None)
+        )
         return current_summary, future_summary, current_weights, future_weights
 
     def _decode_depth_summaries(
@@ -647,31 +670,39 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         image_tokens: torch.Tensor,
         *,
         patch_hw: tuple[int, int],
-        current_summary: torch.Tensor,
-        future_summary: torch.Tensor,
+        current_summary: torch.Tensor | None,
+        future_summary: torch.Tensor | None,
         timing_callback: Callable[[str, Callable[[], Any]], Any] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         def timed(name: str, fn: Callable[[], Any]) -> Any:
             return timing_callback(name, fn) if timing_callback is not None else fn()
 
         output_hw = (self.depth_output_size, self.depth_output_size)
-        depth_current = timed(
-            "depth_current_ms",
-            lambda: self.depth_decoder(
-                image_tokens,
-                patch_hw=patch_hw,
-                query=current_summary,
-                output_hw=output_hw,
-            ),
+        depth_current = (
+            timed(
+                "depth_current_ms",
+                lambda: self.depth_decoder(
+                    image_tokens,
+                    patch_hw=patch_hw,
+                    query=current_summary,
+                    output_hw=output_hw,
+                ),
+            )
+            if current_summary is not None
+            else None
         )
-        depth_future = timed(
-            "depth_future_ms",
-            lambda: self.depth_decoder(
-                image_tokens,
-                patch_hw=patch_hw,
-                query=future_summary,
-                output_hw=output_hw,
-            ),
+        depth_future = (
+            timed(
+                "depth_future_ms",
+                lambda: self.depth_decoder(
+                    image_tokens,
+                    patch_hw=patch_hw,
+                    query=future_summary,
+                    output_hw=output_hw,
+                ),
+            )
+            if future_summary is not None
+            else None
         )
         return depth_current, depth_future
 
@@ -810,12 +841,31 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         )
         action_loss = self._action_loss(condition, condition_mask, examples)
         device = split.native.device
-        depth_current_target = torch.as_tensor(np.stack([x["depth_current"] for x in examples]), device=device)
-        depth_future_target = torch.as_tensor(np.stack([x["depth_future"] for x in examples]), device=device)
-        depth_current_valid = torch.as_tensor(np.stack([x["depth_current_valid"] for x in examples]), device=device)
-        depth_future_valid = torch.as_tensor(np.stack([x["depth_future_valid"] for x in examples]), device=device)
-        depth_current_loss = masked_smooth_l1_loss(depth_current, depth_current_target, depth_current_valid)
-        depth_future_loss = masked_smooth_l1_loss(depth_future, depth_future_target, depth_future_valid)
+        zero_depth_loss = action_loss.new_zeros(())
+        if depth_current is None:
+            depth_current_loss = zero_depth_loss
+        else:
+            depth_current_target = torch.as_tensor(
+                np.stack([x["depth_current"] for x in examples]), device=device
+            )
+            depth_current_valid = torch.as_tensor(
+                np.stack([x["depth_current_valid"] for x in examples]), device=device
+            )
+            depth_current_loss = masked_smooth_l1_loss(
+                depth_current, depth_current_target, depth_current_valid
+            )
+        if depth_future is None:
+            depth_future_loss = zero_depth_loss
+        else:
+            depth_future_target = torch.as_tensor(
+                np.stack([x["depth_future"] for x in examples]), device=device
+            )
+            depth_future_valid = torch.as_tensor(
+                np.stack([x["depth_future_valid"] for x in examples]), device=device
+            )
+            depth_future_loss = masked_smooth_l1_loss(
+                depth_future, depth_future_target, depth_future_valid
+            )
         wrist_losses: dict[str, torch.Tensor] = {}
         if wrist_depth is not None:
             wrist_current, wrist_future = wrist_depth
@@ -1159,10 +1209,6 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             kwargs.pop("return_geometry", False),
             name="return_geometry",
         )
-        if return_geometry and not hasattr(self.geometry_layout, "uvd_time_points"):
-            raise ValueError(
-                "return_geometry is supported only by QwenGR00TCoTV3 landmark layouts"
-            )
         timing: dict[str, float] = {}
         def timed(name: str, fn: Callable[[], Any]) -> Any:
             return timing_callback(name, fn) if timing_callback is not None else fn()
@@ -1208,8 +1254,12 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 qwen_inputs,
                 timing_callback=timing_callback,
             )
-            time_points = int(self.geometry_layout.uvd_time_points)
-            landmark_count = int(self.geometry_layout.landmark_count)
+            if hasattr(self.geometry_layout, "uvd_time_points"):
+                time_points = int(self.geometry_layout.uvd_time_points)
+                landmark_count = int(self.geometry_layout.landmark_count)
+            else:
+                time_points = int(self.geometry_layout.uvd_points_per_hand)
+                landmark_count = int(self.geometry_layout.hand_count)
             uvd_time = torch.linspace(
                 0.0,
                 1.0,

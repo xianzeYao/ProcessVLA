@@ -165,7 +165,9 @@ class PolicyServerWrapper:
             return torch.device("cpu")
 
     @staticmethod
-    def _to_numpy(value: Any) -> np.ndarray:
+    def _to_numpy(value: Any) -> np.ndarray | None:
+        if value is None:
+            return None
         if isinstance(value, torch.Tensor):
             return value.detach().float().cpu().numpy() if value.is_floating_point() else value.detach().cpu().numpy()
         return np.asarray(value)

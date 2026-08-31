@@ -28,24 +28,38 @@ class SharedDepthAttentionPool(nn.Module):
 
 
 def build_depth_summary_interventions(
-    current: torch.Tensor,
-    future: torch.Tensor,
-) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    current: torch.Tensor | None,
+    future: torch.Tensor | None,
+) -> dict[str, tuple[torch.Tensor | None, torch.Tensor | None]]:
     """Construct deterministic decoder-only interventions on pooled summaries."""
 
-    if current.shape != future.shape or current.ndim != 2:
+    summaries = tuple(summary for summary in (current, future) if summary is not None)
+    if not summaries:
+        raise ValueError("at least one depth summary must be enabled")
+    if any(summary.ndim != 2 for summary in summaries):
         raise ValueError(
-            f"current/future summaries must share [B,H], got {tuple(current.shape)}/{tuple(future.shape)}"
+            "enabled depth summaries must have shape [B,H], got "
+            f"{[tuple(summary.shape) for summary in summaries]}"
         )
+    if current is not None and future is not None and current.shape != future.shape:
+        raise ValueError(
+            "current/future summaries must share [B,H], got "
+            f"{tuple(current.shape)}/{tuple(future.shape)}"
+        )
+
     variants = {
         "normal": (current, future),
-        "zero": (torch.zeros_like(current), torch.zeros_like(future)),
-        "swap": (future, current),
+        "zero": (
+            torch.zeros_like(current) if current is not None else None,
+            torch.zeros_like(future) if future is not None else None,
+        ),
     }
-    if current.shape[0] > 1:
+    if current is not None and future is not None:
+        variants["swap"] = (future, current)
+    if summaries[0].shape[0] > 1:
         variants["shuffle"] = (
-            torch.roll(current, shifts=1, dims=0),
-            torch.roll(future, shifts=1, dims=0),
+            torch.roll(current, shifts=1, dims=0) if current is not None else None,
+            torch.roll(future, shifts=1, dims=0) if future is not None else None,
         )
     return variants
 
@@ -67,6 +81,8 @@ class GeometryTokenLayout:
     depth_query_count: int
     uvd_points_per_hand: int
     hand_count: int = 1
+    enable_current_depth: bool = True
+    enable_future_depth: bool = True
 
     def __post_init__(self) -> None:
         if int(self.depth_query_count) < 1:
@@ -75,6 +91,18 @@ class GeometryTokenLayout:
             raise ValueError(f"uvd_points_per_hand must be at least 2, got {self.uvd_points_per_hand}")
         if int(self.hand_count) < 1:
             raise ValueError(f"hand_count must be positive, got {self.hand_count}")
+        if not isinstance(self.enable_current_depth, bool):
+            raise ValueError("enable_current_depth must be a boolean")
+        if not isinstance(self.enable_future_depth, bool):
+            raise ValueError("enable_future_depth must be a boolean")
+
+    @property
+    def current_depth_token_count(self) -> int:
+        return int(self.depth_query_count) if self.enable_current_depth else 0
+
+    @property
+    def future_depth_token_count(self) -> int:
+        return int(self.depth_query_count) if self.enable_future_depth else 0
 
     @property
     def uvd_token_count(self) -> int:
@@ -82,20 +110,20 @@ class GeometryTokenLayout:
 
     @property
     def geometry_token_count(self) -> int:
-        return 2 * int(self.depth_query_count) + self.uvd_token_count
+        return self.current_depth_token_count + self.future_depth_token_count + self.uvd_token_count
 
     @property
     def geometry_current_slice(self) -> slice:
-        return slice(0, int(self.depth_query_count))
+        return slice(0, self.current_depth_token_count)
 
     @property
     def geometry_future_slice(self) -> slice:
-        start = int(self.depth_query_count)
-        return slice(start, start + int(self.depth_query_count))
+        start = self.current_depth_token_count
+        return slice(start, start + self.future_depth_token_count)
 
     @property
     def geometry_uvd_slice(self) -> slice:
-        start = 2 * int(self.depth_query_count)
+        start = self.current_depth_token_count + self.future_depth_token_count
         return slice(start, start + self.uvd_token_count)
 
     def sequence_slices(self, native_token_count: int) -> GeometrySequenceSlices:
@@ -103,8 +131,8 @@ class GeometryTokenLayout:
         if native_token_count < 1:
             raise ValueError(f"native_token_count must be positive, got {native_token_count}")
         current_start = native_token_count
-        future_start = current_start + int(self.depth_query_count)
-        uvd_start = future_start + int(self.depth_query_count)
+        future_start = current_start + self.current_depth_token_count
+        uvd_start = future_start + self.future_depth_token_count
         return GeometrySequenceSlices(
             native=slice(0, native_token_count),
             depth_current=slice(current_start, future_start),
@@ -150,12 +178,18 @@ class GeometryTokenEmbedding(nn.Module):
         super().__init__()
         self.hidden_dim = int(hidden_dim)
         self.layout = layout
-        self.current_depth_queries = nn.Parameter(
-            torch.randn(1, int(layout.depth_query_count), self.hidden_dim) * 0.02
-        )
-        self.future_depth_queries = nn.Parameter(
-            torch.randn(1, int(layout.depth_query_count), self.hidden_dim) * 0.02
-        )
+        if layout.enable_current_depth:
+            self.current_depth_queries = nn.Parameter(
+                torch.randn(1, int(layout.depth_query_count), self.hidden_dim) * 0.02
+            )
+        else:
+            self.register_parameter("current_depth_queries", None)
+        if layout.enable_future_depth:
+            self.future_depth_queries = nn.Parameter(
+                torch.randn(1, int(layout.depth_query_count), self.hidden_dim) * 0.02
+            )
+        else:
+            self.register_parameter("future_depth_queries", None)
         self.trajectory_seed = nn.Parameter(torch.randn(1, 1, self.hidden_dim) * 0.02)
         self.time_embedding = nn.Sequential(
             nn.Linear(1, self.hidden_dim),
@@ -176,8 +210,8 @@ class GeometryTokenEmbedding(nn.Module):
         batch_size = int(batch_size)
         if batch_size < 1:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
-        device = self.current_depth_queries.device
-        dtype = self.current_depth_queries.dtype
+        device = self.trajectory_seed.device
+        dtype = self.trajectory_seed.dtype
         expected_shape = (batch_size, self.layout.uvd_token_count)
 
         if uvd_times is None:
@@ -200,8 +234,16 @@ class GeometryTokenEmbedding(nn.Module):
         if torch.any(uvd_hand_ids < 0) or torch.any(uvd_hand_ids >= int(self.layout.hand_count)):
             raise ValueError(f"uvd_hand_ids must be in [0, {self.layout.hand_count})")
 
-        current = self.current_depth_queries.expand(batch_size, -1, -1)
-        future = self.future_depth_queries.expand(batch_size, -1, -1)
+        current = (
+            self.current_depth_queries.expand(batch_size, -1, -1)
+            if self.current_depth_queries is not None
+            else self.trajectory_seed.new_empty(batch_size, 0, self.hidden_dim)
+        )
+        future = (
+            self.future_depth_queries.expand(batch_size, -1, -1)
+            if self.future_depth_queries is not None
+            else self.trajectory_seed.new_empty(batch_size, 0, self.hidden_dim)
+        )
         trajectory = self.trajectory_seed.expand(batch_size, self.layout.uvd_token_count, -1)
         trajectory = trajectory + self.time_embedding(uvd_times.unsqueeze(-1))
         if self.hand_embedding is not None:

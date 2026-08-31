@@ -86,6 +86,10 @@ class MultiStepWrapper(gym.Wrapper):
         n_action_steps,
         max_episode_steps=None,
         reward_agg_method="max",
+        trace_consistency=False,
+        trace_image_size=224,
+        trace_depth_scale=1.0,
+        trace_capture_fn=None,
     ):
         """
         video_delta_indices: np.ndarray[int], please check `assert_delta_indices` to see the requirements
@@ -119,6 +123,16 @@ class MultiStepWrapper(gym.Wrapper):
         self.max_episode_steps = max_episode_steps
         self.n_action_steps = n_action_steps
         self.reward_agg_method = reward_agg_method
+        self.trace_consistency = bool(trace_consistency)
+        self.trace_image_size = int(trace_image_size)
+        self.trace_depth_scale = float(trace_depth_scale)
+        if self.trace_consistency and trace_capture_fn is None:
+            from examples.simBenchmarks.Robocasa_tabletop.eval_files.trace_consistency import (
+                capture_robocasa_thumb_index_uvd,
+            )
+
+            trace_capture_fn = capture_robocasa_thumb_index_uvd
+        self.trace_capture_fn = trace_capture_fn
         self.max_steps_needed = self.get_max_steps_needed()
 
         self.obs = deque(maxlen=self.max_steps_needed + 1)
@@ -198,6 +212,16 @@ class MultiStepWrapper(gym.Wrapper):
         states = []
         rewards = []
         dones = []
+        trace_uvd = []
+        trace_valid = []
+        if self.trace_consistency:
+            uvd, valid = self.trace_capture_fn(
+                self.env,
+                image_size=self.trace_image_size,
+                depth_scale=self.trace_depth_scale,
+            )
+            trace_uvd.append(uvd)
+            trace_valid.append(valid)
         for step in range(self.n_action_steps):
             act = {}
             for key, value in action.items():
@@ -217,6 +241,14 @@ class MultiStepWrapper(gym.Wrapper):
                 done = True
             self.done.append(done)
             self._add_info(info)
+            if self.trace_consistency:
+                uvd, valid = self.trace_capture_fn(
+                    self.env,
+                    image_size=self.trace_image_size,
+                    depth_scale=self.trace_depth_scale,
+                )
+                trace_uvd.append(uvd)
+                trace_valid.append(valid)
 
         observation = self._get_obs(self.video_delta_indices, self.state_delta_indices)
         reward = aggregate(self.reward, self.reward_agg_method)
@@ -230,6 +262,10 @@ class MultiStepWrapper(gym.Wrapper):
         info["model"] = env_state["model"]
         info["actions"] = action
         info["dones"] = dones
+        if self.trace_consistency:
+            info["trace_realized_uvd"] = np.stack(trace_uvd).astype(np.float32)
+            info["trace_realized_valid"] = np.stack(trace_valid).astype(np.bool_)
+            info["trace_executed_steps"] = len(trace_uvd) - 1
         return observation, reward, done, truncated, info
 
     def _get_obs(self, video_delta_indices, state_delta_indices):

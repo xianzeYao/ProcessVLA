@@ -43,6 +43,10 @@ from examples.simBenchmarks.Robocasa_tabletop.eval_files.robocasa_eval_protocol 
     write_json,
 )
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.wrappers.multistep_wrapper import MultiStepWrapper
+from examples.simBenchmarks.Robocasa_tabletop.eval_files.trace_consistency import (
+    evaluate_vector_trace_decision,
+    write_trace_artifacts,
+)
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.wrappers.video_recording_wrapper import (
     VideoRecorder,
     VideoRecordingWrapper,
@@ -83,6 +87,10 @@ class SimulationConfig:
     video: VideoConfig = field(default_factory=VideoConfig)
     multistep: MultiStepConfig = field(default_factory=MultiStepConfig)
     task_index: Optional[int] = None
+    trace_output_path: Optional[str] = None
+    trace_action_horizon: int = 16
+    trace_image_size: int = 224
+    trace_depth_scale: float = 1.0
 
 
 class SimulationInferenceEnv:
@@ -93,6 +101,7 @@ class SimulationInferenceEnv:
         self.model = model
         self.env = None
         self.last_run_seconds: Optional[float] = None
+        self.trace_summary: Optional[Dict[str, Any]] = None
 
     def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
         """Get action from the model based on observations."""
@@ -148,16 +157,43 @@ class SimulationInferenceEnv:
         completed_episodes = 0
         current_successes = [False] * config.n_envs
         episode_successes = []
+        trace_enabled = config.trace_output_path is not None
+        trace_records = []
+        pending_trace_records = [[] for _ in range(config.n_envs)]
+        trace_episode_ids = list(range(config.n_envs))
+        next_trace_episode_id = config.n_envs
+        trace_decision_indices = [0] * config.n_envs
         # Initial environment reset
         obs, _ = self.env.reset()
         # Main simulation loop
         while completed_episodes < config.n_episodes:
             # Process observations and get actions from the model
-            actions = self._get_actions_from_model(obs)
+            actions, geometry = self._get_actions_from_model(obs)
             # Step the environment
             next_obs, rewards, terminations, truncations, env_infos = self.env.step(actions)
             # Update episode tracking
             for env_idx in range(config.n_envs):
+                if trace_enabled:
+                    if geometry is None:
+                        raise ValueError(
+                            "trace consistency is enabled but the policy returned no geometry"
+                        )
+                    trace_record = evaluate_vector_trace_decision(
+                        geometry,
+                        env_infos,
+                        batch_index=env_idx,
+                        action_horizon=config.trace_action_horizon,
+                        image_size=config.trace_image_size,
+                    )
+                    trace_record.update(
+                        {
+                            "task_index": config.task_index,
+                            "episode_index": trace_episode_ids[env_idx],
+                            "decision_index": trace_decision_indices[env_idx],
+                        }
+                    )
+                    pending_trace_records[env_idx].append(trace_record)
+                    trace_decision_indices[env_idx] += 1
                 current_successes[env_idx] |= bool(env_infos["success"][env_idx][0])
                 current_rewards[env_idx] += rewards[env_idx]
                 current_lengths[env_idx] += 1
@@ -175,12 +211,31 @@ class SimulationInferenceEnv:
                             elapsed_seconds=time.time() - start_time,
                         )
                     current_successes[env_idx] = False
+                    if trace_enabled:
+                        for trace_record in pending_trace_records[env_idx]:
+                            trace_record["episode_success"] = bool(
+                                episode_successes[-1]
+                            )
+                        trace_records.extend(pending_trace_records[env_idx])
+                        pending_trace_records[env_idx] = []
+                        trace_episode_ids[env_idx] = next_trace_episode_id
+                        next_trace_episode_id += 1
+                        trace_decision_indices[env_idx] = 0
                     completed_episodes += 1
                     # Reset trackers for this environment
                     current_rewards[env_idx] = 0
                     current_lengths[env_idx] = 0
             obs = next_obs
         # Clean up
+        if trace_enabled:
+            self.trace_summary = write_trace_artifacts(
+                config.trace_output_path,
+                trace_records,
+                metadata={
+                    "env_name": config.env_name,
+                    "task_index": config.task_index,
+                },
+            )
         self.env.reset()
         self.env.close()
         self.env = None
@@ -192,17 +247,17 @@ class SimulationInferenceEnv:
         ), f"Expected at least {config.n_episodes} episodes, got {len(episode_successes)}"
         return config.env_name, episode_successes
 
-    def _get_actions_from_model(self, observations: Dict[str, Any]) -> Dict[str, Any]:
-        """Process observations and get actions from the model."""
-        # Get actions from the model
+    def _get_actions_from_model(
+        self, observations: Dict[str, Any]
+    ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        """Return environment actions and optional geometry from one policy call."""
         action_dict = self.get_action(observations)
-        # Extract actions from the response
-        if "actions" in action_dict:
+        geometry = action_dict.get("geometry") if isinstance(action_dict, dict) else None
+        if isinstance(action_dict, dict) and "actions" in action_dict:
             actions = action_dict["actions"]
         else:
             actions = action_dict
-        # Add batch dimension to actions
-        return actions
+        return actions, geometry
 
 
 def _create_single_env(config: SimulationConfig, idx: int) -> gym.Env:
@@ -232,6 +287,10 @@ def _create_single_env(config: SimulationConfig, idx: int) -> gym.Env:
         state_delta_indices=config.multistep.state_delta_indices,
         n_action_steps=config.multistep.n_action_steps,
         max_episode_steps=config.multistep.max_episode_steps,
+        trace_consistency=config.trace_output_path is not None,
+        trace_image_size=config.trace_image_size,
+        trace_depth_scale=config.trace_depth_scale,
+        trace_capture_fn=None,
     )
     return env
 
@@ -250,6 +309,10 @@ def run_evaluation(
     gpu: int = -1,
     worker_id: int = -1,
     task_start_time: Optional[float] = None,
+    trace_output_path: Optional[str] = None,
+    trace_action_horizon: int = 16,
+    trace_image_size: int = 224,
+    trace_depth_scale: float = 1.0,
 ) -> Tuple[str, List[bool]]:
     """
     Simple entry point to run a simulation evaluation.
@@ -272,10 +335,19 @@ def run_evaluation(
         video=VideoConfig(video_dir=video_dir),
         multistep=MultiStepConfig(n_action_steps=n_action_steps, max_episode_steps=max_episode_steps),
         task_index=task_index if task_index >= 0 else None,
+        trace_output_path=trace_output_path,
+        trace_action_horizon=trace_action_horizon,
+        trace_image_size=trace_image_size,
+        trace_depth_scale=trace_depth_scale,
     )
     # Create client and run simulation
     client = SimulationInferenceEnv(model=model)
     results = client.run_simulation(config)
+    if trace_output_path is not None:
+        result_metadata = dict(result_metadata or {})
+        result_metadata["trace_consistency_output"] = trace_output_path
+        result_metadata["trace_consistency_summary"] = client.trace_summary
+
     task_elapsed_seconds = (
         time.time() - task_start_time
         if task_start_time is not None
@@ -332,6 +404,10 @@ class Args:
     task_index: int = -1
     gpu: int = -1
     worker_id: int = -1
+    trace_consistency_output: Optional[str] = None
+    trace_action_horizon: int = 16
+    trace_image_size: int = 224
+    trace_depth_scale: float = 1.0
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -352,6 +428,7 @@ def eval_gr1_unified(args: Args) -> None:
         "send_state": args.send_state,
         "video_out_path": args.video_out_path,
         "pretrained_path": args.pretrained_path,
+        "trace_consistency_output": args.trace_consistency_output,
     }
     try:
         model = PolicyWarper(
@@ -362,6 +439,7 @@ def eval_gr1_unified(args: Args) -> None:
             image_size=args.resize_size,
             n_action_steps=args.n_action_steps,
             send_state=args.send_state,
+            return_geometry=args.trace_consistency_output is not None,
         )
         run_evaluation(
             env_name=args.env_name,
@@ -377,6 +455,10 @@ def eval_gr1_unified(args: Args) -> None:
             gpu=args.gpu,
             worker_id=args.worker_id,
             task_start_time=task_start_time,
+            trace_output_path=args.trace_consistency_output,
+            trace_action_horizon=args.trace_action_horizon,
+            trace_image_size=args.trace_image_size,
+            trace_depth_scale=args.trace_depth_scale,
         )
     except Exception as exc:
         traceback_text = traceback.format_exc()

@@ -96,7 +96,7 @@ def compute_token_utilization_metrics(
     token_values = tokens.detach().float()
     batch_size, token_count, _ = token_values.shape
     if token_count < 1:
-        raise ValueError("token_count must be positive")
+        return {}
 
     normalized = F.normalize(token_values, dim=-1, eps=1.0e-12)
     cosine = normalized @ normalized.transpose(1, 2)
@@ -163,31 +163,34 @@ def compute_decoder_reliance_metrics(
     interventions = predictions.get("decoder_interventions", {})
     if not interventions:
         return {}
-    device = predictions["depth_current"].device
+    enabled_depths = tuple(
+        depth_name
+        for depth_name in ("depth_current", "depth_future")
+        if predictions.get(depth_name) is not None
+    )
+    if not enabled_depths:
+        return {}
+    device = predictions[enabled_depths[0]].device
     targets = {
-        "depth_current": torch.as_tensor(
-            np.stack([example["depth_current"] for example in examples]),
+        depth_name: torch.as_tensor(
+            np.stack([example[depth_name] for example in examples]),
             device=device,
-        ),
-        "depth_future": torch.as_tensor(
-            np.stack([example["depth_future"] for example in examples]),
-            device=device,
-        ),
+        )
+        for depth_name in enabled_depths
     }
     valid = {
-        "depth_current": torch.as_tensor(
-            np.stack([example["depth_current_valid"] for example in examples]),
+        depth_name: torch.as_tensor(
+            np.stack([example[f"{depth_name}_valid"] for example in examples]),
             device=device,
-        ),
-        "depth_future": torch.as_tensor(
-            np.stack([example["depth_future_valid"] for example in examples]),
-            device=device,
-        ),
+        )
+        for depth_name in enabled_depths
     }
     metrics = {}
     for variant_name, variant_predictions in interventions.items():
-        for depth_name in ("depth_current", "depth_future"):
-            variant = variant_predictions[depth_name]
+        for depth_name in enabled_depths:
+            variant = variant_predictions.get(depth_name)
+            if variant is None:
+                continue
             normal = predictions[depth_name]
             prefix = f"decoder_reliance/{variant_name}/{depth_name}"
             metrics[f"{prefix}_delta_mae_m"] = float(
@@ -399,7 +402,7 @@ def _pad_uvd_examples(
 
 
 def compute_geometry_metrics(
-    predictions: dict[str, torch.Tensor],
+    predictions: dict[str, Any],
     examples: list[dict],
     *,
     depth_scale: float,
@@ -409,11 +412,8 @@ def compute_geometry_metrics(
     include_uvd_time_metrics: bool = False,
 ) -> dict[str, float]:
     """Compute fixed-sample depth/UVD metrics for a diagnostics checkpoint."""
-    device = predictions["depth_current"].device
-    depth_current_target = torch.as_tensor(np.stack([x["depth_current"] for x in examples]), device=device)
-    depth_future_target = torch.as_tensor(np.stack([x["depth_future"] for x in examples]), device=device)
-    depth_current_valid = torch.as_tensor(np.stack([x["depth_current_valid"] for x in examples]), device=device)
-    depth_future_valid = torch.as_tensor(np.stack([x["depth_future_valid"] for x in examples]), device=device)
+    uvd = predictions["uvd"].float()
+    device = uvd.device
     uvd_target_np, uvd_valid_np, _, uvd_endpoints_np = _pad_uvd_examples(
         examples,
         int(predictions["uvd"].shape[1]),
@@ -424,9 +424,6 @@ def compute_geometry_metrics(
     uvd_valid = torch.as_tensor(uvd_valid_np, device=device)
     uvd_endpoints = torch.as_tensor(uvd_endpoints_np, device=device)
 
-    depth_current = predictions["depth_current"].float()
-    depth_future = predictions["depth_future"].float()
-    uvd = predictions["uvd"].float()
     pixel_scale = float(max(image_size - 1, 1))
     batch_indices = torch.arange(uvd.shape[0], device=device)
     endpoint_batch = batch_indices[:, None, None].expand_as(uvd_endpoints)
@@ -452,10 +449,6 @@ def compute_geometry_metrics(
     pred_path_mean = ((pred_segments * segment_valid).sum(dim=1) * trace_valid).sum() / trace_count
     target_path_mean = ((target_segments * segment_valid).sum(dim=1) * trace_valid).sum() / trace_count
     metrics = {
-        "depth_current_mae_m": float((_masked_abs_mean(depth_current, depth_current_target, depth_current_valid) * depth_scale).item()),
-        "depth_future_mae_m": float((_masked_abs_mean(depth_future, depth_future_target, depth_future_valid) * depth_scale).item()),
-        "depth_current_rmse_m": float((_masked_rmse(depth_current, depth_current_target, depth_current_valid) * depth_scale).item()),
-        "depth_future_rmse_m": float((_masked_rmse(depth_future, depth_future_target, depth_future_valid) * depth_scale).item()),
         "uvd_u_mae_pixel": float((_masked_abs_mean(uvd[..., 0], uvd_target[..., 0], uvd_valid) * pixel_scale).item()),
         "uvd_v_mae_pixel": float((_masked_abs_mean(uvd[..., 1], uvd_target[..., 1], uvd_valid) * pixel_scale).item()),
         "uvd_xy_mae_norm": float(_masked_abs_mean(uvd[..., :2], uvd_target[..., :2], uvd_valid).item()),
@@ -479,16 +472,43 @@ def compute_geometry_metrics(
         "pred/uvd_path_length_pixel": float(pred_path_mean.item()),
         "target/uvd_path_length_pixel": float(target_path_mean.item()),
         "uvd_path_length_mae_pixel": float(_masked_abs_mean((pred_segments * segment_valid).sum(dim=1), (target_segments * segment_valid).sum(dim=1), trace_valid).item()),
-        "pred/depth_current_mean": float(depth_current.mean().item()),
-        "pred/depth_current_min": float(depth_current.min().item()),
-        "pred/depth_current_max": float(depth_current.max().item()),
-        "pred/depth_future_mean": float(depth_future.mean().item()),
         "pred/uvd_u_min": float(uvd[..., 0].min().item()),
         "pred/uvd_u_max": float(uvd[..., 0].max().item()),
         "pred/uvd_v_min": float(uvd[..., 1].min().item()),
         "pred/uvd_v_max": float(uvd[..., 1].max().item()),
         "pred/uvd_depth_mean": float(uvd[..., 2].mean().item()),
     }
+    for depth_name in ("depth_current", "depth_future"):
+        prediction = predictions.get(depth_name)
+        if prediction is None:
+            continue
+        prediction = prediction.float()
+        target = torch.as_tensor(
+            np.stack([example[depth_name] for example in examples]),
+            device=device,
+        )
+        valid = torch.as_tensor(
+            np.stack([example[f"{depth_name}_valid"] for example in examples]),
+            device=device,
+        )
+        metrics.update(
+            {
+                f"{depth_name}_mae_m": float(
+                    (_masked_abs_mean(prediction, target, valid) * depth_scale).item()
+                ),
+                f"{depth_name}_rmse_m": float(
+                    (_masked_rmse(prediction, target, valid) * depth_scale).item()
+                ),
+                f"pred/{depth_name}_mean": float(prediction.mean().item()),
+            }
+        )
+        if depth_name == "depth_current":
+            metrics.update(
+                {
+                    "pred/depth_current_min": float(prediction.min().item()),
+                    "pred/depth_current_max": float(prediction.max().item()),
+                }
+            )
     if include_uvd_time_metrics:
         for time_index in range(points_per_hand):
             time_valid = valid_tracks[:, time_index]
@@ -521,7 +541,7 @@ def compute_geometry_metrics(
 def save_prediction_bundle(
     output_dir: str | Path,
     step: int,
-    predictions: dict[str, torch.Tensor],
+    predictions: dict[str, Any],
     examples: list[dict],
     *,
     uvd_hand_count: int = 1,
@@ -547,21 +567,25 @@ def save_prediction_bundle(
         else:
             expanded_indices = np.tile(actual_indices, int(uvd_hand_count))
         frame_indices[batch_index, : len(expanded_indices)] = expanded_indices
-    np.savez_compressed(
-        path,
+    payload = {
         # NumPy cannot represent torch.bfloat16. Geometry inference follows the
         # model's mixed-precision dtype, so persist predictions as float32.
-        depth_current=predictions["depth_current"].detach().cpu().float().numpy(),
-        depth_future=predictions["depth_future"].detach().cpu().float().numpy(),
-        uvd=predictions["uvd"].detach().cpu().float().numpy(),
-        depth_current_target=np.stack([x["depth_current"] for x in examples]),
-        depth_future_target=np.stack([x["depth_future"] for x in examples]),
-        uvd_target=uvd_target,
-        uvd_valid_mask=uvd_valid,
-        uvd_time=uvd_time,
-        uvd_endpoint_indices=uvd_endpoints,
-        uvd_frame_indices=frame_indices,
-    )
+        "uvd": predictions["uvd"].detach().cpu().float().numpy(),
+        "uvd_target": uvd_target,
+        "uvd_valid_mask": uvd_valid,
+        "uvd_time": uvd_time,
+        "uvd_endpoint_indices": uvd_endpoints,
+        "uvd_frame_indices": frame_indices,
+    }
+    for depth_name in ("depth_current", "depth_future"):
+        prediction = predictions.get(depth_name)
+        if prediction is None:
+            continue
+        payload[depth_name] = prediction.detach().cpu().float().numpy()
+        payload[f"{depth_name}_target"] = np.stack(
+            [example[depth_name] for example in examples]
+        )
+    np.savez_compressed(path, **payload)
     return path
 
 

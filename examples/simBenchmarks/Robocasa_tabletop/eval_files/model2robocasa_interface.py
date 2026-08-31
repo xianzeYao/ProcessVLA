@@ -26,6 +26,7 @@ class PolicyWarper:
         port=10095,
         n_action_steps=2,
         send_state: bool = True,
+        return_geometry: bool = False,
     ) -> None:
 
         # build client to connect server policy
@@ -36,6 +37,7 @@ class PolicyWarper:
         # must not receive a `state` key: QwenOFT appends discretized state tokens to
         # the instruction whenever `state` is present, corrupting the prompt format.
         self.send_state = send_state
+        self.return_geometry = bool(return_geometry)
 
         print(f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key} ***")
         self.use_ddim = use_ddim
@@ -176,6 +178,8 @@ class PolicyWarper:
             "num_ddim_steps": self.num_ddim_steps,
         }
         vla_input["unnorm_key"] = self.unnorm_key
+        if self.return_geometry:
+            vla_input["return_geometry"] = True
 
         # === TRAIN/TEST CONSISTENCY: keep the observation below aligned with training ===
         # Embodied policies degrade SILENTLY (no error) when the eval-time observation
@@ -209,7 +213,12 @@ class PolicyWarper:
             "action.waist": raw_actions[:, : self.n_action_steps, 26:29],  # (B, n_action_steps, 3)
         }
 
-        return {"actions": raw_action}
+        result = {"actions": raw_action}
+        if self.return_geometry:
+            if "geometry" not in response["data"]:
+                raise ValueError("policy server did not return requested geometry")
+            result["geometry"] = response["data"]["geometry"]
+        return result
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
         image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
