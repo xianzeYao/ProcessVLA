@@ -185,6 +185,8 @@ class SimulationInferenceEnv:
                         action_horizon=config.trace_action_horizon,
                         image_size=config.trace_image_size,
                     )
+                    if trace_record is None:
+                        continue
                     trace_record.update(
                         {
                             "task_index": config.task_index,

@@ -395,9 +395,16 @@ def evaluate_vector_trace_decision(
     batch_index: int,
     action_horizon: int,
     image_size: int,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Pair one response batch element with the same vector environment result."""
 
+    trace_keys = (
+        "trace_realized_uvd",
+        "trace_realized_valid",
+        "trace_executed_steps",
+    )
+    if not any(key in env_infos for key in trace_keys):
+        return None
     trace = reshape_geometry_uvd(geometry, batch_index=batch_index)
     try:
         realized_uvd = np.asarray(
