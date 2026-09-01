@@ -42,6 +42,10 @@ from examples.simBenchmarks.Robocasa_tabletop.eval_files.robocasa_eval_protocol 
     emit_task_complete,
     write_json,
 )
+from examples.simBenchmarks.Robocasa_tabletop.eval_files.wrappers.episode_seed_wrapper import (
+    EpisodeSeedWrapper,
+    SCENE_SEED_SCHEME,
+)
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.wrappers.multistep_wrapper import MultiStepWrapper
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.trace_consistency import (
     evaluate_vector_trace_decision,
@@ -91,6 +95,7 @@ class SimulationConfig:
     trace_action_horizon: int = 16
     trace_image_size: int = 224
     trace_depth_scale: float = 1.0
+    eval_seed: int = 7
 
 
 class SimulationInferenceEnv:
@@ -282,6 +287,12 @@ def _create_single_env(config: SimulationConfig, idx: int) -> gym.Env:
             video_dir=Path(config.video.video_dir),
             steps_per_render=config.video.steps_per_render,
         )
+    env = EpisodeSeedWrapper(
+        env,
+        eval_seed=config.eval_seed,
+        task_index=config.task_index if config.task_index is not None else 0,
+        env_index=idx,
+    )
     # Add multi-step wrapper
     env = MultiStepWrapper(
         env,
@@ -315,6 +326,7 @@ def run_evaluation(
     trace_action_horizon: int = 16,
     trace_image_size: int = 224,
     trace_depth_scale: float = 1.0,
+    seed: int = 7,
 ) -> Tuple[str, List[bool]]:
     """
     Simple entry point to run a simulation evaluation.
@@ -341,6 +353,7 @@ def run_evaluation(
         trace_action_horizon=trace_action_horizon,
         trace_image_size=trace_image_size,
         trace_depth_scale=trace_depth_scale,
+        eval_seed=seed,
     )
     # Create client and run simulation
     client = SimulationInferenceEnv(model=model)
@@ -431,6 +444,8 @@ def eval_gr1_unified(args: Args) -> None:
         "video_out_path": args.video_out_path,
         "pretrained_path": args.pretrained_path,
         "trace_consistency_output": args.trace_consistency_output,
+        "eval_seed": args.seed,
+        "scene_seed_scheme": SCENE_SEED_SCHEME,
     }
     try:
         model = PolicyWarper(
@@ -461,6 +476,7 @@ def eval_gr1_unified(args: Args) -> None:
             trace_action_horizon=args.trace_action_horizon,
             trace_image_size=args.trace_image_size,
             trace_depth_scale=args.trace_depth_scale,
+            seed=args.seed,
         )
     except Exception as exc:
         traceback_text = traceback.format_exc()

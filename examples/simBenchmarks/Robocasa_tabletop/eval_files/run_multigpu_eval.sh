@@ -33,6 +33,8 @@ TRACE_CONSISTENCY="${TRACE_CONSISTENCY:-0}"
 TRACE_ACTION_HORIZON="${TRACE_ACTION_HORIZON:-16}"
 TRACE_IMAGE_SIZE="${TRACE_IMAGE_SIZE:-224}"
 TRACE_DEPTH_SCALE="${TRACE_DEPTH_SCALE:-1.0}"
+EVAL_SEED="${EVAL_SEED:-7}"
+SCENE_SEED_SCHEME="task_env_episode_v1"
 
 if [[ -z "${CHECKPOINT:-}" ]]; then
   : "${MODEL_DIR:?Set CHECKPOINT or MODEL_DIR}"
@@ -46,6 +48,7 @@ fi
 (( N_ENVS > 0 )) || { echo "N_ENVS must be positive" >&2; exit 2; }
 [[ "${TRACE_CONSISTENCY}" == "0" || "${TRACE_CONSISTENCY}" == "1" ]] || { echo "TRACE_CONSISTENCY must be 0 or 1" >&2; exit 2; }
 (( TRACE_ACTION_HORIZON > 0 )) || { echo "TRACE_ACTION_HORIZON must be positive" >&2; exit 2; }
+[[ "${EVAL_SEED}" =~ ^[0-9]+$ ]] || { echo "EVAL_SEED must be a non-negative integer" >&2; exit 2; }
 
 IFS=',' read -r -a GPU_LIST <<< "${GPUS}"
 NUM_WORKERS="${#GPU_LIST[@]}"
@@ -124,6 +127,8 @@ TRACE_CONSISTENCY=${TRACE_CONSISTENCY}
 TRACE_ACTION_HORIZON=${TRACE_ACTION_HORIZON}
 TRACE_IMAGE_SIZE=${TRACE_IMAGE_SIZE}
 TRACE_DEPTH_SCALE=${TRACE_DEPTH_SCALE}
+EVAL_SEED=${EVAL_SEED}
+SCENE_SEED_SCHEME=${SCENE_SEED_SCHEME}
 NUM_TASKS=${#ENV_NAMES[@]}
 RUN_TIMESTAMP=${RUN_TIMESTAMP}
 RUN_DIR=${RUN_DIR}
@@ -146,6 +151,7 @@ echo "[robocasa] checkpoint=${CHECKPOINT}"
 echo "[robocasa] gpus=${GPUS} base_port=${BASE_PORT} episodes=${NUM_EPISODES}"
 echo "[robocasa] output=${RUN_DIR} save_video=${SAVE_VIDEO}"
 echo "[robocasa] trace_consistency=${TRACE_CONSISTENCY} trace_action_horizon=${TRACE_ACTION_HORIZON}"
+echo "[robocasa] eval_seed=${EVAL_SEED} scene_seed_scheme=${SCENE_SEED_SCHEME}"
 if [[ "${DRY_RUN}" == "1" ]]; then
   for task_index in "${!ENV_NAMES[@]}"; do
     worker_id=$((task_index % NUM_WORKERS))
@@ -249,7 +255,8 @@ run_worker() {
       --args.result_json "${result_json}"
       --args.task_index "${task_index}"
       --args.gpu "${gpu}"
-      --args.worker_id "${worker_id}")
+      --args.worker_id "${worker_id}"
+      --args.seed "${EVAL_SEED}")
     if [[ "${TRACE_CONSISTENCY}" == "1" ]]; then
       task_cmd+=(--args.trace_consistency_output "${trace_output}"
         --args.trace_action_horizon "${TRACE_ACTION_HORIZON}"
