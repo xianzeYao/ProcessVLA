@@ -27,6 +27,8 @@ N_ACTION_STEPS="${N_ACTION_STEPS:-12}"
 USE_BF16="${USE_BF16:-1}"
 SEND_STATE="${SEND_STATE:-0}" # current Qwen3.5 Baseline/CoT YAML: include_state=false
 SAVE_VIDEO="${SAVE_VIDEO:-0}"
+SAVE_VIDEO_FAILURES_ONLY="${SAVE_VIDEO_FAILURES_ONLY:-0}"
+ROLLOUT_FEATURES="${ROLLOUT_FEATURES:-0}"
 UNNORM_KEY="${UNNORM_KEY:-}"
 DRY_RUN="${DRY_RUN:-0}"
 TRACE_CONSISTENCY="${TRACE_CONSISTENCY:-0}"
@@ -47,6 +49,8 @@ fi
 (( NUM_EPISODES > 0 )) || { echo "NUM_EPISODES must be positive" >&2; exit 2; }
 (( N_ENVS > 0 )) || { echo "N_ENVS must be positive" >&2; exit 2; }
 [[ "${TRACE_CONSISTENCY}" == "0" || "${TRACE_CONSISTENCY}" == "1" ]] || { echo "TRACE_CONSISTENCY must be 0 or 1" >&2; exit 2; }
+[[ "${ROLLOUT_FEATURES}" == "0" || "${ROLLOUT_FEATURES}" == "1" ]] || { echo "ROLLOUT_FEATURES must be 0 or 1" >&2; exit 2; }
+[[ "${SAVE_VIDEO_FAILURES_ONLY}" == "0" || "${SAVE_VIDEO_FAILURES_ONLY}" == "1" ]] || { echo "SAVE_VIDEO_FAILURES_ONLY must be 0 or 1" >&2; exit 2; }
 (( TRACE_ACTION_HORIZON > 0 )) || { echo "TRACE_ACTION_HORIZON must be positive" >&2; exit 2; }
 [[ "${EVAL_SEED}" =~ ^[0-9]+$ ]] || { echo "EVAL_SEED must be a non-negative integer" >&2; exit 2; }
 
@@ -108,9 +112,11 @@ LOG_DIR="${RUN_DIR}/logs"
 RESULT_DIR="${RUN_DIR}/task_results"
 VIDEO_DIR="${RUN_DIR}/videos"
 TRACE_DIR="${RUN_DIR}/trace_consistency"
+ROLLOUT_FEATURE_DIR="${RUN_DIR}/rollout_features"
 [[ ! -e "${RUN_DIR}" ]] || { echo "run directory already exists: ${RUN_DIR}" >&2; exit 2; }
 mkdir -p "${LOG_DIR}" "${RESULT_DIR}" "${VIDEO_DIR}"
 if [[ "${TRACE_CONSISTENCY}" == "1" ]]; then mkdir -p "${TRACE_DIR}"; fi
+if [[ "${ROLLOUT_FEATURES}" == "1" ]]; then mkdir -p "${ROLLOUT_FEATURE_DIR}"; fi
 
 cat > "${RUN_DIR}/protocol.env" <<EOF
 CHECKPOINT=${CHECKPOINT}
@@ -122,6 +128,8 @@ N_ACTION_STEPS=${N_ACTION_STEPS}
 USE_BF16=${USE_BF16}
 SEND_STATE=${SEND_STATE}
 SAVE_VIDEO=${SAVE_VIDEO}
+SAVE_VIDEO_FAILURES_ONLY=${SAVE_VIDEO_FAILURES_ONLY}
+ROLLOUT_FEATURES=${ROLLOUT_FEATURES}
 UNNORM_KEY=${UNNORM_KEY}
 TRACE_CONSISTENCY=${TRACE_CONSISTENCY}
 TRACE_ACTION_HORIZON=${TRACE_ACTION_HORIZON}
@@ -151,6 +159,7 @@ echo "[robocasa] checkpoint=${CHECKPOINT}"
 echo "[robocasa] gpus=${GPUS} base_port=${BASE_PORT} episodes=${NUM_EPISODES}"
 echo "[robocasa] output=${RUN_DIR} save_video=${SAVE_VIDEO}"
 echo "[robocasa] trace_consistency=${TRACE_CONSISTENCY} trace_action_horizon=${TRACE_ACTION_HORIZON}"
+echo "[robocasa] rollout_features=${ROLLOUT_FEATURES} failed_videos_only=${SAVE_VIDEO_FAILURES_ONLY}"
 echo "[robocasa] eval_seed=${EVAL_SEED} scene_seed_scheme=${SCENE_SEED_SCHEME}"
 if [[ "${DRY_RUN}" == "1" ]]; then
   for task_index in "${!ENV_NAMES[@]}"; do
@@ -239,6 +248,7 @@ run_worker() {
     local result_json="${RESULT_DIR}/${task_stem}.json"
     local video_dir="${VIDEO_DIR}/${task_stem}"
     local trace_output="${TRACE_DIR}/${task_stem}.jsonl"
+    local rollout_feature_output="${ROLLOUT_FEATURE_DIR}/${task_stem}.npz"
     local task_start_seconds="${SECONDS}"
     local task_exit=0
     printf '[robocasa] start task=%02d env=%s gpu=%s episodes=%s\n' \
@@ -263,10 +273,16 @@ run_worker() {
         --args.trace_image_size "${TRACE_IMAGE_SIZE}"
         --args.trace_depth_scale "${TRACE_DEPTH_SCALE}")
     fi
+    if [[ "${ROLLOUT_FEATURES}" == "1" ]]; then
+      task_cmd+=(--args.rollout_features_output "${rollout_feature_output}")
+    fi
     if [[ -n "${UNNORM_KEY}" ]]; then task_cmd+=(--args.unnorm_key "${UNNORM_KEY}"); fi
     if [[ "${SEND_STATE}" != "1" ]]; then task_cmd+=(--args.no_send_state); fi
     if [[ "${SAVE_VIDEO}" == "1" ]]; then
       task_cmd+=(--args.video_out_path "${video_dir}")
+      if [[ "${SAVE_VIDEO_FAILURES_ONLY}" == "1" ]]; then
+        task_cmd+=(--args.video_failures_only)
+      fi
       if ! mkdir -p "${video_dir}" 2>>"${task_log}"; then
         printf '[robocasa] task=%02d failed status=failed error=task_setup_failed\n' \
           "${task_index}" >>"${task_log}"
