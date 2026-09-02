@@ -5,6 +5,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 from torch import nn
+from omegaconf import OmegaConf
+
+import starVLA.training.cot_gradient_probe as gradient_probe
+from starVLA.training.train_starvla_cot_v2 import CotV2Trainer
 
 from starVLA.training.cot_gradient_probe import (
     extract_v2_objectives,
@@ -88,6 +92,147 @@ def test_extract_v2_objectives_uses_nested_uvd_relative_weight_without_double_co
     }
     assert objectives["uvd_absolute"][1] == pytest.approx(0.62)
     assert objectives["uvd_relative"][1] == pytest.approx(0.062)
+
+
+def test_extract_v2_objectives_includes_optional_wrist_depth_losses_and_weights():
+    scale = nn.Parameter(torch.tensor(1.0))
+    output = {
+        "action_loss": scale,
+        "depth_current_loss": scale,
+        "depth_future_loss": scale,
+        "wrist_depth_current_loss": 2.0 * scale,
+        "wrist_depth_future_loss": 3.0 * scale,
+        "uvd_loss": scale,
+        "uvd_absolute_loss": scale,
+        "uvd_relative_loss": scale,
+    }
+    model = SimpleNamespace(
+        lambda_action=1.0,
+        lambda_depth_current=0.0725,
+        lambda_depth_future=0.0725,
+        lambda_wrist_depth_current=0.0725,
+        lambda_wrist_depth_future=0.0725,
+        lambda_uvd=0.62,
+        lambda_uvd_relative=0.1,
+    )
+
+    objectives = extract_v2_objectives(output, model)
+
+    assert objectives["wrist_depth_current"][1] == pytest.approx(0.0725)
+    assert objectives["wrist_depth_future"][1] == pytest.approx(0.0725)
+    assert float(objectives["wrist_depth_current"][0]) == pytest.approx(2.0)
+    assert float(objectives["wrist_depth_future"][0]) == pytest.approx(3.0)
+
+
+def test_paired_depth_token_gradients_report_strength_weighting_and_view_conflict():
+    measure = getattr(gradient_probe, "measure_paired_depth_token_gradients", None)
+    assert measure is not None, "paired online depth-token gradient probe is missing"
+
+    current_tokens = torch.tensor([[1.0, 2.0]], requires_grad=True)
+    future_tokens = torch.tensor([[3.0, 4.0]], requires_grad=True)
+    objectives = {
+        "depth_current": (current_tokens[0, 0], 0.1),
+        "wrist_depth_current": (-2.0 * current_tokens[0, 0], 0.2),
+        "depth_future": (future_tokens[0, 0], 0.3),
+        "wrist_depth_future": (future_tokens[0, 1], 0.4),
+    }
+
+    result = measure(
+        objectives,
+        {"current": current_tokens, "future": future_tokens},
+        distributed=False,
+    )
+
+    assert result["depth_gradient/current/main_raw_grad_norm"] == pytest.approx(1.0)
+    assert result["depth_gradient/current/main_weighted_grad_norm"] == pytest.approx(0.1)
+    assert result["depth_gradient/current/wrist_raw_grad_norm"] == pytest.approx(2.0)
+    assert result["depth_gradient/current/wrist_weighted_grad_norm"] == pytest.approx(0.4)
+    assert result["depth_gradient/current/wrist_to_main_raw_norm_ratio"] == pytest.approx(2.0)
+    assert result["depth_gradient/current/wrist_to_main_weighted_norm_ratio"] == pytest.approx(4.0)
+    assert result["depth_gradient/current/main_wrist_cosine"] == pytest.approx(-1.0)
+    assert result["depth_gradient/current/cosine_valid"] == 1.0
+    assert result["depth_gradient/current/cosine_negative"] == 1.0
+    assert result["depth_gradient/current/cosine_below_neg_0_2"] == 1.0
+
+    assert result["depth_gradient/future/main_wrist_cosine"] == pytest.approx(0.0)
+    assert result["depth_gradient/future/cosine_valid"] == 1.0
+    assert result["depth_gradient/future/cosine_negative"] == 0.0
+    assert result["depth_gradient/future/cosine_below_neg_0_2"] == 0.0
+
+
+def _make_online_probe_trainer(*, completed_steps=49, sync_gradients=True):
+    trainer = CotV2Trainer.__new__(CotV2Trainer)
+    trainer.config = OmegaConf.create(
+        {
+            "trainer": {
+                "test_diagnostics": {
+                    "enabled": True,
+                    "log_objective_gradients": True,
+                    "objective_gradient_interval": 50,
+                }
+            }
+        }
+    )
+    trainer.completed_steps = completed_steps
+    trainer.accelerator = SimpleNamespace(
+        sync_gradients=sync_gradients,
+        unwrap_model=lambda model: model,
+    )
+    trainer.model = SimpleNamespace(
+        lambda_action=1.0,
+        lambda_depth_current=0.0725,
+        lambda_depth_future=0.0725,
+        lambda_wrist_depth_current=0.0725,
+        lambda_wrist_depth_future=0.0725,
+        lambda_uvd=0.62,
+        lambda_uvd_relative=0.1,
+    )
+    return trainer
+
+
+def test_online_gradient_probe_schedule_captures_only_synchronized_interval_steps():
+    trainer = _make_online_probe_trainer(completed_steps=49, sync_gradients=True)
+
+    assert trainer._forward_diagnostic_kwargs() == {
+        "capture_depth_token_gradients": True
+    }
+
+    trainer.completed_steps = 48
+    assert trainer._forward_diagnostic_kwargs() == {}
+
+    trainer.completed_steps = 49
+    trainer.accelerator.sync_gradients = False
+    assert trainer._forward_diagnostic_kwargs() == {}
+
+
+def test_online_gradient_probe_emits_main_wrist_metrics_and_removes_private_tensors():
+    trainer = _make_online_probe_trainer()
+    trainer._forward_diagnostic_kwargs()
+    current = torch.tensor([[1.0, 2.0]], requires_grad=True)
+    future = torch.tensor([[3.0, 4.0]], requires_grad=True)
+    scale = torch.tensor(1.0, requires_grad=True)
+    output = {
+        "action_loss": scale,
+        "depth_current_loss": current[0, 0],
+        "depth_future_loss": future[0, 0],
+        "wrist_depth_current_loss": -2.0 * current[0, 0],
+        "wrist_depth_future_loss": future[0, 1],
+        "uvd_loss": scale,
+        "uvd_absolute_loss": scale,
+        "uvd_relative_loss": scale,
+        "total_loss": scale,
+        "_probe_depth_current_tokens": current,
+        "_probe_depth_future_tokens": future,
+    }
+
+    metrics = trainer._pre_backward_diagnostic_metrics(output)
+
+    assert metrics["diagnostic/objective_gradients_collected"] == 1.0
+    assert metrics["depth_gradient/current/main_wrist_cosine"] == pytest.approx(-1.0)
+    assert metrics["depth_gradient/future/main_wrist_cosine"] == pytest.approx(0.0)
+    assert metrics["timing/objective_gradient_probe"] >= 0.0
+    assert "_probe_depth_current_tokens" not in output
+    assert "_probe_depth_future_tokens" not in output
 
 
 class _SyntheticV2(nn.Module):

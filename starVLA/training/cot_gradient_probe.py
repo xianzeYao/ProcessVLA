@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch import nn
 
 
@@ -111,7 +112,7 @@ def extract_v2_objectives(
     output: Mapping[str, torch.Tensor],
     model: Any,
 ) -> dict[str, tuple[torch.Tensor, float]]:
-    """Return the five non-overlapping V2 objectives and effective weights."""
+    """Return non-overlapping V2 objectives and their effective weights."""
 
     key_map = {
         "action": "action_loss",
@@ -120,6 +121,16 @@ def extract_v2_objectives(
         "uvd_absolute": "uvd_absolute_loss",
         "uvd_relative": "uvd_relative_loss",
     }
+    wrist_key_map = {
+        "wrist_depth_current": "wrist_depth_current_loss",
+        "wrist_depth_future": "wrist_depth_future_loss",
+    }
+    wrist_presence = [key in output for key in wrist_key_map.values()]
+    if any(wrist_presence) and not all(wrist_presence):
+        missing = [key for key in wrist_key_map.values() if key not in output]
+        raise KeyError(f"incomplete wrist-depth objective: missing {missing}")
+    if all(wrist_presence):
+        key_map.update(wrist_key_map)
     missing = [key for key in key_map.values() if key not in output]
     if missing:
         raise KeyError(f"V2 gradient probe requires objective keys: {missing}")
@@ -130,6 +141,13 @@ def extract_v2_objectives(
         "uvd_absolute": float(model.lambda_uvd),
         "uvd_relative": float(model.lambda_uvd) * float(model.lambda_uvd_relative),
     }
+    if all(wrist_presence):
+        weights.update(
+            {
+                "wrist_depth_current": float(model.lambda_wrist_depth_current),
+                "wrist_depth_future": float(model.lambda_wrist_depth_future),
+            }
+        )
     objectives = {}
     for name, key in key_map.items():
         loss = output[key]
@@ -139,6 +157,144 @@ def extract_v2_objectives(
             raise ValueError(f"{key} is non-finite")
         objectives[name] = (loss, weights[name])
     return objectives
+
+
+def measure_paired_depth_token_gradients(
+    objectives: ObjectiveMap,
+    depth_tokens: Mapping[str, torch.Tensor],
+    *,
+    distributed: bool = True,
+) -> dict[str, float]:
+    """Measure main/wrist gradient strength and conflict on shared depth tokens.
+
+    The distributed statistic treats each rank's token tensor as one slice of a
+    larger global tensor. Squared norms, dot products, element counts, and losses
+    are reduced before the final norms and cosine are computed.
+    """
+
+    pairs = {
+        "current": ("depth_current", "wrist_depth_current"),
+        "future": ("depth_future", "wrist_depth_future"),
+    }
+    missing_objectives = [
+        name
+        for pair in pairs.values()
+        for name in pair
+        if name not in objectives
+    ]
+    if missing_objectives:
+        raise KeyError(
+            f"paired depth-token probe requires objectives: {missing_objectives}"
+        )
+    missing_tokens = [name for name in pairs if name not in depth_tokens]
+    if missing_tokens:
+        raise KeyError(f"paired depth-token probe requires token groups: {missing_tokens}")
+
+    metrics: dict[str, float] = {}
+    for branch, (main_name, wrist_name) in pairs.items():
+        tokens = depth_tokens[branch]
+        if not isinstance(tokens, torch.Tensor) or not tokens.requires_grad:
+            raise ValueError(f"{branch} depth tokens must be a tensor requiring gradients")
+        main_loss, main_weight = objectives[main_name]
+        wrist_loss, wrist_weight = objectives[wrist_name]
+        main_weight = float(main_weight)
+        wrist_weight = float(wrist_weight)
+        for name, weight in ((main_name, main_weight), (wrist_name, wrist_weight)):
+            if not np.isfinite(weight) or weight < 0.0:
+                raise ValueError(f"objective weight for {name} must be finite and non-negative")
+
+        main_gradient = torch.autograd.grad(
+            main_loss,
+            tokens,
+            retain_graph=True,
+            allow_unused=True,
+        )[0]
+        wrist_gradient = torch.autograd.grad(
+            wrist_loss,
+            tokens,
+            retain_graph=True,
+            allow_unused=True,
+        )[0]
+        if main_gradient is None:
+            main_gradient = torch.zeros_like(tokens)
+        if wrist_gradient is None:
+            wrist_gradient = torch.zeros_like(tokens)
+        main_gradient = main_gradient.detach().float()
+        wrist_gradient = wrist_gradient.detach().float()
+
+        reduced = torch.stack(
+            [
+                main_gradient.square().sum(),
+                wrist_gradient.square().sum(),
+                (main_gradient * wrist_gradient).sum(),
+                torch.tensor(float(tokens.numel()), device=tokens.device),
+                main_loss.detach().float(),
+                wrist_loss.detach().float(),
+            ]
+        )
+        world_size = 1
+        if distributed and dist.is_available() and dist.is_initialized():
+            dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+            world_size = dist.get_world_size()
+
+        main_norm = float(reduced[0].clamp_min(0.0).sqrt().item())
+        wrist_norm = float(reduced[1].clamp_min(0.0).sqrt().item())
+        element_count = max(float(reduced[3].item()), 1.0)
+        main_rms = main_norm / element_count**0.5
+        wrist_rms = wrist_norm / element_count**0.5
+        cosine_valid = main_norm > 0.0 and wrist_norm > 0.0
+        cosine = (
+            float((reduced[2] / (main_norm * wrist_norm)).clamp(-1.0, 1.0).item())
+            if cosine_valid
+            else 0.0
+        )
+        weighted_main_norm = main_norm * main_weight
+        weighted_wrist_norm = wrist_norm * wrist_weight
+        raw_ratio_valid = main_norm > 0.0
+        weighted_ratio_valid = weighted_main_norm > 0.0
+        prefix = f"depth_gradient/{branch}"
+        metrics.update(
+            {
+                f"{prefix}/main_raw_loss": float(reduced[4].item()) / world_size,
+                f"{prefix}/main_weight": main_weight,
+                f"{prefix}/main_weighted_loss": (
+                    float(reduced[4].item()) / world_size * main_weight
+                ),
+                f"{prefix}/main_raw_grad_norm": main_norm,
+                f"{prefix}/main_raw_grad_rms": main_rms,
+                f"{prefix}/main_weighted_grad_norm": weighted_main_norm,
+                f"{prefix}/main_weighted_grad_rms": main_rms * main_weight,
+                f"{prefix}/wrist_raw_loss": float(reduced[5].item()) / world_size,
+                f"{prefix}/wrist_weight": wrist_weight,
+                f"{prefix}/wrist_weighted_loss": (
+                    float(reduced[5].item()) / world_size * wrist_weight
+                ),
+                f"{prefix}/wrist_raw_grad_norm": wrist_norm,
+                f"{prefix}/wrist_raw_grad_rms": wrist_rms,
+                f"{prefix}/wrist_weighted_grad_norm": weighted_wrist_norm,
+                f"{prefix}/wrist_weighted_grad_rms": wrist_rms * wrist_weight,
+                f"{prefix}/wrist_to_main_raw_norm_ratio": (
+                    wrist_norm / main_norm if raw_ratio_valid else 0.0
+                ),
+                f"{prefix}/wrist_to_main_raw_norm_ratio_valid": float(raw_ratio_valid),
+                f"{prefix}/wrist_to_main_weighted_norm_ratio": (
+                    weighted_wrist_norm / weighted_main_norm
+                    if weighted_ratio_valid
+                    else 0.0
+                ),
+                f"{prefix}/wrist_to_main_weighted_norm_ratio_valid": float(
+                    weighted_ratio_valid
+                ),
+                f"{prefix}/main_wrist_cosine": cosine,
+                f"{prefix}/cosine_valid": float(cosine_valid),
+                f"{prefix}/cosine_negative": float(cosine_valid and cosine < 0.0),
+                f"{prefix}/cosine_below_neg_0_2": float(
+                    cosine_valid and cosine < -0.2
+                ),
+                f"{prefix}/global_token_element_count": element_count,
+            }
+        )
+    return metrics
 
 
 def select_shared_parameter_groups(

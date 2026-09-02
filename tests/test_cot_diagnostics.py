@@ -21,7 +21,9 @@ class _ToyCotModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.geometry_query = nn.Linear(2, 2, bias=False)
+        self.geometry_tokens = nn.Linear(2, 2, bias=False)
         self.depth_decoder = nn.Linear(2, 2, bias=False)
+        self.wrist_depth_decoder = nn.Linear(2, 2, bias=False)
         self.uvd_head = nn.Linear(2, 2, bias=False)
         self.action_model = nn.Linear(2, 2, bias=False)
 
@@ -54,7 +56,9 @@ class CotDiagnosticsTest(unittest.TestCase):
         metrics = collect_module_grad_norms(wrapper, hook_state=hook_state)
 
         self.assertGreater(metrics["grad/query_norm"], 0.0)
+        self.assertGreater(metrics["grad/geometry_tokens_norm"], 0.0)
         self.assertGreater(metrics["grad/depth_decoder_norm"], 0.0)
+        self.assertGreater(metrics["grad/wrist_depth_decoder_norm"], 0.0)
         self.assertGreater(metrics["grad/uvd_head_norm"], 0.0)
         self.assertGreater(metrics["grad/action_model_norm"], 0.0)
 
@@ -232,6 +236,62 @@ class CotDiagnosticsTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["depth_current/token_mean_offdiag_cosine"], 1.0, places=6)
         self.assertEqual(metrics["depth_current/token_cov_effective_rank"], 0.0)
         self.assertTrue(all(np.isfinite(value) for value in metrics.values()))
+
+    def test_token_utilization_omits_a_disabled_empty_token_group(self):
+        metrics = compute_token_utilization_metrics(
+            torch.empty(2, 0, 4),
+            prefix="depth_current",
+            attention_weights=None,
+        )
+
+        self.assertEqual(metrics, {})
+
+    def test_geometry_and_decoder_metrics_support_future_depth_only(self):
+        target_uvd = np.asarray(
+            [[0.1, 0.2, 0.3], [0.2, 0.3, 0.4]],
+            dtype=np.float32,
+        )
+        predictions = {
+            "depth_current": None,
+            "depth_future": torch.ones(1, 1, 2, 2),
+            "uvd": torch.from_numpy(target_uvd[None]),
+            "decoder_interventions": {
+                "zero": {
+                    "depth_current": None,
+                    "depth_future": torch.zeros(1, 1, 2, 2),
+                }
+            },
+        }
+        examples = [
+            {
+                "depth_current": np.ones((1, 2, 2), dtype=np.float32),
+                "depth_future": np.ones((1, 2, 2), dtype=np.float32),
+                "depth_current_valid": np.ones((1, 2, 2), dtype=np.bool_),
+                "depth_future_valid": np.ones((1, 2, 2), dtype=np.bool_),
+                "uvd": target_uvd,
+                "uvd_valid_mask": np.ones(2, dtype=np.bool_),
+            }
+        ]
+
+        geometry = compute_geometry_metrics(
+            predictions,
+            examples,
+            depth_scale=2.0,
+            image_size=2,
+        )
+        reliance = compute_decoder_reliance_metrics(
+            predictions,
+            examples,
+            depth_scale=2.0,
+        )
+
+        self.assertNotIn("depth_current_mae_m", geometry)
+        self.assertEqual(geometry["depth_future_mae_m"], 0.0)
+        self.assertFalse(any("depth_current" in key for key in reliance))
+        self.assertEqual(
+            reliance["decoder_reliance/zero/depth_future_delta_mae_m"],
+            2.0,
+        )
 
     def test_gradient_clipping_metrics_match_clipped_and_unclipped_cases(self):
         clipped = compute_gradient_clipping_metrics(pre_clip_norm=2.5, threshold=1.0)

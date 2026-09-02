@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import time
 
 import torch.distributed as dist
 from omegaconf import OmegaConf
@@ -11,6 +12,10 @@ from omegaconf import OmegaConf
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.cot_test_diagnostics import write_run_manifest
+from starVLA.training.cot_gradient_probe import (
+    extract_v2_objectives,
+    measure_paired_depth_token_gradients,
+)
 from starVLA.training.train_starvla import (
     accelerator,
     logger,
@@ -25,6 +30,46 @@ from starVLA.training.trainer_utils.config_tracker import wrap_config
 
 class CotV2Trainer(CotV1Trainer):
     """Reuse the CoT lifecycle and log optional V2 wrist-depth objectives."""
+
+    def _forward_diagnostic_kwargs(self) -> dict:
+        diagnostic_config = self._diagnostic_config()
+        interval = max(
+            int(diagnostic_config.get("objective_gradient_interval", 50)),
+            1,
+        )
+        should_collect = (
+            bool(diagnostic_config.get("enabled", False))
+            and bool(diagnostic_config.get("log_objective_gradients", False))
+            and self.accelerator.sync_gradients
+            and (self.completed_steps + 1) % interval == 0
+        )
+        self._collect_online_depth_objective_gradients = should_collect
+        return {"capture_depth_token_gradients": True} if should_collect else {}
+
+    def _pre_backward_diagnostic_metrics(
+        self,
+        output_dict: dict[str, torch.Tensor],
+    ) -> dict[str, float]:
+        if not bool(
+            getattr(self, "_collect_online_depth_objective_gradients", False)
+        ):
+            return {"diagnostic/objective_gradients_collected": 0.0}
+
+        start = time.perf_counter()
+        depth_tokens = {
+            "current": output_dict.pop("_probe_depth_current_tokens"),
+            "future": output_dict.pop("_probe_depth_future_tokens"),
+        }
+        model = self.accelerator.unwrap_model(self.model)
+        objectives = extract_v2_objectives(output_dict, model)
+        metrics = measure_paired_depth_token_gradients(
+            objectives,
+            depth_tokens,
+            distributed=True,
+        )
+        metrics["diagnostic/objective_gradients_collected"] = 1.0
+        metrics["timing/objective_gradient_probe"] = time.perf_counter() - start
+        return metrics
 
     def _extra_objective_metrics(
         self,

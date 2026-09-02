@@ -101,6 +101,18 @@ def test_launcher_dry_run_supports_eight_unique_gpus(tmp_path):
     }
 
 
+def test_launcher_dry_run_records_opt_in_trace_protocol(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRACE_CONSISTENCY", "1")
+    result, run_dir = _run_launcher(
+        tmp_path, gpus="0", run_timestamp="trace-consistency"
+    )
+
+    assert result.returncode == 0, result.stderr
+    protocol = (run_dir / "protocol.env").read_text()
+    assert "TRACE_CONSISTENCY=1" in protocol
+    assert "TRACE_ACTION_HORIZON=16" in protocol
+    assert (run_dir / "trace_consistency").is_dir()
+
 def test_launcher_rejects_duplicate_gpus(tmp_path):
     result, _ = _run_launcher(
         tmp_path, gpus="0,1,1", run_timestamp="duplicate-gpus"

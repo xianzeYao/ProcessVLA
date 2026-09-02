@@ -234,6 +234,8 @@ def _diagnostic_module_parameter_ids(model: torch.nn.Module) -> dict[str, set[in
         "action_model": "action_model",
     }
     for group, attribute in (
+        ("geometry_tokens", "geometry_tokens"),
+        ("wrist_depth_decoder", "wrist_depth_decoder"),
         ("uvd_head", "uvd_head"),
         ("local_uvd_head", "local_uvd_head"),
         ("coarse_uvd_head", "coarse_uvd_head"),

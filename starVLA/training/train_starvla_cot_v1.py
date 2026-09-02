@@ -72,6 +72,19 @@ class CotV1Trainer(VLATrainer):
     ) -> dict[str, float]:
         return {}
 
+    def _forward_diagnostic_kwargs(self) -> dict:
+        """Allow subclasses to request graph tensors only on diagnostic steps."""
+
+        return {}
+
+    def _pre_backward_diagnostic_metrics(
+        self,
+        output_dict: dict[str, torch.Tensor],
+    ) -> dict[str, float]:
+        """Collect objective-specific graph diagnostics before total backward."""
+
+        return {}
+
 
     def _log_metrics(self, metrics):
         super()._log_metrics(metrics)
@@ -96,9 +109,16 @@ class CotV1Trainer(VLATrainer):
             self._diagnostic_examples = [dict(example) for example in batch_vla[:sample_count]]
         with self.accelerator.accumulate(self.model):
             self.optimizer.zero_grad()
+            forward_diagnostic_kwargs = self._forward_diagnostic_kwargs()
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                output_dict = self.model.forward(batch_vla)
+                output_dict = self.model.forward(
+                    batch_vla,
+                    **forward_diagnostic_kwargs,
+                )
                 total_loss = output_dict["total_loss"]
+            pre_backward_diagnostic_metrics = self._pre_backward_diagnostic_metrics(
+                output_dict
+            )
             module_grad_metrics = {}
             grad_diagnostics_time = 0.0
             hook_state = None
@@ -195,6 +215,7 @@ class CotV1Trainer(VLATrainer):
                 )
             )
         metrics.update(module_grad_metrics)
+        metrics.update(pre_backward_diagnostic_metrics)
         if bool(diagnostic_config.get("enabled", False)):
             metrics.update(collect_batch_valid_ratios(batch_vla))
         return metrics

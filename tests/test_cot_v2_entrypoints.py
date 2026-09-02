@@ -198,3 +198,123 @@ def test_libero_q32_wrist_depth_launcher_dry_run_uses_v2_trainer():
     assert "--num_processes 8" in result.stdout
     assert "--main_process_port 29539" in result.stdout
     assert "--trainer.max_train_steps=7" in result.stdout
+
+
+def test_robocasa_q32_nodepthcond_single_depth_branch_ablation_configs_and_launchers():
+    config_root = ROOT / "examples/modelExtensions/CoT/configs"
+    script_root = ROOT / "examples/modelExtensions/CoT/scripts"
+    baseline = OmegaConf.to_container(
+        OmegaConf.load(config_root / "qwen35_gr00t_robocasa_fourier_CoT_v2.yaml"),
+        resolve=True,
+    )
+    cases = {
+        "current": (
+            "qwen35_gr00t_robocasa_fourier_CoT_v2_q32_nodepthcond_wo_current_depth.yaml",
+            "run_qwen35_gr00t_robocasa_fourier_CoT_v2_q32_nodepthcond_wo_current_depth.sh",
+        ),
+        "future": (
+            "qwen35_gr00t_robocasa_fourier_CoT_v2_q32_nodepthcond_wo_future_depth.yaml",
+            "run_qwen35_gr00t_robocasa_fourier_CoT_v2_q32_nodepthcond_wo_future_depth.sh",
+        ),
+    }
+
+    for disabled_branch, (config_name, script_name) in cases.items():
+        config_path = config_root / config_name
+        script_path = script_root / script_name
+        assert config_path.exists(), f"missing ablation config: {config_path}"
+        assert script_path.exists(), f"missing ablation launcher: {script_path}"
+
+        ablation = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+        geometry = ablation["framework"]["geometry"]
+        assert ablation["framework"]["action_model"]["num_target_vision_tokens"] == 32
+        assert geometry["include_depth_in_action_condition"] is False
+        assert geometry[f"enable_{disabled_branch}_depth"] is False
+        kept_branch = "future" if disabled_branch == "current" else "current"
+        assert geometry[f"enable_{kept_branch}_depth"] is True
+        assert geometry[f"lambda_depth_{disabled_branch}"] == 0.0
+        assert geometry[f"lambda_depth_{kept_branch}"] == baseline["framework"]["geometry"][
+            f"lambda_depth_{kept_branch}"
+        ]
+        expected_run_id = f"{config_name.removesuffix('.yaml')}_8gpu_bs16"
+        assert ablation["run_id"] == expected_run_id
+        geometry.pop("enable_current_depth")
+        geometry.pop("enable_future_depth")
+        geometry.pop("include_depth_in_action_condition")
+        geometry[f"lambda_depth_{disabled_branch}"] = baseline["framework"]["geometry"][
+            f"lambda_depth_{disabled_branch}"
+        ]
+        ablation["run_id"] = baseline["run_id"]
+        assert ablation == baseline
+
+        result = subprocess.run(
+            ["bash", str(script_path), "--trainer.max_train_steps=7"],
+            cwd=ROOT,
+            env={
+                **os.environ,
+                "DRY_RUN": "1",
+                "NUM_PROCESSES": "8",
+                "MAIN_PROCESS_PORT": "29541",
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "starVLA/training/train_starvla_cot_v2.py" in result.stdout
+        assert config_name in result.stdout
+        assert "--num_processes 8" in result.stdout
+        assert "--main_process_port 29541" in result.stdout
+        assert "--trainer.max_train_steps=7" in result.stdout
+
+
+def test_libero_wrist_depth_gradprobe_10k_node2_config_and_launcher_are_fixed():
+    config_name = (
+        "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_"
+        "wristdepth_gradprobe10k_node2.yaml"
+    )
+    config_path = ROOT / "examples/modelExtensions/CoT/configs" / config_name
+    script_path = (
+        ROOT
+        / "examples/modelExtensions/CoT/scripts"
+        / "run_qwen35_gr00t_libero_CoT_v2_q32_wristdepth_gradprobe10k_node2.sh"
+    )
+    assert config_path.exists(), f"missing fixed 10k gradient-probe config: {config_path}"
+    assert script_path.exists(), f"missing fixed 10k gradient-probe launcher: {script_path}"
+
+    cfg = OmegaConf.load(config_path)
+    assert cfg.run_id == (
+        "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_"
+        "wristdepth_gradprobe10k_node2"
+    )
+    assert cfg.run_root_dir == "/data-training/yyf/yxz/outputs/libero"
+    assert cfg.framework.qwenvl.base_vlm == "/data-training/yyf/yxz/models/Qwen3.5-4B"
+    assert cfg.datasets.vla_data.data_root_dir == (
+        "/data-training/yyf/yxz/datasets/libero_rerender"
+    )
+    depth_weights = (
+        cfg.framework.geometry.lambda_depth_current,
+        cfg.framework.geometry.lambda_depth_future,
+        cfg.framework.geometry.lambda_wrist_depth_current,
+        cfg.framework.geometry.lambda_wrist_depth_future,
+    )
+    assert depth_weights == (0.0725,) * 4
+    assert cfg.trainer.max_train_steps == 10000
+    assert cfg.trainer.num_warmup_steps == 1000
+    assert cfg.trainer.save_interval == 5000
+    assert cfg.trainer.test_diagnostics.log_objective_gradients is True
+    assert cfg.trainer.test_diagnostics.objective_gradient_interval == 50
+    assert cfg.trainer.test_diagnostics.module_gradient_interval == 50
+
+    result = subprocess.run(
+        ["bash", str(script_path), "--trainer.max_train_steps=7"],
+        cwd=ROOT,
+        env={**os.environ, "DRY_RUN": "1"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "/data-training/yyf/yxz/envs/train/bin/python" in result.stdout
+    assert config_name in result.stdout
+    assert "--num_processes 8" in result.stdout
+    assert "--trainer.max_train_steps=7" in result.stdout

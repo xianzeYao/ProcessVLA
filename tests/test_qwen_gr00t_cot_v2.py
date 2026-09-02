@@ -17,12 +17,22 @@ from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils
 
 
-def make_uninitialized_model(*, depth_queries=2, points=3, hands=2, include_depth=False):
+def make_uninitialized_model(
+    *,
+    depth_queries=2,
+    points=3,
+    hands=2,
+    include_depth=False,
+    enable_current_depth=True,
+    enable_future_depth=True,
+):
     model = Qwen_GR00T_CoT_V2.__new__(Qwen_GR00T_CoT_V2)
     model.geometry_layout = GeometryTokenLayout(
         depth_query_count=depth_queries,
         uvd_points_per_hand=points,
         hand_count=hands,
+        enable_current_depth=enable_current_depth,
+        enable_future_depth=enable_future_depth,
     )
     model.include_depth_in_action_condition = include_depth
     return model
@@ -744,6 +754,156 @@ def test_v2_forward_adds_optional_wrist_losses_without_depth_in_action_condition
     )
 
 
+def test_v2_forward_exposes_shared_depth_tokens_only_for_online_gradient_probe():
+    model = make_uninitialized_model(
+        depth_queries=1, points=2, hands=1, include_depth=False
+    )
+    torch.nn.Module.__init__(model)
+    model.reconstruct_wrist_depth = False
+    model.lambda_action = 1.0
+    model.lambda_depth_current = 0.14
+    model.lambda_depth_future = 0.15
+    model.lambda_uvd = 0.62
+    current_tokens = torch.ones(1, 1, 4, requires_grad=True)
+    future_tokens = torch.full((1, 1, 4), 2.0, requires_grad=True)
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 4),
+        depth_current=current_tokens,
+        depth_future=future_tokens,
+        uvd=torch.zeros(1, 2, 4),
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._prepare_uvd_targets = MethodType(lambda self, examples, device: None, model)
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+    model._decode_geometry = MethodType(
+        lambda self, hidden, inputs: (
+            torch.zeros(1, 1, 2, 2),
+            torch.zeros(1, 1, 2, 2),
+            torch.zeros(1, 2, 3),
+        ),
+        model,
+    )
+    model._compute_uvd_losses = MethodType(
+        lambda self, pred, packed: {
+            "absolute": torch.tensor(0.0),
+            "relative": torch.tensor(0.0),
+            "total": torch.tensor(0.0),
+        },
+        model,
+    )
+    model._action_loss = MethodType(
+        lambda self, condition, condition_mask, examples: torch.tensor(2.0),
+        model,
+    )
+    example = {
+        "depth_current": np.zeros((1, 2, 2), dtype=np.float32),
+        "depth_future": np.zeros((1, 2, 2), dtype=np.float32),
+        "depth_current_valid": np.ones((1, 2, 2), dtype=np.bool_),
+        "depth_future_valid": np.ones((1, 2, 2), dtype=np.bool_),
+    }
+
+    normal = model.forward([example])
+    probed = model.forward([example], capture_depth_token_gradients=True)
+
+    assert "_probe_depth_current_tokens" not in normal
+    assert "_probe_depth_future_tokens" not in normal
+    assert probed["_probe_depth_current_tokens"] is current_tokens
+    assert probed["_probe_depth_future_tokens"] is future_tokens
+
+
+@pytest.mark.parametrize(
+    ("disabled_branch", "expected_total"),
+    [
+        ("current", 2.0 + 0.15 * 1.5),
+        ("future", 2.0 + 0.14 * 0.5),
+    ],
+)
+def test_v2_forward_skips_disabled_depth_decode_target_and_loss(
+    disabled_branch,
+    expected_total,
+):
+    current_enabled = disabled_branch != "current"
+    future_enabled = disabled_branch != "future"
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=False,
+        enable_current_depth=current_enabled,
+        enable_future_depth=future_enabled,
+    )
+    torch.nn.Module.__init__(model)
+    model.reconstruct_wrist_depth = False
+    model.lambda_action = 1.0
+    model.lambda_depth_current = 0.14
+    model.lambda_depth_future = 0.15
+    model.lambda_uvd = 0.62
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 4),
+        depth_current=(
+            torch.ones(1, 1, 4) if current_enabled else torch.empty(1, 0, 4)
+        ),
+        depth_future=(
+            torch.ones(1, 1, 4) if future_enabled else torch.empty(1, 0, 4)
+        ),
+        uvd=torch.zeros(1, 2, 4),
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._prepare_uvd_targets = MethodType(
+        lambda self, examples, device: None,
+        model,
+    )
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+    model._decode_geometry = MethodType(
+        lambda self, hidden, inputs: (
+            torch.zeros(1, 1, 2, 2) if current_enabled else None,
+            torch.zeros(1, 1, 2, 2) if future_enabled else None,
+            torch.zeros(1, 2, 3),
+        ),
+        model,
+    )
+    model._compute_uvd_losses = MethodType(
+        lambda self, pred, packed: {
+            "absolute": torch.tensor(0.0),
+            "relative": torch.tensor(0.0),
+            "total": torch.tensor(0.0),
+        },
+        model,
+    )
+    model._action_loss = MethodType(
+        lambda self, condition, condition_mask, examples: torch.tensor(2.0),
+        model,
+    )
+    example = {}
+    if current_enabled:
+        example.update(
+            depth_current=np.ones((1, 2, 2), dtype=np.float32),
+            depth_current_valid=np.ones((1, 2, 2), dtype=np.bool_),
+        )
+    if future_enabled:
+        example.update(
+            depth_future=np.full((1, 2, 2), 2.0, dtype=np.float32),
+            depth_future_valid=np.ones((1, 2, 2), dtype=np.bool_),
+        )
+
+    output = model.forward([example])
+
+    assert float(output[f"depth_{disabled_branch}_loss"]) == 0.0
+    torch.testing.assert_close(output["total_loss"], torch.tensor(expected_total))
+
+
 def test_predict_geometry_returns_optional_wrist_depth_maps():
     model = make_uninitialized_model(depth_queries=1, points=2, hands=1)
     model.reconstruct_wrist_depth = True
@@ -865,6 +1025,59 @@ class _CountingDepthDecoder(torch.nn.Module):
         return query[:, :1, None, None].expand(-1, 1, *output_hw)
 
 
+@pytest.mark.parametrize("disabled_branch", ["current", "future"])
+def test_decode_geometry_never_calls_the_disabled_depth_branch(disabled_branch):
+    current_enabled = disabled_branch != "current"
+    future_enabled = disabled_branch != "future"
+    model = make_uninitialized_model(
+        depth_queries=2,
+        points=2,
+        hands=1,
+        enable_current_depth=current_enabled,
+        enable_future_depth=future_enabled,
+    )
+    torch.nn.Module.__init__(model)
+    model.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=2)
+    with torch.no_grad():
+        model.depth_attention_pool.score.weight.zero_()
+    model.depth_decoder = _CountingDepthDecoder()
+    model.depth_output_size = 2
+    model._main_image_tokens = MethodType(
+        lambda self, native, input_ids: (
+            torch.tensor([[[1.0, 1.0], [2.0, 2.0]]]),
+            (1, 2),
+        ),
+        model,
+    )
+    model._predict_uvd = MethodType(
+        lambda self, tokens: torch.zeros(tokens.shape[0], tokens.shape[1], 3),
+        model,
+    )
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 2),
+        depth_current=(
+            torch.tensor([[[1.0, 0.0], [3.0, 0.0]]])
+            if current_enabled
+            else torch.empty(1, 0, 2)
+        ),
+        depth_future=(
+            torch.tensor([[[10.0, 0.0], [14.0, 0.0]]])
+            if future_enabled
+            else torch.empty(1, 0, 2)
+        ),
+        uvd=torch.zeros(1, 2, 2),
+    )
+
+    current, future, uvd = model._decode_geometry(
+        split, {"input_ids": torch.ones(1, 2, dtype=torch.long)}
+    )
+
+    assert (current is None) is (not current_enabled)
+    assert (future is None) is (not future_enabled)
+    assert len(model.depth_decoder.queries) == 1
+    assert uvd.shape == (1, 2, 3)
+
+
 def test_wrist_decoder_uses_second_image_span_and_shared_temporal_summaries():
     model = make_uninitialized_model(depth_queries=2, points=2, hands=1)
     torch.nn.Module.__init__(model)
@@ -912,8 +1125,14 @@ def test_wrist_decoder_uses_second_image_span_and_shared_temporal_summaries():
     assert wrist_future.shape == (1, 1, 2, 2)
 
 
-def make_diagnostic_model():
-    model = make_uninitialized_model(depth_queries=2, points=2, hands=1)
+def make_diagnostic_model(*, current_enabled=True, future_enabled=True):
+    model = make_uninitialized_model(
+        depth_queries=2,
+        points=2,
+        hands=1,
+        enable_current_depth=current_enabled,
+        enable_future_depth=future_enabled,
+    )
     torch.nn.Module.__init__(model)
     model.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=2)
     with torch.no_grad():
@@ -922,11 +1141,19 @@ def make_diagnostic_model():
     model.depth_output_size = 2
     split = GeometryHiddenSplit(
         native=torch.zeros(2, 2, 2),
-        depth_current=torch.tensor(
-            [[[1.0, 0.0], [3.0, 0.0]], [[5.0, 0.0], [7.0, 0.0]]]
+        depth_current=(
+            torch.tensor(
+                [[[1.0, 0.0], [3.0, 0.0]], [[5.0, 0.0], [7.0, 0.0]]]
+            )
+            if current_enabled
+            else torch.empty(2, 0, 2)
         ),
-        depth_future=torch.tensor(
-            [[[10.0, 0.0], [14.0, 0.0]], [[20.0, 0.0], [24.0, 0.0]]]
+        depth_future=(
+            torch.tensor(
+                [[[10.0, 0.0], [14.0, 0.0]], [[20.0, 0.0], [24.0, 0.0]]]
+            )
+            if future_enabled
+            else torch.empty(2, 0, 2)
         ),
         uvd=torch.zeros(2, 2, 2),
     )
@@ -978,3 +1205,38 @@ def test_v2_diagnostics_reuse_features_for_zero_swap_shuffle_without_parameter_c
     assert torch.equal(model.depth_decoder.queries[4], torch.tensor([[12.0, 0.0], [22.0, 0.0]]))
     assert torch.equal(model.depth_decoder.queries[6], torch.tensor([[6.0, 0.0], [2.0, 0.0]]))
     assert all(torch.equal(before[name], value) for name, value in model.state_dict().items())
+
+
+@pytest.mark.parametrize(
+    ("current_enabled", "future_enabled", "enabled_name", "disabled_name"),
+    [
+        (False, True, "depth_future", "depth_current"),
+        (True, False, "depth_current", "depth_future"),
+    ],
+)
+def test_v2_diagnostics_support_one_enabled_depth_branch(
+    current_enabled,
+    future_enabled,
+    enabled_name,
+    disabled_name,
+):
+    model = make_diagnostic_model(
+        current_enabled=current_enabled,
+        future_enabled=future_enabled,
+    )
+
+    output = model.predict_geometry_diagnostics(
+        [{"image": [], "lang": "move"}, {"image": [], "lang": "move"}],
+        include_decoder_interventions=True,
+    )
+
+    assert output[disabled_name] is None
+    assert output[f"{disabled_name}_tokens"].shape == (2, 0, 2)
+    assert output[f"{disabled_name}_pool_weights"] is None
+    assert output[enabled_name] is not None
+    assert set(output["decoder_interventions"]) == {"zero", "shuffle"}
+    assert all(
+        variant[disabled_name] is None
+        for variant in output["decoder_interventions"].values()
+    )
+    assert len(model.depth_decoder.queries) == 3

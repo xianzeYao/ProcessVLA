@@ -824,9 +824,7 @@ def test_launcher_live_preflight_rejects_bad_libero_before_manifest_write(
         "SOURCE_LOG_DIR": str(logs),
         "OUTPUT_DIR": str(output),
         "POLICY_PYTHON": "/bin/false",
-        "SIM_PYTHON": str(
-            Path("/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python")
-        ),
+        "SIM_PYTHON": sys.executable,
         "LIBERO_HOME": "" if home_value == "empty" else str(bad_home),
         "LIBERO_CONFIG_PATH": str(bad_home / "libero"),
         "SERVER_READY_TIMEOUT": "1",
@@ -887,7 +885,7 @@ def test_launcher_dry_run_prints_four_suites_and_eighty_cases_without_starting(
             "SOURCE_LOG_DIR": str(logs),
             "OUTPUT_DIR": str(tmp_path / "audit"),
             "POLICY_PYTHON": "/bin/false",
-            "SIM_PYTHON": str(Path("/root/data/yxz/miniforge3/envs/CoT_linearATT/bin/python")),
+            "SIM_PYTHON": sys.executable,
             "LIBERO_HOME": str(libero_home),
             "LIBERO_CONFIG_PATH": str(config_path),
         },

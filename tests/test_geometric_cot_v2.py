@@ -48,6 +48,42 @@ def test_dual_hand_mask_is_time_major_block_causal():
     assert allowed[7, 4] and allowed[7, 5] and allowed[7, 6]
 
 
+@pytest.mark.parametrize(
+    ("enable_current_depth", "enable_future_depth", "expected_current", "expected_future"),
+    [
+        (False, True, slice(2, 2), slice(2, 4)),
+        (True, False, slice(2, 4), slice(4, 4)),
+    ],
+)
+def test_layout_omits_the_disabled_depth_branch_from_the_qwen_sequence(
+    enable_current_depth,
+    enable_future_depth,
+    expected_current,
+    expected_future,
+):
+    layout = GeometryTokenLayout(
+        depth_query_count=2,
+        uvd_points_per_hand=2,
+        hand_count=1,
+        enable_current_depth=enable_current_depth,
+        enable_future_depth=enable_future_depth,
+    )
+
+    slices = layout.sequence_slices(native_token_count=2)
+    embeddings = GeometryTokenEmbedding(hidden_dim=4, layout=layout)(batch_size=1)
+    appended_mask = torch.ones(1, 2 + layout.geometry_token_count, dtype=torch.bool)
+    allowed = build_geometry_full_attention_mask(appended_mask, layout)[0, 0]
+
+    assert slices.depth_current == expected_current
+    assert slices.depth_future == expected_future
+    assert slices.uvd == slice(4, 6)
+    assert layout.geometry_token_count == 4
+    assert embeddings.shape == (1, 4, 4)
+    remaining_depth = expected_future if enable_future_depth else expected_current
+    assert allowed[remaining_depth.start, remaining_depth.stop - 1]
+    assert not allowed[slices.uvd.start, slices.uvd.start + 1]
+
+
 def test_full_attention_mask_never_reads_padding_or_invalid_uvd_keys():
     layout = GeometryTokenLayout(depth_query_count=1, uvd_points_per_hand=2, hand_count=1)
     # Native key 0 is left padding and the final UVD slot is invalid.
@@ -197,3 +233,23 @@ def test_depth_summary_interventions_skip_shuffle_for_single_sample():
     variants = build_depth_summary_interventions(torch.ones(1, 2), torch.zeros(1, 2))
 
     assert set(variants) == {"normal", "zero", "swap"}
+
+
+@pytest.mark.parametrize("enabled_branch", ["current", "future"])
+def test_depth_summary_interventions_keep_a_disabled_branch_absent(enabled_branch):
+    summary = torch.tensor([[1.0], [2.0]])
+    current = summary if enabled_branch == "current" else None
+    future = summary if enabled_branch == "future" else None
+
+    variants = build_depth_summary_interventions(current, future)
+
+    assert set(variants) == {"normal", "zero", "shuffle"}
+    disabled_index = 1 if enabled_branch == "current" else 0
+    enabled_index = 0 if enabled_branch == "current" else 1
+    assert all(values[disabled_index] is None for values in variants.values())
+    assert torch.equal(variants["normal"][enabled_index], summary)
+    assert torch.equal(variants["zero"][enabled_index], torch.zeros_like(summary))
+    assert torch.equal(
+        variants["shuffle"][enabled_index],
+        torch.tensor([[2.0], [1.0]]),
+    )

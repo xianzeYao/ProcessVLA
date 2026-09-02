@@ -40,6 +40,35 @@ def test_step_1000_bundle_accepts_bfloat16_predictions(tmp_path):
         )
 
 
+def test_step_1000_bundle_omits_a_disabled_current_depth_branch(tmp_path):
+    predictions = {
+        "depth_current": None,
+        "depth_future": torch.full((1, 2, 2), 0.50),
+        "uvd": torch.tensor([[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]]),
+    }
+    examples = [
+        {
+            "depth_current": np.full((2, 2), 0.25, dtype=np.float32),
+            "depth_future": np.full((2, 2), 0.50, dtype=np.float32),
+            "uvd": np.asarray(
+                [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+                dtype=np.float32,
+            ),
+            "uvd_valid_mask": np.asarray([True, True]),
+            "uvd_time": np.asarray([0.0, 1.0], dtype=np.float32),
+            "uvd_frame_indices": np.asarray([0, 7], dtype=np.int64),
+        }
+    ]
+
+    path = save_prediction_bundle(tmp_path, 1000, predictions, examples)
+
+    with np.load(path) as bundle:
+        assert "depth_current" not in bundle
+        assert "depth_current_target" not in bundle
+        assert "depth_future" in bundle
+        assert "depth_future_target" in bundle
+
+
 def test_dual_hand_time_major_bundle_preserves_target_and_frame_order(tmp_path):
     uvd = np.asarray(
         [

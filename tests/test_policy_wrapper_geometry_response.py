@@ -76,6 +76,11 @@ def test_policy_wrapper_scopes_seed_and_forwards_geometry_as_numpy() -> None:
     assert first["geometry"]["depth_current"].dtype == np.float32
     assert unseeded["actions"].shape == (1, 2, 3)
 
+
+def test_policy_wrapper_preserves_disabled_geometry_branch_as_none() -> None:
+    assert PolicyServerWrapper._to_numpy(None) is None
+
+
 def test_scoped_cuda_seed_touches_only_framework_device(monkeypatch) -> None:
     framework = _RandomFramework()
     wrapper = _make_wrapper(framework)

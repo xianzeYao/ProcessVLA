@@ -825,7 +825,13 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 encoder_attention_mask=repeated_mask,
             )
 
-    def forward(self, examples: List[dict] = None, **kwargs) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        examples: List[dict] = None,
+        *,
+        capture_depth_token_gradients: bool = False,
+        **kwargs,
+    ) -> dict[str, torch.Tensor]:
         qwen_inputs, native_attention_mask = self._build_native_inputs(examples, inference=False)
         packed = self._prepare_uvd_targets(examples, qwen_inputs["input_ids"].device)
         split = self._run_geometry_backbone(qwen_inputs)
@@ -923,6 +929,9 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             "total_loss": total_loss,
         }
         output.update(wrist_losses)
+        if capture_depth_token_gradients:
+            output["_probe_depth_current_tokens"] = split.depth_current
+            output["_probe_depth_future_tokens"] = split.depth_future
         return output
 
     @torch.inference_mode()
