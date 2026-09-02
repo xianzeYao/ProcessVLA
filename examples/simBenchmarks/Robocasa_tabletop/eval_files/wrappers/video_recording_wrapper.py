@@ -180,6 +180,7 @@ class VideoRecordingWrapper(gym.Wrapper):
         mode="rgb_array",
         video_dir: Path | None = None,
         steps_per_render=1,
+        keep_successful_videos=True,
         **kwargs,
     ):
         """
@@ -193,6 +194,7 @@ class VideoRecordingWrapper(gym.Wrapper):
         self.mode = mode
         self.render_kwargs = kwargs
         self.steps_per_render = steps_per_render
+        self.keep_successful_videos = bool(keep_successful_videos)
         self.video_dir = video_dir
         self.video_recorder = video_recorder
         self.file_path = None
@@ -208,11 +210,14 @@ class VideoRecordingWrapper(gym.Wrapper):
         self.video_recorder.stop()
 
         if self.video_dir is not None and self.file_path is not None:
-            # rename the file to indicate success or failure
-            original_filestem = self.file_path.stem
-            new_filestem = f"{original_filestem}_success{int(self.is_success)}"
-            new_file_path = self.video_dir / f"{new_filestem}.mp4"
-            os.rename(self.file_path, new_file_path)
+            if bool(self.is_success) and not self.keep_successful_videos:
+                self.file_path.unlink(missing_ok=True)
+            else:
+                # rename the file to indicate success or failure
+                original_filestem = self.file_path.stem
+                new_filestem = f"{original_filestem}_success{int(self.is_success)}"
+                new_file_path = self.video_dir / f"{new_filestem}.mp4"
+                os.rename(self.file_path, new_file_path)
 
         self.is_success = False
         if self.video_dir is not None:

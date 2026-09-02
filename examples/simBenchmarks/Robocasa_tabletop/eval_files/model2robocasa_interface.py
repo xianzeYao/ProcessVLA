@@ -27,6 +27,8 @@ class PolicyWarper:
         n_action_steps=2,
         send_state: bool = True,
         return_geometry: bool = False,
+        geometry_uvd_only: bool = False,
+        return_rollout_features: bool = False,
     ) -> None:
 
         # build client to connect server policy
@@ -38,6 +40,12 @@ class PolicyWarper:
         # the instruction whenever `state` is present, corrupting the prompt format.
         self.send_state = send_state
         self.return_geometry = bool(return_geometry)
+        self.geometry_uvd_only = bool(geometry_uvd_only)
+        self.return_rollout_features = bool(return_rollout_features)
+        if (self.geometry_uvd_only or self.return_rollout_features) and not self.return_geometry:
+            raise ValueError(
+                "geometry_uvd_only and return_rollout_features require return_geometry=True"
+            )
 
         print(f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key} ***")
         self.use_ddim = use_ddim
@@ -180,6 +188,10 @@ class PolicyWarper:
         vla_input["unnorm_key"] = self.unnorm_key
         if self.return_geometry:
             vla_input["return_geometry"] = True
+        if getattr(self, "geometry_uvd_only", False):
+            vla_input["geometry_uvd_only"] = True
+        if getattr(self, "return_rollout_features", False):
+            vla_input["return_rollout_features"] = True
 
         # === TRAIN/TEST CONSISTENCY: keep the observation below aligned with training ===
         # Embodied policies degrade SILENTLY (no error) when the eval-time observation
@@ -193,7 +205,8 @@ class PolicyWarper:
         # ==============================================================================
         response = self.client.predict_action(vla_input)
         # server already un-normalized via training-time transform
-        raw_actions = np.array(response["data"]["actions"])  # (B, chunk, D)
+        server_actions = np.asarray(response["data"]["actions"])
+        raw_actions = server_actions  # (B, chunk, D)
 
         # raw_actions shape: (B, chunk, D)
         if self.action_ensemble:
@@ -217,7 +230,25 @@ class PolicyWarper:
         if self.return_geometry:
             if "geometry" not in response["data"]:
                 raise ValueError("policy server did not return requested geometry")
-            result["geometry"] = response["data"]["geometry"]
+            geometry = dict(response["data"]["geometry"])
+            if getattr(self, "return_rollout_features", False):
+                feature_keys = (
+                    "uvd_hidden",
+                    "image_hidden_mean",
+                    "native_hidden_mean",
+                )
+                missing = [key for key in feature_keys if key not in geometry]
+                if missing:
+                    raise ValueError(
+                        f"policy server omitted rollout feature keys: {missing}"
+                    )
+                result["rollout_features"] = {
+                    key: np.asarray(geometry.pop(key)) for key in feature_keys
+                }
+                result["rollout_features"]["predicted_action"] = np.asarray(
+                    server_actions
+                ).copy()
+            result["geometry"] = geometry
         return result
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:

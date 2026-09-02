@@ -1218,6 +1218,18 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             kwargs.pop("return_geometry", False),
             name="return_geometry",
         )
+        geometry_uvd_only = _require_boolean_option(
+            kwargs.pop("geometry_uvd_only", False),
+            name="geometry_uvd_only",
+        )
+        return_rollout_features = _require_boolean_option(
+            kwargs.pop("return_rollout_features", False),
+            name="return_rollout_features",
+        )
+        if (geometry_uvd_only or return_rollout_features) and not return_geometry:
+            raise ValueError(
+                "geometry_uvd_only and return_rollout_features require return_geometry=True"
+            )
         timing: dict[str, float] = {}
         def timed(name: str, fn: Callable[[], Any]) -> Any:
             return timing_callback(name, fn) if timing_callback is not None else fn()
@@ -1258,11 +1270,16 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         timing["output_transfer_ms"] = (time.perf_counter() - output_start) * 1000.0
         result = {"normalized_actions": normalized_actions}
         if return_geometry:
-            depth_current, depth_future, uvd = self._decode_geometry(
-                split,
-                qwen_inputs,
-                timing_callback=timing_callback,
-            )
+            if geometry_uvd_only:
+                uvd = timed("uvd_head_ms", lambda: self._predict_uvd(split.uvd))
+                depth_current = None
+                depth_future = None
+            else:
+                depth_current, depth_future, uvd = self._decode_geometry(
+                    split,
+                    qwen_inputs,
+                    timing_callback=timing_callback,
+                )
             if hasattr(self.geometry_layout, "uvd_time_points"):
                 time_points = int(self.geometry_layout.uvd_time_points)
                 landmark_count = int(self.geometry_layout.landmark_count)
@@ -1281,13 +1298,37 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
                 device=uvd.device,
                 dtype=torch.long,
             ).repeat(time_points)
-            result["geometry"] = {
-                "depth_current": depth_current,
-                "depth_future": depth_future,
+            geometry = {
                 "uvd": uvd,
                 "uvd_time": uvd_time.unsqueeze(0).expand(uvd.shape[0], -1),
                 "uvd_landmark_ids": uvd_landmark_ids.unsqueeze(0).expand(uvd.shape[0], -1),
             }
+            if not geometry_uvd_only:
+                geometry["depth_current"] = depth_current
+                geometry["depth_future"] = depth_future
+            if return_rollout_features:
+                image_hidden, _ = timed(
+                    "image_token_extract_ms",
+                    lambda: self._main_image_tokens(
+                        split.native, qwen_inputs["input_ids"]
+                    ),
+                )
+                native_weights = native_attention_mask.to(
+                    device=split.native.device,
+                    dtype=split.native.dtype,
+                ).unsqueeze(-1)
+                native_hidden_mean = (split.native * native_weights).sum(dim=1)
+                native_hidden_mean = native_hidden_mean / native_weights.sum(
+                    dim=1
+                ).clamp_min(1.0)
+                geometry.update(
+                    {
+                        "uvd_hidden": split.uvd.detach().to(torch.float16).cpu().numpy(),
+                        "image_hidden_mean": image_hidden.mean(dim=1).detach().to(torch.float16).cpu().numpy(),
+                        "native_hidden_mean": native_hidden_mean.detach().to(torch.float16).cpu().numpy(),
+                    }
+                )
+            result["geometry"] = geometry
         if timing_callback is not None:
             result["timing"] = timing
         return result

@@ -51,6 +51,10 @@ from examples.simBenchmarks.Robocasa_tabletop.eval_files.trace_consistency impor
     evaluate_vector_trace_decision,
     write_trace_artifacts,
 )
+from examples.simBenchmarks.Robocasa_tabletop.eval_files.rollout_features import (
+    build_rollout_feature_record,
+    write_rollout_feature_artifacts,
+)
 from examples.simBenchmarks.Robocasa_tabletop.eval_files.wrappers.video_recording_wrapper import (
     VideoRecorder,
     VideoRecordingWrapper,
@@ -69,6 +73,7 @@ class VideoConfig:
     crf: int = 22
     thread_type: str = "FRAME"
     thread_count: int = 1
+    failures_only: bool = False
 
 
 @dataclass
@@ -95,6 +100,7 @@ class SimulationConfig:
     trace_action_horizon: int = 16
     trace_image_size: int = 224
     trace_depth_scale: float = 1.0
+    rollout_features_output_path: Optional[str] = None
     eval_seed: int = 7
 
 
@@ -107,6 +113,7 @@ class SimulationInferenceEnv:
         self.env = None
         self.last_run_seconds: Optional[float] = None
         self.trace_summary: Optional[Dict[str, Any]] = None
+        self.rollout_feature_summary: Optional[Dict[str, Any]] = None
 
     def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
         """Get action from the model based on observations."""
@@ -165,6 +172,12 @@ class SimulationInferenceEnv:
         trace_enabled = config.trace_output_path is not None
         trace_records = []
         pending_trace_records = [[] for _ in range(config.n_envs)]
+        rollout_features_enabled = config.rollout_features_output_path is not None
+        rollout_feature_records = []
+        pending_rollout_feature_records = [[] for _ in range(config.n_envs)]
+        rollout_feature_episode_ids = list(range(config.n_envs))
+        next_rollout_feature_episode_id = config.n_envs
+        rollout_feature_decision_indices = [0] * config.n_envs
         trace_episode_ids = list(range(config.n_envs))
         next_trace_episode_id = config.n_envs
         trace_decision_indices = [0] * config.n_envs
@@ -173,11 +186,26 @@ class SimulationInferenceEnv:
         # Main simulation loop
         while completed_episodes < config.n_episodes:
             # Process observations and get actions from the model
-            actions, geometry = self._get_actions_from_model(obs)
+            actions, geometry, rollout_features = self._get_actions_from_model(obs)
             # Step the environment
             next_obs, rewards, terminations, truncations, env_infos = self.env.step(actions)
             # Update episode tracking
             for env_idx in range(config.n_envs):
+                if rollout_features_enabled:
+                    if rollout_features is None:
+                        raise ValueError(
+                            "rollout feature capture is enabled but the policy returned no features"
+                        )
+                    feature_record = build_rollout_feature_record(
+                        rollout_features,
+                        obs,
+                        batch_index=env_idx,
+                        task_index=config.task_index,
+                        episode_index=rollout_feature_episode_ids[env_idx],
+                        decision_index=rollout_feature_decision_indices[env_idx],
+                    )
+                    pending_rollout_feature_records[env_idx].append(feature_record)
+                    rollout_feature_decision_indices[env_idx] += 1
                 if trace_enabled:
                     if geometry is None:
                         raise ValueError(
@@ -190,16 +218,15 @@ class SimulationInferenceEnv:
                         action_horizon=config.trace_action_horizon,
                         image_size=config.trace_image_size,
                     )
-                    if trace_record is None:
-                        continue
-                    trace_record.update(
-                        {
-                            "task_index": config.task_index,
-                            "episode_index": trace_episode_ids[env_idx],
-                            "decision_index": trace_decision_indices[env_idx],
-                        }
-                    )
-                    pending_trace_records[env_idx].append(trace_record)
+                    if trace_record is not None:
+                        trace_record.update(
+                            {
+                                "task_index": config.task_index,
+                                "episode_index": trace_episode_ids[env_idx],
+                                "decision_index": trace_decision_indices[env_idx],
+                            }
+                        )
+                        pending_trace_records[env_idx].append(trace_record)
                     trace_decision_indices[env_idx] += 1
                 current_successes[env_idx] |= bool(env_infos["success"][env_idx][0])
                 current_rewards[env_idx] += rewards[env_idx]
@@ -218,6 +245,18 @@ class SimulationInferenceEnv:
                             elapsed_seconds=time.time() - start_time,
                         )
                     current_successes[env_idx] = False
+                    if rollout_features_enabled:
+                        for feature_record in pending_rollout_feature_records[env_idx]:
+                            feature_record["episode_success"] = bool(
+                                episode_successes[-1]
+                            )
+                        rollout_feature_records.extend(
+                            pending_rollout_feature_records[env_idx]
+                        )
+                        pending_rollout_feature_records[env_idx] = []
+                        rollout_feature_episode_ids[env_idx] = next_rollout_feature_episode_id
+                        next_rollout_feature_episode_id += 1
+                        rollout_feature_decision_indices[env_idx] = 0
                     if trace_enabled:
                         for trace_record in pending_trace_records[env_idx]:
                             trace_record["episode_success"] = bool(
@@ -243,6 +282,16 @@ class SimulationInferenceEnv:
                     "task_index": config.task_index,
                 },
             )
+        if rollout_features_enabled:
+            self.rollout_feature_summary = write_rollout_feature_artifacts(
+                config.rollout_features_output_path,
+                rollout_feature_records,
+                metadata={
+                    "env_name": config.env_name,
+                    "task_index": config.task_index,
+                    "eval_seed": config.eval_seed,
+                },
+            )
         self.env.reset()
         self.env.close()
         self.env = None
@@ -256,15 +305,20 @@ class SimulationInferenceEnv:
 
     def _get_actions_from_model(
         self, observations: Dict[str, Any]
-    ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-        """Return environment actions and optional geometry from one policy call."""
+    ) -> tuple[
+        Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]]
+    ]:
+        """Return environment actions, geometry, and rollout features."""
         action_dict = self.get_action(observations)
         geometry = action_dict.get("geometry") if isinstance(action_dict, dict) else None
+        rollout_features = (
+            action_dict.get("rollout_features") if isinstance(action_dict, dict) else None
+        )
         if isinstance(action_dict, dict) and "actions" in action_dict:
             actions = action_dict["actions"]
         else:
             actions = action_dict
-        return actions, geometry
+        return actions, geometry, rollout_features
 
 
 def _create_single_env(config: SimulationConfig, idx: int) -> gym.Env:
@@ -286,6 +340,7 @@ def _create_single_env(config: SimulationConfig, idx: int) -> gym.Env:
             video_recorder,
             video_dir=Path(config.video.video_dir),
             steps_per_render=config.video.steps_per_render,
+            keep_successful_videos=not config.video.failures_only,
         )
     env = EpisodeSeedWrapper(
         env,
@@ -312,6 +367,7 @@ def run_evaluation(
     env_name: str,
     model: BasePolicy,
     video_dir: Optional[str] = None,
+    video_failures_only: bool = False,
     n_episodes: int = 2,
     n_envs: int = 1,
     n_action_steps: int = 2,
@@ -326,6 +382,7 @@ def run_evaluation(
     trace_action_horizon: int = 16,
     trace_image_size: int = 224,
     trace_depth_scale: float = 1.0,
+    rollout_features_output_path: Optional[str] = None,
     seed: int = 7,
 ) -> Tuple[str, List[bool]]:
     """
@@ -346,13 +403,14 @@ def run_evaluation(
         env_name=env_name,
         n_episodes=n_episodes,
         n_envs=n_envs,
-        video=VideoConfig(video_dir=video_dir),
+        video=VideoConfig(video_dir=video_dir, failures_only=video_failures_only),
         multistep=MultiStepConfig(n_action_steps=n_action_steps, max_episode_steps=max_episode_steps),
         task_index=task_index if task_index >= 0 else None,
         trace_output_path=trace_output_path,
         trace_action_horizon=trace_action_horizon,
         trace_image_size=trace_image_size,
         trace_depth_scale=trace_depth_scale,
+        rollout_features_output_path=rollout_features_output_path,
         eval_seed=seed,
     )
     # Create client and run simulation
@@ -362,6 +420,11 @@ def run_evaluation(
         result_metadata = dict(result_metadata or {})
         result_metadata["trace_consistency_output"] = trace_output_path
         result_metadata["trace_consistency_summary"] = client.trace_summary
+
+    if rollout_features_output_path is not None:
+        result_metadata = dict(result_metadata or {})
+        result_metadata["rollout_features_output"] = rollout_features_output_path
+        result_metadata["rollout_features_summary"] = client.rollout_feature_summary
 
     task_elapsed_seconds = (
         time.time() - task_start_time
@@ -415,6 +478,7 @@ class Args:
     # Utils
     #################################################################################################################
     video_out_path: Optional[str] = None
+    video_failures_only: bool = False
     result_json: Optional[str] = None
     task_index: int = -1
     gpu: int = -1
@@ -423,6 +487,7 @@ class Args:
     trace_action_horizon: int = 16
     trace_image_size: int = 224
     trace_depth_scale: float = 1.0
+    rollout_features_output: Optional[str] = None
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -442,8 +507,10 @@ def eval_gr1_unified(args: Args) -> None:
         "n_action_steps": args.n_action_steps,
         "send_state": args.send_state,
         "video_out_path": args.video_out_path,
+        "video_failures_only": args.video_failures_only,
         "pretrained_path": args.pretrained_path,
         "trace_consistency_output": args.trace_consistency_output,
+        "rollout_features_output": args.rollout_features_output,
         "eval_seed": args.seed,
         "scene_seed_scheme": SCENE_SEED_SCHEME,
     }
@@ -456,12 +523,18 @@ def eval_gr1_unified(args: Args) -> None:
             image_size=args.resize_size,
             n_action_steps=args.n_action_steps,
             send_state=args.send_state,
-            return_geometry=args.trace_consistency_output is not None,
+            return_geometry=(
+                args.trace_consistency_output is not None
+                or args.rollout_features_output is not None
+            ),
+            geometry_uvd_only=args.rollout_features_output is not None,
+            return_rollout_features=args.rollout_features_output is not None,
         )
         run_evaluation(
             env_name=args.env_name,
             model=model,
             video_dir=args.video_out_path,
+            video_failures_only=args.video_failures_only,
             n_episodes=args.n_episodes,
             n_envs=args.n_envs,
             n_action_steps=args.n_action_steps,
@@ -476,6 +549,7 @@ def eval_gr1_unified(args: Args) -> None:
             trace_action_horizon=args.trace_action_horizon,
             trace_image_size=args.trace_image_size,
             trace_depth_scale=args.trace_depth_scale,
+            rollout_features_output_path=args.rollout_features_output,
             seed=args.seed,
         )
     except Exception as exc:
