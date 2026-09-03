@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # Reproducible RoboCasa-GR1 evaluation:
 # one policy server + one sequential simulator worker per GPU.
-# Default protocol: 24 tasks x 50 episodes, n_envs=1, max_steps=720, action_steps=12.
+# Default protocol: 24 tasks x 50 episodes, n_envs=1, max_steps=720, action_steps=16.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
@@ -23,7 +23,7 @@ BASE_PORT="${BASE_PORT:-6398}"
 NUM_EPISODES="${NUM_EPISODES:-50}"
 N_ENVS="${N_ENVS:-1}"
 MAX_EPISODE_STEPS="${MAX_EPISODE_STEPS:-720}"
-N_ACTION_STEPS="${N_ACTION_STEPS:-12}"
+N_ACTION_STEPS="${N_ACTION_STEPS:-16}"
 USE_BF16="${USE_BF16:-1}"
 SEND_STATE="${SEND_STATE:-0}" # current Qwen3.5 Baseline/CoT YAML: include_state=false
 SAVE_VIDEO="${SAVE_VIDEO:-0}"
