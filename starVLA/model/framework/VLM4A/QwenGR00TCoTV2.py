@@ -44,6 +44,7 @@ class GeometryHiddenSplit:
     depth_current: torch.Tensor
     depth_future: torch.Tensor
     uvd: torch.Tensor
+    wrist_depth_future: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -202,12 +203,21 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             geometry.get("enable_future_depth", True),
             name="enable_future_depth",
         )
+        separate_wrist_future_depth = _require_boolean_option(
+            geometry.get("separate_wrist_future_depth", False),
+            name="separate_wrist_future_depth",
+        )
+        if separate_wrist_future_depth and not self.reconstruct_wrist_depth:
+            raise ValueError(
+                "separate_wrist_future_depth requires reconstruct_wrist_depth"
+            )
         self.geometry_layout = GeometryTokenLayout(
             depth_query_count=int(geometry.get("depth_query_count", 8)),
             uvd_points_per_hand=int(points_per_hand),
             hand_count=int(geometry.get("uvd_hand_count", 1)),
             enable_current_depth=enable_current_depth,
             enable_future_depth=enable_future_depth,
+            separate_wrist_future_depth=separate_wrist_future_depth,
         )
         self.uvd_hand_count = int(self.geometry_layout.hand_count)
         self.uvd_token_order = "time_major"
@@ -332,6 +342,7 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             depth_current=last_hidden[:, slices.depth_current],
             depth_future=last_hidden[:, slices.depth_future],
             uvd=last_hidden[:, slices.uvd],
+            wrist_depth_future=last_hidden[:, slices.wrist_depth_future],
         )
 
     def _build_action_condition(
@@ -665,6 +676,34 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         )
         return current_summary, future_summary, current_weights, future_weights
 
+    def _pool_wrist_depth_summaries(
+        self,
+        split: GeometryHiddenSplit,
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]:
+        current_tokens = split.depth_current
+        if self.geometry_layout.separate_wrist_future_depth:
+            if split.wrist_depth_future is None:
+                raise ValueError("separate wrist future-depth tokens are missing")
+            future_tokens = split.wrist_depth_future
+        else:
+            future_tokens = split.depth_future
+        current_summary, current_weights = (
+            self.depth_attention_pool(current_tokens)
+            if current_tokens.shape[1] > 0
+            else (None, None)
+        )
+        future_summary, future_weights = (
+            self.depth_attention_pool(future_tokens)
+            if future_tokens.shape[1] > 0
+            else (None, None)
+        )
+        return current_summary, future_summary, current_weights, future_weights
+
     def _decode_depth_summaries(
         self,
         image_tokens: torch.Tensor,
@@ -711,10 +750,10 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         image_tokens: torch.Tensor,
         *,
         patch_hw: tuple[int, int],
-        current_summary: torch.Tensor,
-        future_summary: torch.Tensor,
+        current_summary: torch.Tensor | None,
+        future_summary: torch.Tensor | None,
         timing_callback: Callable[[str, Callable[[], Any]], Any] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         decoder = self.wrist_depth_decoder
         if decoder is None:
             raise RuntimeError(
@@ -726,23 +765,31 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             return timing_callback(name, fn) if timing_callback is not None else fn()
 
         output_hw = (self.depth_output_size, self.depth_output_size)
-        wrist_current = timed(
-            "wrist_depth_current_ms",
-            lambda: decoder(
-                image_tokens,
-                patch_hw=patch_hw,
-                query=current_summary,
-                output_hw=output_hw,
-            ),
+        wrist_current = (
+            timed(
+                "wrist_depth_current_ms",
+                lambda: decoder(
+                    image_tokens,
+                    patch_hw=patch_hw,
+                    query=current_summary,
+                    output_hw=output_hw,
+                ),
+            )
+            if current_summary is not None
+            else None
         )
-        wrist_future = timed(
-            "wrist_depth_future_ms",
-            lambda: decoder(
-                image_tokens,
-                patch_hw=patch_hw,
-                query=future_summary,
-                output_hw=output_hw,
-            ),
+        wrist_future = (
+            timed(
+                "wrist_depth_future_ms",
+                lambda: decoder(
+                    image_tokens,
+                    patch_hw=patch_hw,
+                    query=future_summary,
+                    output_hw=output_hw,
+                ),
+            )
+            if future_summary is not None
+            else None
         )
         return wrist_current, wrist_future
 
@@ -752,13 +799,13 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         qwen_inputs: dict,
         *,
         timing_callback: Callable[[str, Callable[[], Any]], Any] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         if not bool(getattr(self, "reconstruct_wrist_depth", False)):
             raise RuntimeError("reconstruct_wrist_depth is disabled")
         wrist_tokens, patch_hw = self._wrist_image_tokens(
             split.native, qwen_inputs["input_ids"]
         )
-        current_summary, future_summary, _, _ = self._pool_depth_summaries(split)
+        current_summary, future_summary, _, _ = self._pool_wrist_depth_summaries(split)
         return self._decode_wrist_depth_summaries(
             wrist_tokens,
             patch_hw=patch_hw,
@@ -875,30 +922,30 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         wrist_losses: dict[str, torch.Tensor] = {}
         if wrist_depth is not None:
             wrist_current, wrist_future = wrist_depth
-            wrist_current_target = torch.as_tensor(
-                np.stack([x["wrist_depth_current"] for x in examples]),
-                device=device,
-            )
-            wrist_future_target = torch.as_tensor(
-                np.stack([x["wrist_depth_future"] for x in examples]),
-                device=device,
-            )
-            wrist_current_valid = torch.as_tensor(
-                np.stack([x["wrist_depth_current_valid"] for x in examples]),
-                device=device,
-            )
-            wrist_future_valid = torch.as_tensor(
-                np.stack([x["wrist_depth_future_valid"] for x in examples]),
-                device=device,
-            )
-            wrist_losses = {
-                "wrist_depth_current_loss": masked_smooth_l1_loss(
+            if wrist_current is not None:
+                wrist_current_target = torch.as_tensor(
+                    np.stack([x["wrist_depth_current"] for x in examples]),
+                    device=device,
+                )
+                wrist_current_valid = torch.as_tensor(
+                    np.stack([x["wrist_depth_current_valid"] for x in examples]),
+                    device=device,
+                )
+                wrist_losses["wrist_depth_current_loss"] = masked_smooth_l1_loss(
                     wrist_current, wrist_current_target, wrist_current_valid
-                ),
-                "wrist_depth_future_loss": masked_smooth_l1_loss(
+                )
+            if wrist_future is not None:
+                wrist_future_target = torch.as_tensor(
+                    np.stack([x["wrist_depth_future"] for x in examples]),
+                    device=device,
+                )
+                wrist_future_valid = torch.as_tensor(
+                    np.stack([x["wrist_depth_future_valid"] for x in examples]),
+                    device=device,
+                )
+                wrist_losses["wrist_depth_future_loss"] = masked_smooth_l1_loss(
                     wrist_future, wrist_future_target, wrist_future_valid
-                ),
-            }
+                )
         uvd_losses = self._compute_uvd_losses(uvd, packed)
         uvd_loss = uvd_losses["total"]
         total_loss = aggregate_cot_total_loss(
@@ -911,12 +958,14 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             lambda_depth_future=self.lambda_depth_future,
             lambda_uvd=self.lambda_uvd,
         )
-        if wrist_losses:
-            total_loss = (
-                total_loss
-                + self.lambda_wrist_depth_current
+        if "wrist_depth_current_loss" in wrist_losses:
+            total_loss = total_loss + (
+                self.lambda_wrist_depth_current
                 * wrist_losses["wrist_depth_current_loss"]
-                + self.lambda_wrist_depth_future
+            )
+        if "wrist_depth_future_loss" in wrist_losses:
+            total_loss = total_loss + (
+                self.lambda_wrist_depth_future
                 * wrist_losses["wrist_depth_future_loss"]
             )
         output = {
@@ -930,8 +979,38 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         }
         output.update(wrist_losses)
         if capture_depth_token_gradients:
-            output["_probe_depth_current_tokens"] = split.depth_current
-            output["_probe_depth_future_tokens"] = split.depth_future
+            geometry_tokens_module = getattr(self, "geometry_tokens", None)
+            for branch in ("current", "future"):
+                tokens = getattr(split, f"depth_{branch}")
+                if tokens.shape[1] == 0:
+                    continue
+                output[f"_probe_depth_{branch}_tokens"] = tokens
+                wrist_tokens = tokens
+                if (
+                    branch == "future"
+                    and self.geometry_layout.separate_wrist_future_depth
+                ):
+                    if split.wrist_depth_future is None:
+                        raise ValueError("separate wrist future-depth tokens are missing")
+                    wrist_tokens = split.wrist_depth_future
+                output[f"_probe_wrist_depth_{branch}_tokens"] = wrist_tokens
+                if geometry_tokens_module is None:
+                    continue
+                query = getattr(
+                    geometry_tokens_module,
+                    f"{branch}_depth_queries",
+                    None,
+                )
+                if query is None:
+                    continue
+                wrist_query = query
+                if (
+                    branch == "future"
+                    and self.geometry_layout.separate_wrist_future_depth
+                ):
+                    wrist_query = geometry_tokens_module.wrist_future_depth_queries
+                output[f"_probe_depth_{branch}_query"] = query
+                output[f"_probe_wrist_depth_{branch}_query"] = wrist_query
         return output
 
     @torch.inference_mode()
@@ -950,12 +1029,10 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
             wrist_current, wrist_future = self._decode_wrist_depth(
                 split, qwen_inputs
             )
-            output.update(
-                {
-                    "wrist_depth_current": wrist_current,
-                    "wrist_depth_future": wrist_future,
-                }
-            )
+            if wrist_current is not None:
+                output["wrist_depth_current"] = wrist_current
+            if wrist_future is not None:
+                output["wrist_depth_future"] = wrist_future
         return output
 
     @torch.inference_mode()

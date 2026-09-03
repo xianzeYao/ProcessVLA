@@ -56,17 +56,41 @@ class CotV2Trainer(CotV1Trainer):
             return {"diagnostic/objective_gradients_collected": 0.0}
 
         start = time.perf_counter()
-        depth_tokens = {
-            "current": output_dict.pop("_probe_depth_current_tokens"),
-            "future": output_dict.pop("_probe_depth_future_tokens"),
-        }
+        depth_tokens = {}
+        wrist_depth_tokens = {}
+        depth_queries = {}
+        wrist_depth_queries = {}
+        for branch in ("current", "future"):
+            token_key = f"_probe_depth_{branch}_tokens"
+            wrist_token_key = f"_probe_wrist_depth_{branch}_tokens"
+            query_key = f"_probe_depth_{branch}_query"
+            wrist_query_key = f"_probe_wrist_depth_{branch}_query"
+            if token_key in output_dict:
+                depth_tokens[branch] = output_dict.pop(token_key)
+            if wrist_token_key in output_dict:
+                wrist_depth_tokens[branch] = output_dict.pop(wrist_token_key)
+            if query_key in output_dict:
+                depth_queries[branch] = output_dict.pop(query_key)
+            if wrist_query_key in output_dict:
+                wrist_depth_queries[branch] = output_dict.pop(wrist_query_key)
         model = self.accelerator.unwrap_model(self.model)
         objectives = extract_v2_objectives(output_dict, model)
         metrics = measure_paired_depth_token_gradients(
             objectives,
             depth_tokens,
+            wrist_depth_tokens=wrist_depth_tokens,
             distributed=True,
         )
+        if depth_queries:
+            metrics.update(
+                measure_paired_depth_token_gradients(
+                    objectives,
+                    depth_queries,
+                    wrist_depth_tokens=wrist_depth_queries,
+                    distributed=True,
+                    metric_root="depth_query_gradient",
+                )
+            )
         metrics["diagnostic/objective_gradients_collected"] = 1.0
         metrics["timing/objective_gradient_probe"] = time.perf_counter() - start
         return metrics
@@ -75,30 +99,18 @@ class CotV2Trainer(CotV1Trainer):
         self,
         output_dict,
     ) -> tuple[dict[str, float], float]:
-        keys = (
-            "wrist_depth_current_loss",
-            "wrist_depth_future_loss",
-        )
-        present = [key in output_dict for key in keys]
-        if not any(present):
-            return {}, 0.0
-        if not all(present):
-            missing = [key for key in keys if key not in output_dict]
-            raise KeyError(f"incomplete wrist-depth objective: missing {missing}")
-
-        current = output_dict["wrist_depth_current_loss"].item()
-        future = output_dict["wrist_depth_future_loss"].item()
-        weighted_current = self.model.lambda_wrist_depth_current * current
-        weighted_future = self.model.lambda_wrist_depth_future * future
-        return (
-            {
-                "wrist_depth_current_loss": current,
-                "wrist_depth_future_loss": future,
-                "weighted_wrist_depth_current_loss": weighted_current,
-                "weighted_wrist_depth_future_loss": weighted_future,
-            },
-            weighted_current + weighted_future,
-        )
+        metrics: dict[str, float] = {}
+        weighted_total = 0.0
+        for branch in ("current", "future"):
+            key = f"wrist_depth_{branch}_loss"
+            if key not in output_dict:
+                continue
+            value = output_dict[key].item()
+            weighted = float(getattr(self.model, f"lambda_wrist_depth_{branch}")) * value
+            metrics[key] = value
+            metrics[f"weighted_{key}"] = weighted
+            weighted_total += weighted
+        return metrics, weighted_total
 
 
 def main(cfg) -> None:

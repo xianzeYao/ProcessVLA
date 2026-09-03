@@ -72,6 +72,7 @@ class GeometrySequenceSlices:
     depth_current: slice
     depth_future: slice
     uvd: slice
+    wrist_depth_future: slice
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,7 @@ class GeometryTokenLayout:
     hand_count: int = 1
     enable_current_depth: bool = True
     enable_future_depth: bool = True
+    separate_wrist_future_depth: bool = False
 
     def __post_init__(self) -> None:
         if int(self.depth_query_count) < 1:
@@ -95,6 +97,12 @@ class GeometryTokenLayout:
             raise ValueError("enable_current_depth must be a boolean")
         if not isinstance(self.enable_future_depth, bool):
             raise ValueError("enable_future_depth must be a boolean")
+        if not isinstance(self.separate_wrist_future_depth, bool):
+            raise ValueError("separate_wrist_future_depth must be a boolean")
+        if self.separate_wrist_future_depth and not self.enable_future_depth:
+            raise ValueError(
+                "separate_wrist_future_depth requires enable_future_depth"
+            )
 
     @property
     def current_depth_token_count(self) -> int:
@@ -109,8 +117,21 @@ class GeometryTokenLayout:
         return int(self.uvd_points_per_hand) * int(self.hand_count)
 
     @property
+    def wrist_future_depth_token_count(self) -> int:
+        return (
+            int(self.depth_query_count)
+            if self.separate_wrist_future_depth
+            else 0
+        )
+
+    @property
     def geometry_token_count(self) -> int:
-        return self.current_depth_token_count + self.future_depth_token_count + self.uvd_token_count
+        return (
+            self.current_depth_token_count
+            + self.future_depth_token_count
+            + self.uvd_token_count
+            + self.wrist_future_depth_token_count
+        )
 
     @property
     def geometry_current_slice(self) -> slice:
@@ -126,6 +147,11 @@ class GeometryTokenLayout:
         start = self.current_depth_token_count + self.future_depth_token_count
         return slice(start, start + self.uvd_token_count)
 
+    @property
+    def geometry_wrist_future_slice(self) -> slice:
+        start = self.geometry_uvd_slice.stop
+        return slice(start, start + self.wrist_future_depth_token_count)
+
     def sequence_slices(self, native_token_count: int) -> GeometrySequenceSlices:
         native_token_count = int(native_token_count)
         if native_token_count < 1:
@@ -133,11 +159,16 @@ class GeometryTokenLayout:
         current_start = native_token_count
         future_start = current_start + self.current_depth_token_count
         uvd_start = future_start + self.future_depth_token_count
+        wrist_future_start = uvd_start + self.uvd_token_count
         return GeometrySequenceSlices(
             native=slice(0, native_token_count),
             depth_current=slice(current_start, future_start),
             depth_future=slice(future_start, uvd_start),
             uvd=slice(uvd_start, uvd_start + self.uvd_token_count),
+            wrist_depth_future=slice(
+                wrist_future_start,
+                wrist_future_start + self.wrist_future_depth_token_count,
+            ),
         )
 
 
@@ -190,6 +221,12 @@ class GeometryTokenEmbedding(nn.Module):
             )
         else:
             self.register_parameter("future_depth_queries", None)
+        if layout.separate_wrist_future_depth:
+            self.wrist_future_depth_queries = nn.Parameter(
+                self.future_depth_queries.detach().clone()
+            )
+        else:
+            self.register_parameter("wrist_future_depth_queries", None)
         self.trajectory_seed = nn.Parameter(torch.randn(1, 1, self.hidden_dim) * 0.02)
         self.time_embedding = nn.Sequential(
             nn.Linear(1, self.hidden_dim),
@@ -248,7 +285,12 @@ class GeometryTokenEmbedding(nn.Module):
         trajectory = trajectory + self.time_embedding(uvd_times.unsqueeze(-1))
         if self.hand_embedding is not None:
             trajectory = trajectory + self.hand_embedding(uvd_hand_ids).to(dtype=trajectory.dtype)
-        return torch.cat([current, future, trajectory], dim=1)
+        wrist_future = (
+            self.wrist_future_depth_queries.expand(batch_size, -1, -1)
+            if self.wrist_future_depth_queries is not None
+            else self.trajectory_seed.new_empty(batch_size, 0, self.hidden_dim)
+        )
+        return torch.cat([current, future, trajectory, wrist_future], dim=1)
 
 
 def append_geometry_slots(
@@ -330,13 +372,29 @@ def build_geometry_full_attention_mask(
         & (key_positions >= slices.depth_future.start)
         & (key_positions < slices.depth_future.stop)
     )
+    wrist_future_query = (
+        (query_positions >= slices.wrist_depth_future.start)
+        & (query_positions < slices.wrist_depth_future.stop)
+    )
+    wrist_future_key = (
+        (key_positions >= slices.wrist_depth_future.start)
+        & (key_positions < slices.wrist_depth_future.stop)
+    )
+    wrist_future_full = wrist_future_query & wrist_future_key
     query_is_uvd = (query_positions >= slices.uvd.start) & (query_positions < slices.uvd.stop)
     key_is_uvd = (key_positions >= slices.uvd.start) & (key_positions < slices.uvd.stop)
     query_time = torch.div(query_positions - slices.uvd.start, int(layout.hand_count), rounding_mode="floor")
     key_time = torch.div(key_positions - slices.uvd.start, int(layout.hand_count), rounding_mode="floor")
     same_uvd_time = query_is_uvd & key_is_uvd & (query_time == key_time)
 
-    allowed = allowed | current_full | future_full | same_uvd_time
+    if layout.separate_wrist_future_depth:
+        main_geometry_key = (
+            ((key_positions >= slices.depth_current.start) & (key_positions < slices.depth_current.stop))
+            | ((key_positions >= slices.depth_future.start) & (key_positions < slices.depth_future.stop))
+            | key_is_uvd
+        )
+        allowed = allowed & ~(wrist_future_query & main_geometry_key)
+    allowed = allowed | current_full | future_full | same_uvd_time | wrist_future_full
     key_valid = appended_attention_mask.to(dtype=torch.bool)[:, None, None, :]
     return allowed[None, None, :, :] & key_valid
 

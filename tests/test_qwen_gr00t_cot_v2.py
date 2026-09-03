@@ -25,6 +25,7 @@ def make_uninitialized_model(
     include_depth=False,
     enable_current_depth=True,
     enable_future_depth=True,
+    separate_wrist_future_depth=False,
 ):
     model = Qwen_GR00T_CoT_V2.__new__(Qwen_GR00T_CoT_V2)
     model.geometry_layout = GeometryTokenLayout(
@@ -33,6 +34,7 @@ def make_uninitialized_model(
         hand_count=hands,
         enable_current_depth=enable_current_depth,
         enable_future_depth=enable_future_depth,
+        separate_wrist_future_depth=separate_wrist_future_depth,
     )
     model.include_depth_in_action_condition = include_depth
     return model
@@ -754,6 +756,81 @@ def test_v2_forward_adds_optional_wrist_losses_without_depth_in_action_condition
     )
 
 
+def test_v2_forward_reconstructs_only_future_depth_for_main_and_wrist_views():
+    model = make_uninitialized_model(
+        depth_queries=1,
+        points=2,
+        hands=1,
+        include_depth=False,
+        enable_current_depth=False,
+        enable_future_depth=True,
+    )
+    torch.nn.Module.__init__(model)
+    model.reconstruct_wrist_depth = True
+    model.lambda_action = 1.0
+    model.lambda_depth_current = 0.0
+    model.lambda_depth_future = 0.145
+    model.lambda_wrist_depth_current = 0.0
+    model.lambda_wrist_depth_future = 0.145
+    model.lambda_uvd = 0.62
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 4),
+        depth_current=torch.empty(1, 0, 4),
+        depth_future=torch.ones(1, 1, 4),
+        uvd=torch.zeros(1, 2, 4),
+    )
+    model._build_native_inputs = MethodType(
+        lambda self, examples, inference: (
+            {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+            torch.ones(1, 2, dtype=torch.bool),
+        ),
+        model,
+    )
+    model._prepare_uvd_targets = MethodType(lambda self, examples, device: None, model)
+    model._run_geometry_backbone = MethodType(lambda self, inputs: split, model)
+    model._decode_geometry = MethodType(
+        lambda self, hidden, inputs: (
+            None,
+            torch.zeros(1, 1, 2, 2),
+            torch.zeros(1, 2, 3),
+        ),
+        model,
+    )
+    model._decode_wrist_depth = MethodType(
+        lambda self, hidden, inputs: (
+            None,
+            torch.zeros(1, 1, 2, 2),
+        ),
+        model,
+    )
+    model._compute_uvd_losses = MethodType(
+        lambda self, pred, packed: {
+            "absolute": torch.tensor(0.0),
+            "relative": torch.tensor(0.0),
+            "total": torch.tensor(0.0),
+        },
+        model,
+    )
+    model._action_loss = MethodType(
+        lambda self, condition, condition_mask, examples: torch.tensor(2.0),
+        model,
+    )
+    example = {
+        "depth_future": np.zeros((1, 2, 2), dtype=np.float32),
+        "depth_future_valid": np.ones((1, 2, 2), dtype=np.bool_),
+        "wrist_depth_future": np.full((1, 2, 2), 2.0, dtype=np.float32),
+        "wrist_depth_future_valid": np.ones((1, 2, 2), dtype=np.bool_),
+    }
+
+    output = model.forward([example])
+
+    assert output["depth_current_loss"].item() == 0.0
+    assert "wrist_depth_current_loss" not in output
+    torch.testing.assert_close(output["depth_future_loss"], torch.tensor(0.0))
+    torch.testing.assert_close(output["wrist_depth_future_loss"], torch.tensor(1.5))
+    torch.testing.assert_close(output["total_loss"], torch.tensor(2.0 + 0.145 * 1.5))
+
+
 def test_v2_forward_exposes_shared_depth_tokens_only_for_online_gradient_probe():
     model = make_uninitialized_model(
         depth_queries=1, points=2, hands=1, include_depth=False
@@ -1123,6 +1200,90 @@ def test_wrist_decoder_uses_second_image_span_and_shared_temporal_summaries():
     )
     assert wrist_current.shape == (1, 1, 2, 2)
     assert wrist_future.shape == (1, 1, 2, 2)
+
+
+def test_wrist_decoder_skips_disabled_current_branch_and_keeps_future():
+    model = make_uninitialized_model(
+        depth_queries=2,
+        points=2,
+        hands=1,
+        enable_current_depth=False,
+        enable_future_depth=True,
+    )
+    torch.nn.Module.__init__(model)
+    model.reconstruct_wrist_depth = True
+    model.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=2)
+    with torch.no_grad():
+        model.depth_attention_pool.score.weight.zero_()
+    model.wrist_depth_decoder = _CountingDepthDecoder()
+    model.depth_output_size = 2
+    model._wrist_image_tokens = MethodType(
+        lambda self, native, input_ids: (
+            torch.tensor([[[20.0, 20.0], [21.0, 21.0]]]),
+            (1, 2),
+        ),
+        model,
+    )
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 2),
+        depth_current=torch.empty(1, 0, 2),
+        depth_future=torch.tensor([[[10.0, 0.0], [14.0, 0.0]]]),
+        uvd=torch.zeros(1, 2, 2),
+    )
+
+    wrist_current, wrist_future = model._decode_wrist_depth(
+        split, {"input_ids": torch.ones(1, 2, dtype=torch.long)}
+    )
+
+    assert wrist_current is None
+    assert len(model.wrist_depth_decoder.queries) == 1
+    torch.testing.assert_close(
+        model.wrist_depth_decoder.queries[0], torch.tensor([[12.0, 0.0]])
+    )
+    assert wrist_future.shape == (1, 1, 2, 2)
+
+
+def test_wrist_decoder_uses_independent_wrist_future_tokens_when_configured():
+    model = make_uninitialized_model(
+        depth_queries=2,
+        points=2,
+        hands=1,
+        enable_current_depth=False,
+        enable_future_depth=True,
+        separate_wrist_future_depth=True,
+    )
+    torch.nn.Module.__init__(model)
+    model.reconstruct_wrist_depth = True
+    model.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=2)
+    with torch.no_grad():
+        model.depth_attention_pool.score.weight.zero_()
+    model.wrist_depth_decoder = _CountingDepthDecoder()
+    model.depth_output_size = 2
+    model._wrist_image_tokens = MethodType(
+        lambda self, native, input_ids: (
+            torch.tensor([[[20.0, 20.0], [21.0, 21.0]]]),
+            (1, 2),
+        ),
+        model,
+    )
+    split = GeometryHiddenSplit(
+        native=torch.zeros(1, 2, 2),
+        depth_current=torch.empty(1, 0, 2),
+        depth_future=torch.tensor([[[10.0, 0.0], [14.0, 0.0]]]),
+        uvd=torch.zeros(1, 2, 2),
+        wrist_depth_future=torch.tensor([[[30.0, 0.0], [34.0, 0.0]]]),
+    )
+
+    wrist_current, wrist_future = model._decode_wrist_depth(
+        split, {"input_ids": torch.ones(1, 2, dtype=torch.long)}
+    )
+
+    assert wrist_current is None
+    assert wrist_future.shape == (1, 1, 2, 2)
+    assert len(model.wrist_depth_decoder.queries) == 1
+    torch.testing.assert_close(
+        model.wrist_depth_decoder.queries[0], torch.tensor([[32.0, 0.0]])
+    )
 
 
 def make_diagnostic_model(*, current_enabled=True, future_enabled=True):

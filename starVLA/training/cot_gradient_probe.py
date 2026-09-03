@@ -125,12 +125,13 @@ def extract_v2_objectives(
         "wrist_depth_current": "wrist_depth_current_loss",
         "wrist_depth_future": "wrist_depth_future_loss",
     }
-    wrist_presence = [key in output for key in wrist_key_map.values()]
-    if any(wrist_presence) and not all(wrist_presence):
-        missing = [key for key in wrist_key_map.values() if key not in output]
-        raise KeyError(f"incomplete wrist-depth objective: missing {missing}")
-    if all(wrist_presence):
-        key_map.update(wrist_key_map)
+    key_map.update(
+        {
+            name: key
+            for name, key in wrist_key_map.items()
+            if key in output
+        }
+    )
     missing = [key for key in key_map.values() if key not in output]
     if missing:
         raise KeyError(f"V2 gradient probe requires objective keys: {missing}")
@@ -141,13 +142,10 @@ def extract_v2_objectives(
         "uvd_absolute": float(model.lambda_uvd),
         "uvd_relative": float(model.lambda_uvd) * float(model.lambda_uvd_relative),
     }
-    if all(wrist_presence):
-        weights.update(
-            {
-                "wrist_depth_current": float(model.lambda_wrist_depth_current),
-                "wrist_depth_future": float(model.lambda_wrist_depth_future),
-            }
-        )
+    if "wrist_depth_current_loss" in output:
+        weights["wrist_depth_current"] = float(model.lambda_wrist_depth_current)
+    if "wrist_depth_future_loss" in output:
+        weights["wrist_depth_future"] = float(model.lambda_wrist_depth_future)
     objectives = {}
     for name, key in key_map.items():
         loss = output[key]
@@ -163,7 +161,9 @@ def measure_paired_depth_token_gradients(
     objectives: ObjectiveMap,
     depth_tokens: Mapping[str, torch.Tensor],
     *,
+    wrist_depth_tokens: Mapping[str, torch.Tensor] | None = None,
     distributed: bool = True,
+    metric_root: str = "depth_gradient",
 ) -> dict[str, float]:
     """Measure main/wrist gradient strength and conflict on shared depth tokens.
 
@@ -176,25 +176,41 @@ def measure_paired_depth_token_gradients(
         "current": ("depth_current", "wrist_depth_current"),
         "future": ("depth_future", "wrist_depth_future"),
     }
+    active_pairs = {
+        branch: pair
+        for branch, pair in pairs.items()
+        if pair[1] in objectives
+    }
     missing_objectives = [
-        name
-        for pair in pairs.values()
-        for name in pair
-        if name not in objectives
+        main_name
+        for main_name, _ in active_pairs.values()
+        if main_name not in objectives
     ]
     if missing_objectives:
-        raise KeyError(
-            f"paired depth-token probe requires objectives: {missing_objectives}"
-        )
-    missing_tokens = [name for name in pairs if name not in depth_tokens]
+        raise KeyError(f"paired depth-token probe requires objectives: {missing_objectives}")
+    missing_tokens = [name for name in active_pairs if name not in depth_tokens]
     if missing_tokens:
         raise KeyError(f"paired depth-token probe requires token groups: {missing_tokens}")
 
     metrics: dict[str, float] = {}
-    for branch, (main_name, wrist_name) in pairs.items():
+    for branch, (main_name, wrist_name) in active_pairs.items():
         tokens = depth_tokens[branch]
+        wrist_tokens = (
+            tokens
+            if wrist_depth_tokens is None
+            else wrist_depth_tokens.get(branch, tokens)
+        )
         if not isinstance(tokens, torch.Tensor) or not tokens.requires_grad:
             raise ValueError(f"{branch} depth tokens must be a tensor requiring gradients")
+        if not isinstance(wrist_tokens, torch.Tensor) or not wrist_tokens.requires_grad:
+            raise ValueError(
+                f"{branch} wrist depth tokens must be a tensor requiring gradients"
+            )
+        if tuple(wrist_tokens.shape) != tuple(tokens.shape):
+            raise ValueError(
+                f"{branch} main/wrist token shapes must match, got "
+                f"{tuple(tokens.shape)}/{tuple(wrist_tokens.shape)}"
+            )
         main_loss, main_weight = objectives[main_name]
         wrist_loss, wrist_weight = objectives[wrist_name]
         main_weight = float(main_weight)
@@ -203,24 +219,28 @@ def measure_paired_depth_token_gradients(
             if not np.isfinite(weight) or weight < 0.0:
                 raise ValueError(f"objective weight for {name} must be finite and non-negative")
 
-        main_gradient = torch.autograd.grad(
-            main_loss,
-            tokens,
-            retain_graph=True,
-            allow_unused=True,
-        )[0]
-        wrist_gradient = torch.autograd.grad(
-            wrist_loss,
-            tokens,
-            retain_graph=True,
-            allow_unused=True,
-        )[0]
-        if main_gradient is None:
-            main_gradient = torch.zeros_like(tokens)
-        if wrist_gradient is None:
-            wrist_gradient = torch.zeros_like(tokens)
+        def gradient(loss: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+            value = torch.autograd.grad(
+                loss,
+                target,
+                retain_graph=True,
+                allow_unused=True,
+            )[0]
+            return torch.zeros_like(target) if value is None else value
+
+        main_gradient = gradient(main_loss, tokens)
+        wrist_gradient = gradient(wrist_loss, wrist_tokens)
+        shared_token_group = tokens is wrist_tokens
+        if shared_token_group:
+            main_on_wrist_gradient = main_gradient
+            wrist_on_main_gradient = wrist_gradient
+        else:
+            main_on_wrist_gradient = gradient(main_loss, wrist_tokens)
+            wrist_on_main_gradient = gradient(wrist_loss, tokens)
         main_gradient = main_gradient.detach().float()
         wrist_gradient = wrist_gradient.detach().float()
+        main_on_wrist_gradient = main_on_wrist_gradient.detach().float()
+        wrist_on_main_gradient = wrist_on_main_gradient.detach().float()
 
         reduced = torch.stack(
             [
@@ -230,6 +250,8 @@ def measure_paired_depth_token_gradients(
                 torch.tensor(float(tokens.numel()), device=tokens.device),
                 main_loss.detach().float(),
                 wrist_loss.detach().float(),
+                main_on_wrist_gradient.square().sum(),
+                wrist_on_main_gradient.square().sum(),
             ]
         )
         world_size = 1
@@ -252,9 +274,10 @@ def measure_paired_depth_token_gradients(
         weighted_wrist_norm = wrist_norm * wrist_weight
         raw_ratio_valid = main_norm > 0.0
         weighted_ratio_valid = weighted_main_norm > 0.0
-        prefix = f"depth_gradient/{branch}"
+        prefix = f"{metric_root}/{branch}"
         metrics.update(
             {
+                f"{prefix}/shared_token_group": float(shared_token_group),
                 f"{prefix}/main_raw_loss": float(reduced[4].item()) / world_size,
                 f"{prefix}/main_weight": main_weight,
                 f"{prefix}/main_weighted_loss": (
@@ -292,6 +315,12 @@ def measure_paired_depth_token_gradients(
                     cosine_valid and cosine < -0.2
                 ),
                 f"{prefix}/global_token_element_count": element_count,
+                f"{prefix}/main_loss_on_wrist_token_grad_norm": float(
+                    reduced[6].clamp_min(0.0).sqrt().item()
+                ),
+                f"{prefix}/wrist_loss_on_main_token_grad_norm": float(
+                    reduced[7].clamp_min(0.0).sqrt().item()
+                ),
             }
         )
     return metrics

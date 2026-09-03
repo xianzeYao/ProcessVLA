@@ -227,6 +227,28 @@ def test_v2_trainer_logs_both_weighted_wrist_depth_losses():
     )
 
 
+def test_v2_trainer_logs_future_only_wrist_depth_loss():
+    trainer = CotV2Trainer.__new__(CotV2Trainer)
+    trainer.model = type(
+        "FutureOnlyWristModel",
+        (),
+        {
+            "lambda_wrist_depth_current": 0.0,
+            "lambda_wrist_depth_future": 0.145,
+        },
+    )()
+
+    metrics, weighted = trainer._extra_objective_metrics(
+        {"wrist_depth_future_loss": torch.tensor(0.5)}
+    )
+
+    assert metrics == {
+        "wrist_depth_future_loss": 0.5,
+        "weighted_wrist_depth_future_loss": pytest.approx(0.145 * 0.5),
+    }
+    assert weighted == pytest.approx(0.145 * 0.5)
+
+
 def test_cot_trainer_logs_v3_uvd_temporal_and_shape_components():
     model = _V3LossModel()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)

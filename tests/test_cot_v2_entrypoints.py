@@ -200,6 +200,135 @@ def test_libero_q32_wrist_depth_launcher_dry_run_uses_v2_trainer():
     assert "--trainer.max_train_steps=7" in result.stdout
 
 
+def test_libero_q32_wrist_depth_future_only_config_and_launcher():
+    config_name = (
+        "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_"
+        "wristdepth_futureonly_60k_node2.yaml"
+    )
+    script_name = (
+        "run_qwen35_gr00t_libero_CoT_v2_q32_"
+        "wristdepth_futureonly_60k_node2.sh"
+    )
+    config_path = ROOT / "examples/modelExtensions/CoT/configs" / config_name
+    script_path = ROOT / "examples/modelExtensions/CoT/scripts" / script_name
+
+    cfg = OmegaConf.load(config_path)
+    geometry = cfg.framework.geometry
+    assert geometry.enable_current_depth is False
+    assert geometry.enable_future_depth is True
+    assert geometry.reconstruct_wrist_depth is True
+    assert geometry.lambda_depth_current == 0.0
+    assert geometry.lambda_wrist_depth_current == 0.0
+    assert geometry.lambda_depth_future == 0.145
+    assert geometry.lambda_wrist_depth_future == 0.145
+    assert cfg.datasets.vla_data.cot_geometry.reconstruct_wrist_depth is True
+    assert cfg.run_root_dir == "/data-training/yyf/yxz/outputs/libero"
+    assert cfg.framework.qwenvl.base_vlm == "/data-training/yyf/yxz/models/Qwen3.5-4B"
+    assert cfg.datasets.vla_data.data_root_dir == (
+        "/data-training/yyf/yxz/datasets/libero_rerender"
+    )
+
+    result = subprocess.run(
+        ["bash", str(script_path), "--trainer.max_train_steps=7"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "DRY_RUN": "1",
+            "NUM_PROCESSES": "8",
+            "MAIN_PROCESS_PORT": "29543",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert config_name in result.stdout
+    assert "starVLA/training/train_starvla_cot_v2.py" in result.stdout
+    assert "--num_processes 8" in result.stdout
+    assert "--main_process_port 29543" in result.stdout
+    assert "--trainer.max_train_steps=7" in result.stdout
+
+
+def test_libero_future_token_sharing_15k_configs_are_matched_and_chainable():
+    config_root = ROOT / "examples/modelExtensions/CoT/configs"
+    script_root = ROOT / "examples/modelExtensions/CoT/scripts"
+    stems = {
+        "shared": (
+            "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_"
+            "wristdepth_futureonly_shared_gradprobe15k_node2"
+        ),
+        "separate": (
+            "qwen35_gr00t_libero_CoT_v2_q32_nodepthcond_"
+            "wristdepth_futureonly_separate_gradprobe15k_node2"
+        ),
+    }
+    configs = {
+        name: OmegaConf.to_container(
+            OmegaConf.load(config_root / f"{stem}.yaml"), resolve=True
+        )
+        for name, stem in stems.items()
+    }
+
+    for name, cfg in configs.items():
+        stem = stems[name]
+        geometry = cfg["framework"]["geometry"]
+        diagnostics = cfg["trainer"]["test_diagnostics"]
+        assert cfg["run_id"] == stems[name]
+        assert geometry["enable_current_depth"] is False
+        assert geometry["enable_future_depth"] is True
+        assert geometry["reconstruct_wrist_depth"] is True
+        assert geometry["separate_wrist_future_depth"] is (name == "separate")
+        assert geometry["lambda_depth_current"] == 0.0
+        assert geometry["lambda_wrist_depth_current"] == 0.0
+        assert geometry["lambda_depth_future"] == 0.15
+        assert geometry["lambda_wrist_depth_future"] == 0.15
+        assert cfg["trainer"]["max_train_steps"] == 15000
+        assert cfg["trainer"]["save_interval"] == 5000
+        assert diagnostics["enabled"] is True
+        assert diagnostics["log_objective_gradients"] is True
+        assert diagnostics["objective_gradient_interval"] == 50
+        assert diagnostics["module_gradient_interval"] == 50
+
+        result = subprocess.run(
+            ["bash", str(script_root / f"run_{stem}.sh")],
+            cwd=ROOT,
+            env={**os.environ, "DRY_RUN": "1"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert f"{stem}.yaml" in result.stdout
+        assert "--num_processes 8" in result.stdout
+
+    comparable = {}
+    for name, cfg in configs.items():
+        cfg.pop("run_id")
+        cfg["framework"]["geometry"].pop("separate_wrist_future_depth")
+        comparable[name] = cfg
+    assert comparable["shared"] == comparable["separate"]
+
+    chain = subprocess.run(
+        [
+            "bash",
+            str(
+                script_root
+                / "run_qwen35_gr00t_libero_CoT_v2_future_token_sharing_compare15k_node2.sh"
+            ),
+        ],
+        cwd=ROOT,
+        env={**os.environ, "DRY_RUN": "1"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert chain.returncode == 0, chain.stderr
+    assert chain.stdout.count("train_starvla_cot_v2.py") == 2
+    assert stems["shared"] in chain.stdout
+    assert stems["separate"] in chain.stdout
+
+
 def test_robocasa_q32_nodepthcond_single_depth_branch_ablation_configs_and_launchers():
     config_root = ROOT / "examples/modelExtensions/CoT/configs"
     script_root = ROOT / "examples/modelExtensions/CoT/scripts"

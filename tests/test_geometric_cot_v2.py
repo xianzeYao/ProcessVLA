@@ -84,6 +84,68 @@ def test_layout_omits_the_disabled_depth_branch_from_the_qwen_sequence(
     assert not allowed[slices.uvd.start, slices.uvd.start + 1]
 
 
+def test_separate_wrist_future_tokens_preserve_main_prefix_and_are_attention_isolated():
+    shared = GeometryTokenLayout(
+        depth_query_count=2,
+        uvd_points_per_hand=2,
+        hand_count=1,
+        enable_current_depth=False,
+        enable_future_depth=True,
+    )
+    separate = GeometryTokenLayout(
+        depth_query_count=2,
+        uvd_points_per_hand=2,
+        hand_count=1,
+        enable_current_depth=False,
+        enable_future_depth=True,
+        separate_wrist_future_depth=True,
+    )
+    shared_slices = shared.sequence_slices(native_token_count=2)
+    separate_slices = separate.sequence_slices(native_token_count=2)
+    shared_mask = build_geometry_full_attention_mask(
+        torch.ones(1, 2 + shared.geometry_token_count, dtype=torch.bool), shared
+    )[0, 0]
+    separate_mask = build_geometry_full_attention_mask(
+        torch.ones(1, 2 + separate.geometry_token_count, dtype=torch.bool), separate
+    )[0, 0]
+
+    assert separate_slices.depth_future == shared_slices.depth_future == slice(2, 4)
+    assert separate_slices.uvd == shared_slices.uvd == slice(4, 6)
+    assert separate_slices.wrist_depth_future == slice(6, 8)
+    assert separate.geometry_token_count == shared.geometry_token_count + 2
+    assert torch.equal(separate_mask[:6, :6], shared_mask)
+    assert not separate_mask[:6, 6:].any()
+    assert separate_mask[6, :2].all() and separate_mask[7, :2].all()
+    assert not separate_mask[6:, 2:6].any()
+    assert separate_mask[6:, 6:].all()
+
+
+def test_separate_wrist_future_queries_clone_main_initialization_but_are_independent():
+    layout = GeometryTokenLayout(
+        depth_query_count=2,
+        uvd_points_per_hand=2,
+        hand_count=1,
+        enable_current_depth=False,
+        enable_future_depth=True,
+        separate_wrist_future_depth=True,
+    )
+    module = GeometryTokenEmbedding(hidden_dim=4, layout=layout)
+
+    torch.testing.assert_close(
+        module.wrist_future_depth_queries,
+        module.future_depth_queries,
+    )
+    assert module.wrist_future_depth_queries is not module.future_depth_queries
+    assert module.wrist_future_depth_queries.data_ptr() != module.future_depth_queries.data_ptr()
+    output = module(batch_size=1)
+    slices = layout.sequence_slices(native_token_count=1)
+    torch.testing.assert_close(
+        output[:, layout.geometry_wrist_future_slice],
+        output[:, layout.geometry_future_slice],
+    )
+    assert slices.wrist_depth_future.stop == 1 + layout.geometry_token_count
+
+
 def test_full_attention_mask_never_reads_padding_or_invalid_uvd_keys():
     layout = GeometryTokenLayout(depth_query_count=1, uvd_points_per_hand=2, hand_count=1)
     # Native key 0 is left padding and the final UVD slot is invalid.

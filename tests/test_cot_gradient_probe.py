@@ -124,6 +124,34 @@ def test_extract_v2_objectives_includes_optional_wrist_depth_losses_and_weights(
     assert float(objectives["wrist_depth_future"][0]) == pytest.approx(3.0)
 
 
+def test_extract_v2_objectives_accepts_future_only_wrist_depth_loss():
+    scale = nn.Parameter(torch.tensor(1.0))
+    output = {
+        "action_loss": scale,
+        "depth_current_loss": 0.0 * scale,
+        "depth_future_loss": scale,
+        "wrist_depth_future_loss": 3.0 * scale,
+        "uvd_loss": scale,
+        "uvd_absolute_loss": scale,
+        "uvd_relative_loss": scale,
+    }
+    model = SimpleNamespace(
+        lambda_action=1.0,
+        lambda_depth_current=0.0,
+        lambda_depth_future=0.145,
+        lambda_wrist_depth_current=0.0,
+        lambda_wrist_depth_future=0.145,
+        lambda_uvd=0.62,
+        lambda_uvd_relative=0.1,
+    )
+
+    objectives = extract_v2_objectives(output, model)
+
+    assert "wrist_depth_current" not in objectives
+    assert objectives["wrist_depth_future"][1] == pytest.approx(0.145)
+    assert float(objectives["wrist_depth_future"][0]) == pytest.approx(3.0)
+
+
 def test_paired_depth_token_gradients_report_strength_weighting_and_view_conflict():
     measure = getattr(gradient_probe, "measure_paired_depth_token_gradients", None)
     assert measure is not None, "paired online depth-token gradient probe is missing"
@@ -158,6 +186,67 @@ def test_paired_depth_token_gradients_report_strength_weighting_and_view_conflic
     assert result["depth_gradient/future/cosine_valid"] == 1.0
     assert result["depth_gradient/future/cosine_negative"] == 0.0
     assert result["depth_gradient/future/cosine_below_neg_0_2"] == 0.0
+
+
+def test_paired_depth_token_gradients_skip_disabled_current_wrist_branch():
+    current_tokens = torch.empty(1, 0, 2, requires_grad=True)
+    future_tokens = torch.tensor([[3.0, 4.0]], requires_grad=True)
+    objectives = {
+        "depth_current": (future_tokens[0, 0] * 0.0, 0.0),
+        "depth_future": (future_tokens[0, 0], 0.145),
+        "wrist_depth_future": (future_tokens[0, 1], 0.145),
+    }
+
+    result = gradient_probe.measure_paired_depth_token_gradients(
+        objectives,
+        {"current": current_tokens, "future": future_tokens},
+        distributed=False,
+    )
+
+    assert not any(key.startswith("depth_gradient/current/") for key in result)
+    assert result["depth_gradient/future/main_raw_grad_norm"] == pytest.approx(1.0)
+    assert result["depth_gradient/future/wrist_raw_grad_norm"] == pytest.approx(1.0)
+
+
+def test_paired_depth_token_gradients_measure_independent_view_groups_and_cross_leakage():
+    main = torch.tensor([[1.0, 2.0]], requires_grad=True)
+    wrist = torch.tensor([[3.0, 4.0]], requires_grad=True)
+    objectives = {
+        "depth_future": (main[0, 0], 0.15),
+        "wrist_depth_future": (2.0 * wrist[0, 1], 0.15),
+    }
+
+    result = gradient_probe.measure_paired_depth_token_gradients(
+        objectives,
+        {"future": main},
+        wrist_depth_tokens={"future": wrist},
+        distributed=False,
+    )
+
+    assert result["depth_gradient/future/shared_token_group"] == 0.0
+    assert result["depth_gradient/future/main_raw_grad_norm"] == pytest.approx(1.0)
+    assert result["depth_gradient/future/wrist_raw_grad_norm"] == pytest.approx(2.0)
+    assert result["depth_gradient/future/main_loss_on_wrist_token_grad_norm"] == 0.0
+    assert result["depth_gradient/future/wrist_loss_on_main_token_grad_norm"] == 0.0
+    assert result["depth_gradient/future/main_wrist_cosine"] == pytest.approx(0.0)
+
+
+def test_paired_depth_gradient_metric_root_supports_learnable_query_parameters():
+    query = nn.Parameter(torch.tensor([[1.0, 2.0]]))
+    objectives = {
+        "depth_future": (query[0, 0], 0.15),
+        "wrist_depth_future": (-query[0, 0], 0.15),
+    }
+
+    result = gradient_probe.measure_paired_depth_token_gradients(
+        objectives,
+        {"future": query},
+        distributed=False,
+        metric_root="depth_query_gradient",
+    )
+
+    assert result["depth_query_gradient/future/shared_token_group"] == 1.0
+    assert result["depth_query_gradient/future/main_wrist_cosine"] == pytest.approx(-1.0)
 
 
 def _make_online_probe_trainer(*, completed_steps=49, sync_gradients=True):
@@ -233,6 +322,40 @@ def test_online_gradient_probe_emits_main_wrist_metrics_and_removes_private_tens
     assert metrics["timing/objective_gradient_probe"] >= 0.0
     assert "_probe_depth_current_tokens" not in output
     assert "_probe_depth_future_tokens" not in output
+
+
+def test_online_gradient_probe_records_separate_future_latent_and_query_groups():
+    trainer = _make_online_probe_trainer()
+    trainer._forward_diagnostic_kwargs()
+    main_tokens = torch.tensor([[1.0, 2.0]], requires_grad=True)
+    wrist_tokens = torch.tensor([[3.0, 4.0]], requires_grad=True)
+    main_query = nn.Parameter(torch.tensor([[5.0, 6.0]]))
+    wrist_query = nn.Parameter(torch.tensor([[7.0, 8.0]]))
+    scale = torch.tensor(1.0, requires_grad=True)
+    main_loss = main_tokens[0, 0] + main_query[0, 0]
+    wrist_loss = wrist_tokens[0, 1] + wrist_query[0, 1]
+    output = {
+        "action_loss": scale,
+        "depth_current_loss": scale * 0.0,
+        "depth_future_loss": main_loss,
+        "wrist_depth_future_loss": wrist_loss,
+        "uvd_loss": scale,
+        "uvd_absolute_loss": scale,
+        "uvd_relative_loss": scale,
+        "total_loss": scale + main_loss + wrist_loss,
+        "_probe_depth_future_tokens": main_tokens,
+        "_probe_wrist_depth_future_tokens": wrist_tokens,
+        "_probe_depth_future_query": main_query,
+        "_probe_wrist_depth_future_query": wrist_query,
+    }
+
+    metrics = trainer._pre_backward_diagnostic_metrics(output)
+
+    assert metrics["depth_gradient/future/shared_token_group"] == 0.0
+    assert metrics["depth_query_gradient/future/shared_token_group"] == 0.0
+    assert metrics["depth_gradient/future/main_raw_grad_norm"] == pytest.approx(1.0)
+    assert metrics["depth_query_gradient/future/wrist_raw_grad_norm"] == pytest.approx(1.0)
+    assert not any(key.startswith("_probe_") for key in output)
 
 
 class _SyntheticV2(nn.Module):
