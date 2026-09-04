@@ -221,6 +221,15 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         )
         self.uvd_hand_count = int(self.geometry_layout.hand_count)
         self.uvd_token_order = "time_major"
+        self.trace_coordinate_mode = str(
+            geometry.get("trace_coordinate_mode", "uvd")
+        ).lower()
+        if self.trace_coordinate_mode not in {"uv", "uvd"}:
+            raise ValueError(
+                "trace_coordinate_mode must be 'uv' or 'uvd', got "
+                f"{self.trace_coordinate_mode!r}"
+            )
+        self.trace_coordinate_dim = 2 if self.trace_coordinate_mode == "uv" else 3
         self.geometry_tokens = GeometryTokenEmbedding(hidden_dim=hidden_dim, layout=self.geometry_layout)
         self.depth_attention_pool = SharedDepthAttentionPool(hidden_dim=hidden_dim)
         depth_decoder_features = int(geometry.get("depth_decoder_features", 256))
@@ -242,7 +251,7 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         self.uvd_head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, 3),
+            nn.Linear(hidden_dim, self.trace_coordinate_dim),
         )
         self.depth_output_size = int(geometry.get("depth_output_size", geometry.get("image_size", 224)))
         self.uvd_depth_scale = float(geometry.get("uvd_depth_scale", 1.0))
@@ -314,10 +323,11 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
         pred: torch.Tensor,
         packed: PackedUVDTargets,
     ) -> dict[str, torch.Tensor]:
-        absolute = uvd_regression_loss(pred, packed.target, packed.valid)
+        target = packed.target[..., : self.trace_coordinate_dim]
+        absolute = uvd_regression_loss(pred, target, packed.valid)
         relative = uvd_adjacent_relative_loss(
             pred,
-            packed.target,
+            target,
             packed.valid,
             hand_count=self.geometry_layout.hand_count,
         )
@@ -653,7 +663,10 @@ class Qwen_GR00T_CoT_V2(Qwen_GR00T):
 
     def _predict_uvd(self, tokens: torch.Tensor) -> torch.Tensor:
         raw = self.uvd_head(_cast_to_module_dtype(tokens, self.uvd_head))
-        return torch.cat([torch.sigmoid(raw[..., :2]), F.softplus(raw[..., 2:3])], dim=-1)
+        uv = torch.sigmoid(raw[..., :2])
+        if getattr(self, "trace_coordinate_mode", "uvd") == "uv":
+            return uv
+        return torch.cat([uv, F.softplus(raw[..., 2:3])], dim=-1)
 
     def _pool_depth_summaries(
         self,

@@ -47,7 +47,15 @@ def _masked_smooth_l1(
             coordinate_weights,
             device=values.device,
             dtype=values.dtype,
-        ).view(*([1] * (values.ndim - 1)), values.shape[-1])
+        ).flatten()
+        if weights.numel() < values.shape[-1]:
+            raise ValueError(
+                f"coordinate_weights has {weights.numel()} values for "
+                f"{values.shape[-1]} coordinates"
+            )
+        weights = weights[: values.shape[-1]].view(
+            *([1] * (values.ndim - 1)), values.shape[-1]
+        )
         values = values * weights
     denominator = mask.to(dtype=values.dtype).sum().clamp_min(1.0)
     return values.sum() / denominator
@@ -83,9 +91,10 @@ def uvd_adjacent_relative_loss(
     coordinate_weights: tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> torch.Tensor:
     """Smooth-L1 on adjacent same-hand UVD deltas in time-major order."""
-    if pred.shape != target.shape or pred.ndim != 3 or pred.shape[-1] != 3:
+    if pred.shape != target.shape or pred.ndim != 3 or pred.shape[-1] not in (2, 3):
         raise ValueError(
-            f"pred/target must share shape [B,K,3], got {tuple(pred.shape)}/{tuple(target.shape)}"
+            "pred/target must share shape [B,K,C] with C in {2,3}, "
+            f"got {tuple(pred.shape)}/{tuple(target.shape)}"
         )
     if valid.shape != pred.shape[:2]:
         raise ValueError(f"valid must have shape {tuple(pred.shape[:2])}, got {tuple(valid.shape)}")
@@ -98,8 +107,13 @@ def uvd_adjacent_relative_loss(
     if point_count < 2:
         raise ValueError(f"relative UVD loss requires at least two points per hand, got {point_count}")
 
-    pred_tracks = pred.float().reshape(pred.shape[0], point_count, hand_count, 3)
-    target_tracks = target.float().reshape(target.shape[0], point_count, hand_count, 3)
+    coordinate_dim = pred.shape[-1]
+    pred_tracks = pred.float().reshape(
+        pred.shape[0], point_count, hand_count, coordinate_dim
+    )
+    target_tracks = target.float().reshape(
+        target.shape[0], point_count, hand_count, coordinate_dim
+    )
     valid_tracks = valid.to(dtype=torch.bool).reshape(valid.shape[0], point_count, hand_count)
     pred_delta = pred_tracks[:, 1:] - pred_tracks[:, :-1]
     target_delta = target_tracks[:, 1:] - target_tracks[:, :-1]

@@ -415,6 +415,12 @@ def compute_geometry_metrics(
 ) -> dict[str, float]:
     """Compute fixed-sample depth/UVD metrics for a diagnostics checkpoint."""
     uvd = predictions["uvd"].float()
+    if uvd.ndim != 3 or uvd.shape[-1] not in (2, 3):
+        raise ValueError(
+            "predicted trace must have shape [B,K,C] with C in {2,3}, "
+            f"got {tuple(uvd.shape)}"
+        )
+    coordinate_dim = int(uvd.shape[-1])
     device = uvd.device
     uvd_target_np, uvd_valid_np, _, uvd_endpoints_np = _pad_uvd_examples(
         examples,
@@ -422,7 +428,9 @@ def compute_geometry_metrics(
         hand_count=uvd_hand_count,
         order=uvd_order,
     )
-    uvd_target = torch.as_tensor(uvd_target_np, device=device)
+    uvd_target = torch.as_tensor(
+        uvd_target_np[..., :coordinate_dim], device=device
+    )
     uvd_valid = torch.as_tensor(uvd_valid_np, device=device)
     uvd_endpoints = torch.as_tensor(uvd_endpoints_np, device=device)
 
@@ -434,12 +442,12 @@ def compute_geometry_metrics(
     uvd_endpoint_valid = uvd_valid[endpoint_batch, uvd_endpoints]
     points_per_hand = uvd.shape[1] // int(uvd_hand_count)
     if uvd_order == "time_major":
-        uvd_tracks = uvd.view(uvd.shape[0], points_per_hand, int(uvd_hand_count), 3)
-        target_tracks = uvd_target.view(uvd.shape[0], points_per_hand, int(uvd_hand_count), 3)
+        uvd_tracks = uvd.view(uvd.shape[0], points_per_hand, int(uvd_hand_count), coordinate_dim)
+        target_tracks = uvd_target.view(uvd.shape[0], points_per_hand, int(uvd_hand_count), coordinate_dim)
         valid_tracks = uvd_valid.view(uvd.shape[0], points_per_hand, int(uvd_hand_count))
     else:
-        uvd_tracks = uvd.view(uvd.shape[0], int(uvd_hand_count), points_per_hand, 3).transpose(1, 2)
-        target_tracks = uvd_target.view(uvd.shape[0], int(uvd_hand_count), points_per_hand, 3).transpose(1, 2)
+        uvd_tracks = uvd.view(uvd.shape[0], int(uvd_hand_count), points_per_hand, coordinate_dim).transpose(1, 2)
+        target_tracks = uvd_target.view(uvd.shape[0], int(uvd_hand_count), points_per_hand, coordinate_dim).transpose(1, 2)
         valid_tracks = uvd_valid.view(uvd.shape[0], int(uvd_hand_count), points_per_hand).transpose(1, 2)
     segment_valid = valid_tracks[:, 1:] & valid_tracks[:, :-1]
     pred_delta = uvd_tracks[:, 1:] - uvd_tracks[:, :-1]
@@ -455,22 +463,16 @@ def compute_geometry_metrics(
         "uvd_v_mae_pixel": float((_masked_abs_mean(uvd[..., 1], uvd_target[..., 1], uvd_valid) * pixel_scale).item()),
         "uvd_xy_mae_norm": float(_masked_abs_mean(uvd[..., :2], uvd_target[..., :2], uvd_valid).item()),
         "uvd_xy_mae_pixel": float((_masked_abs_mean(uvd[..., :2], uvd_target[..., :2], uvd_valid) * max(image_size - 1, 1)).item()),
-        "uvd_depth_mae_m": float((_masked_abs_mean(uvd[..., 2:3], uvd_target[..., 2:3], uvd_valid) * depth_scale).item()),
         "uvd_u_rmse_pixel": float((_masked_rmse(uvd[..., 0], uvd_target[..., 0], uvd_valid) * pixel_scale).item()),
         "uvd_v_rmse_pixel": float((_masked_rmse(uvd[..., 1], uvd_target[..., 1], uvd_valid) * pixel_scale).item()),
         "uvd_xy_rmse_pixel": float((_masked_rmse(uvd[..., :2], uvd_target[..., :2], uvd_valid) * pixel_scale).item()),
-        "uvd_depth_rmse_m": float((_masked_rmse(uvd[..., 2:3], uvd_target[..., 2:3], uvd_valid) * depth_scale).item()),
         "uvd_u_smooth_l1": float(_masked_smooth_l1_mean(uvd[..., 0], uvd_target[..., 0], uvd_valid).item()),
         "uvd_v_smooth_l1": float(_masked_smooth_l1_mean(uvd[..., 1], uvd_target[..., 1], uvd_valid).item()),
-        "uvd_depth_smooth_l1": float(_masked_smooth_l1_mean(uvd[..., 2], uvd_target[..., 2], uvd_valid).item()),
         "uvd_adjacent_u_mae_pixel": float((_masked_abs_mean(pred_delta[..., 0], target_delta[..., 0], segment_valid) * pixel_scale).item()),
         "uvd_adjacent_v_mae_pixel": float((_masked_abs_mean(pred_delta[..., 1], target_delta[..., 1], segment_valid) * pixel_scale).item()),
-        "uvd_adjacent_depth_mae_m": float((_masked_abs_mean(pred_delta[..., 2], target_delta[..., 2], segment_valid) * depth_scale).item()),
         "uvd_adjacent_relative_smooth_l1": float(_masked_smooth_l1_mean(pred_delta, target_delta, segment_valid).item()),
         "uvd_start_xy_mae_pixel": float((_masked_abs_mean(uvd_pred_endpoints[:, :, 0, :2], uvd_target_endpoints[:, :, 0, :2], uvd_endpoint_valid[:, :, 0]) * pixel_scale).item()),
         "uvd_end_xy_mae_pixel": float((_masked_abs_mean(uvd_pred_endpoints[:, :, 1, :2], uvd_target_endpoints[:, :, 1, :2], uvd_endpoint_valid[:, :, 1]) * pixel_scale).item()),
-        "uvd_start_depth_mae_m": float((_masked_abs_mean(uvd_pred_endpoints[:, :, 0, 2:3], uvd_target_endpoints[:, :, 0, 2:3], uvd_endpoint_valid[:, :, 0]) * depth_scale).item()),
-        "uvd_end_depth_mae_m": float((_masked_abs_mean(uvd_pred_endpoints[:, :, 1, 2:3], uvd_target_endpoints[:, :, 1, 2:3], uvd_endpoint_valid[:, :, 1]) * depth_scale).item()),
         "pred/uvd_path_length_pixel": float(pred_path_mean.item()),
         "target/uvd_path_length_pixel": float(target_path_mean.item()),
         "uvd_path_length_mae_pixel": float(_masked_abs_mean((pred_segments * segment_valid).sum(dim=1), (target_segments * segment_valid).sum(dim=1), trace_valid).item()),
@@ -478,8 +480,64 @@ def compute_geometry_metrics(
         "pred/uvd_u_max": float(uvd[..., 0].max().item()),
         "pred/uvd_v_min": float(uvd[..., 1].min().item()),
         "pred/uvd_v_max": float(uvd[..., 1].max().item()),
-        "pred/uvd_depth_mean": float(uvd[..., 2].mean().item()),
     }
+    if coordinate_dim == 3:
+        metrics.update(
+            {
+                "uvd_depth_mae_m": float(
+                    (
+                        _masked_abs_mean(
+                            uvd[..., 2:3], uvd_target[..., 2:3], uvd_valid
+                        )
+                        * depth_scale
+                    ).item()
+                ),
+                "uvd_depth_rmse_m": float(
+                    (
+                        _masked_rmse(
+                            uvd[..., 2:3], uvd_target[..., 2:3], uvd_valid
+                        )
+                        * depth_scale
+                    ).item()
+                ),
+                "uvd_depth_smooth_l1": float(
+                    _masked_smooth_l1_mean(
+                        uvd[..., 2], uvd_target[..., 2], uvd_valid
+                    ).item()
+                ),
+                "uvd_adjacent_depth_mae_m": float(
+                    (
+                        _masked_abs_mean(
+                            pred_delta[..., 2],
+                            target_delta[..., 2],
+                            segment_valid,
+                        )
+                        * depth_scale
+                    ).item()
+                ),
+                "uvd_start_depth_mae_m": float(
+                    (
+                        _masked_abs_mean(
+                            uvd_pred_endpoints[:, :, 0, 2:3],
+                            uvd_target_endpoints[:, :, 0, 2:3],
+                            uvd_endpoint_valid[:, :, 0],
+                        )
+                        * depth_scale
+                    ).item()
+                ),
+                "uvd_end_depth_mae_m": float(
+                    (
+                        _masked_abs_mean(
+                            uvd_pred_endpoints[:, :, 1, 2:3],
+                            uvd_target_endpoints[:, :, 1, 2:3],
+                            uvd_endpoint_valid[:, :, 1],
+                        )
+                        * depth_scale
+                    ).item()
+                ),
+                "pred/uvd_depth_mean": float(uvd[..., 2].mean().item()),
+            }
+        )
     for depth_name in ("depth_current", "depth_future"):
         prediction = predictions.get(depth_name)
         if prediction is None:
@@ -531,11 +589,17 @@ def compute_geometry_metrics(
                     f"uvd/time_{time_index}/v_mae_pixel": float(
                         (_masked_abs_mean(pred_time[..., 1], target_time[..., 1], time_valid) * pixel_scale).item()
                     ),
-                    f"uvd/time_{time_index}/depth_mae_m": float(
-                        (_masked_abs_mean(pred_time[..., 2], target_time[..., 2], time_valid) * depth_scale).item()
-                    ),
                 }
             )
+            if coordinate_dim == 3:
+                metrics[f"uvd/time_{time_index}/depth_mae_m"] = float(
+                    (
+                        _masked_abs_mean(
+                            pred_time[..., 2], target_time[..., 2], time_valid
+                        )
+                        * depth_scale
+                    ).item()
+                )
     metrics.update(collect_batch_valid_ratios(examples))
     return metrics
 
@@ -573,7 +637,9 @@ def save_prediction_bundle(
         # NumPy cannot represent torch.bfloat16. Geometry inference follows the
         # model's mixed-precision dtype, so persist predictions as float32.
         "uvd": predictions["uvd"].detach().cpu().float().numpy(),
-        "uvd_target": uvd_target,
+        "uvd_target": uvd_target[
+            ..., : int(predictions["uvd"].shape[-1])
+        ],
         "uvd_valid_mask": uvd_valid,
         "uvd_time": uvd_time,
         "uvd_endpoint_indices": uvd_endpoints,

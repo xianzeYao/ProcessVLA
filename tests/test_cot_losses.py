@@ -80,6 +80,17 @@ class CotLossTest(unittest.TestCase):
 
         self.assertAlmostEqual(float(loss), 1.0 / 3.0, places=6)
 
+    def test_adjacent_relative_loss_supports_uv_only_coordinates(self):
+        target = torch.zeros(1, 3, 2)
+        pred = torch.tensor(
+            [[[0.0, 0.0], [1.0, 0.0], [3.0, 0.0]]]
+        )
+        valid = torch.ones(1, 3, dtype=torch.bool)
+
+        loss = uvd_adjacent_relative_loss(pred, target, valid, hand_count=1)
+
+        self.assertAlmostEqual(float(loss), 0.5, places=6)
+
     def test_adjacent_relative_loss_requires_both_segment_endpoints_valid(self):
         target = torch.zeros(1, 3, 3)
         pred = torch.tensor(

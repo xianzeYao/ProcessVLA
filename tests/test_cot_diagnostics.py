@@ -104,6 +104,39 @@ class CotDiagnosticsTest(unittest.TestCase):
         self.assertEqual(metrics["uvd_end_xy_mae_pixel"], 0.0)
         self.assertNotIn("endpoint_geometry_mae_m", metrics)
 
+    def test_uv_only_diagnostics_report_uv_metrics_without_depth_keys(self):
+        target = np.asarray(
+            [[0.0, 0.0, 9.0], [0.1, 0.2, 8.0], [0.2, 0.4, 7.0]],
+            dtype=np.float32,
+        )
+        pred_uv = target[None, ..., :2].copy()
+        pred_uv[..., 0] += 0.1
+        predictions = {"uvd": torch.from_numpy(pred_uv)}
+        examples = [
+            {
+                "uvd": target,
+                "uvd_valid_mask": np.ones(3, dtype=np.bool_),
+                "uvd_time": np.asarray([0.0, 0.5, 1.0], dtype=np.float32),
+            }
+        ]
+
+        metrics = compute_geometry_metrics(
+            predictions,
+            examples,
+            depth_scale=1.0,
+            image_size=101,
+            uvd_hand_count=1,
+            uvd_order="time_major",
+            include_uvd_time_metrics=True,
+        )
+
+        self.assertAlmostEqual(metrics["uvd_u_mae_pixel"], 10.0, places=5)
+        self.assertAlmostEqual(metrics["uvd_v_mae_pixel"], 0.0, places=5)
+        self.assertNotIn("uvd_depth_mae_m", metrics)
+        self.assertNotIn("uvd_adjacent_depth_mae_m", metrics)
+        self.assertNotIn("pred/uvd_depth_mean", metrics)
+        self.assertNotIn("uvd/time_0/depth_mae_m", metrics)
+
     def test_uvd_diagnostics_split_coordinates_and_adjacent_motion(self):
         target = np.asarray(
             [

@@ -37,6 +37,8 @@ def make_uninitialized_model(
         separate_wrist_future_depth=separate_wrist_future_depth,
     )
     model.include_depth_in_action_condition = include_depth
+    model.trace_coordinate_mode = "uvd"
+    model.trace_coordinate_dim = 3
     return model
 
 
@@ -96,6 +98,41 @@ def test_v2_uvd_objective_combines_all_point_and_adjacent_relative_losses():
         losses["total"],
         torch.tensor((1.0 / 3.0) + 0.1 * (1.0 / 3.0)),
     )
+
+
+def test_v2_uv_only_objective_slices_depth_from_packed_targets():
+    model = make_uninitialized_model(depth_queries=1, points=3, hands=1)
+    model.trace_coordinate_mode = "uv"
+    model.trace_coordinate_dim = 2
+    model.lambda_uvd_relative = 0.1
+    packed = PackedUVDTargets(
+        target=torch.tensor(
+            [[[0.0, 0.0, 100.0], [1.0, 0.0, 200.0], [3.0, 0.0, 300.0]]]
+        ),
+        valid=torch.ones(1, 3, dtype=torch.bool),
+        times=torch.tensor([[0.0, 0.5, 1.0]]),
+        hand_ids=torch.zeros(1, 3, dtype=torch.long),
+    )
+    pred = packed.target[..., :2].clone()
+
+    losses = model._compute_uvd_losses(pred, packed)
+
+    assert losses["absolute"].item() == pytest.approx(0.0)
+    assert losses["relative"].item() == pytest.approx(0.0)
+    assert losses["total"].item() == pytest.approx(0.0)
+
+
+def test_v2_uv_only_decoder_outputs_bounded_two_coordinate_trace():
+    model = make_uninitialized_model()
+    torch.nn.Module.__init__(model)
+    model.trace_coordinate_mode = "uv"
+    model.trace_coordinate_dim = 2
+    model.uvd_head = nn.Linear(4, 2)
+
+    prediction = model._predict_uvd(torch.randn(2, 12, 4))
+
+    assert prediction.shape == (2, 12, 2)
+    assert torch.all((prediction >= 0.0) & (prediction <= 1.0))
 
 
 def test_action_condition_contains_all_fixed_uvd_slots_and_excludes_depth_tokens():

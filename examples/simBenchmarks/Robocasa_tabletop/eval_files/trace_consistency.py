@@ -152,8 +152,11 @@ def reshape_geometry_uvd(
     uvd = np.asarray(geometry["uvd"], dtype=np.float32)
     times = np.asarray(geometry["uvd_time"], dtype=np.float32)
     track_ids = np.asarray(geometry["uvd_landmark_ids"], dtype=np.int64)
-    if uvd.ndim != 3 or uvd.shape[-1] != 3:
-        raise ValueError(f"geometry uvd must have shape [B,N,3], got {uvd.shape}")
+    if uvd.ndim != 3 or uvd.shape[-1] not in (2, 3):
+        raise ValueError(
+            "geometry trace must have shape [B,N,C] with C in {2,3}, "
+            f"got {uvd.shape}"
+        )
     if times.shape != uvd.shape[:2] or track_ids.shape != uvd.shape[:2]:
         raise ValueError(
             "uvd_time and uvd_landmark_ids must have shape "
@@ -174,7 +177,9 @@ def reshape_geometry_uvd(
             f"flattened UVD count {len(flat_uvd)} is incompatible with tracks {ordered_ids.tolist()}"
         )
     time_count = len(flat_uvd) // track_count
-    restored_uvd = flat_uvd.reshape(time_count, track_count, 3)
+    restored_uvd = flat_uvd.reshape(
+        time_count, track_count, uvd.shape[-1]
+    )
     restored_times = flat_times.reshape(time_count, track_count)
     restored_ids = flat_ids.reshape(time_count, track_count)
     if not np.all(restored_ids == ordered_ids[None, :]):
@@ -196,11 +201,13 @@ def _interpolate_trace(
     executed_steps: int,
 ) -> np.ndarray:
     query = np.arange(executed_steps + 1, dtype=np.float32)
+    coordinate_dim = predicted_uvd.shape[-1]
     result = np.empty(
-        (executed_steps + 1, predicted_uvd.shape[1], 3), dtype=np.float32
+        (executed_steps + 1, predicted_uvd.shape[1], coordinate_dim),
+        dtype=np.float32,
     )
     for track_index in range(predicted_uvd.shape[1]):
-        for coordinate in range(3):
+        for coordinate in range(coordinate_dim):
             result[:, track_index, coordinate] = np.interp(
                 query,
                 trace_offsets,
@@ -239,13 +246,22 @@ def evaluate_trace_decision(
     predicted = np.asarray(predicted_uvd, dtype=np.float32)
     realized = np.asarray(realized_uvd, dtype=np.float32)
     valid = np.asarray(realized_valid, dtype=np.bool_)
-    if predicted.ndim != 3 or predicted.shape[-1] != 3:
-        raise ValueError(f"predicted_uvd must have shape [T,H,3], got {predicted.shape}")
-    if realized.ndim != 3 or realized.shape[1:] != predicted.shape[1:]:
+    if predicted.ndim != 3 or predicted.shape[-1] not in (2, 3):
         raise ValueError(
-            "realized_uvd must have shape [executed+1,H,3] matching prediction, "
+            "predicted trace must have shape [T,H,C] with C in {2,3}, "
+            f"got {predicted.shape}"
+        )
+    if (
+        realized.ndim != 3
+        or realized.shape[1] != predicted.shape[1]
+        or realized.shape[2] < predicted.shape[2]
+    ):
+        raise ValueError(
+            "realized_uvd must have shape [executed+1,H,C_real] with matching "
+            "tracks and at least the predicted coordinates, "
             f"got {realized.shape}/{predicted.shape}"
         )
+    realized = realized[..., : predicted.shape[-1]]
     if valid.shape != realized.shape[:2]:
         raise ValueError(f"realized_valid must have shape {realized.shape[:2]}, got {valid.shape}")
     if len(realized) < 1:
@@ -268,6 +284,7 @@ def evaluate_trace_decision(
     interpolated_offsets = np.arange(executed_steps + 1, dtype=np.int64)
     return {
         "schema_version": 1,
+        "trace_coordinate_mode": "uv" if predicted.shape[-1] == 2 else "uvd",
         "action_horizon": int(action_horizon),
         "image_size": image_size,
         "executed_steps": executed_steps,
@@ -302,21 +319,29 @@ def _summarize_blocks(
             "depth_mae_m": None,
             "depth_rmse_m": None,
         }
-    joined_error = np.concatenate([value.reshape(-1, 3) for value in errors], axis=0)
+    coordinate_dims = {value.shape[-1] for value in errors}
+    if len(coordinate_dims) != 1:
+        raise ValueError(f"trace blocks mix coordinate dimensions: {coordinate_dims}")
+    coordinate_dim = coordinate_dims.pop()
+    joined_error = np.concatenate(
+        [value.reshape(-1, coordinate_dim) for value in errors], axis=0
+    )
     joined_valid = np.concatenate([value.reshape(-1) for value in valid], axis=0)
     selected = joined_error[joined_valid]
     if len(selected) == 0:
         return _summarize_blocks([], image_size=image_size)
     pixel_scale = float(image_size - 1)
     uv_px = selected[:, :2] * pixel_scale
-    depth = selected[:, 2]
+    depth = selected[:, 2] if coordinate_dim == 3 else None
     return {
         "sample_count": int(len(selected)),
         "u_mae_px": float(np.mean(uv_px[:, 0])),
         "v_mae_px": float(np.mean(uv_px[:, 1])),
         "uv_l2_mean_px": float(np.mean(np.linalg.norm(uv_px, axis=1))),
-        "depth_mae_m": float(np.mean(depth)),
-        "depth_rmse_m": float(np.sqrt(np.mean(np.square(depth)))),
+        "depth_mae_m": float(np.mean(depth)) if depth is not None else None,
+        "depth_rmse_m": (
+            float(np.sqrt(np.mean(np.square(depth)))) if depth is not None else None
+        ),
     }
 
 
