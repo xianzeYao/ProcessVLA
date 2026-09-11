@@ -263,3 +263,5 @@ docs/superpowers/
 /artifacts/
 /examples/modelExtensions/CoT/scripts/recover_interrupted_libero_evals_20260826.sh
 /examples/simBenchmarks/LIBERO-plus/eval_files/recover_slice_from_jsonl.py
+/examples/modelExtensions/CoT/scripts/render_libero_rgb_depth_uvd.py
+/robocasa_top5_uvd_valid_*.zip
