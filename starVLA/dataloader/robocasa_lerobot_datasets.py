@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import numpy as np
+from PIL import Image
 from examples.modelExtensions.CoT.scripts.robocasa_rerender_geometry import dial_content_region_mask
 
 from starVLA.dataloader.gr00t_lerobot.cot_geometry import CoTLeRobotSingleDataset, _read_npz_array, project_eef_to_agentview_uvd
@@ -22,12 +23,26 @@ class RoboCasaGR1DataConfig:
     state_keys = ["state.left_arm", "state.right_arm", "state.left_hand", "state.right_hand", "state.waist"]
     action_keys = ["action.left_arm", "action.right_arm", "action.left_hand", "action.right_hand", "action.waist"]
     language_keys = ["annotation.human.coarse_action"]
-    observation_indices = [0]
     action_indices = list(range(16))
+
+    def __init__(self, data_cfg: Any = None) -> None:
+        data_cfg = data_cfg or {}
+        cot_geometry = data_cfg.get("cot_geometry", {})
+        future_alignment = cot_geometry.get("future_image_alignment", False)
+        if not isinstance(future_alignment, bool):
+            raise ValueError(
+                "cot_geometry.future_image_alignment must be a boolean, "
+                f"got {future_alignment!r}"
+            )
+        horizon = int(cot_geometry.get("action_horizon", 16))
+        self.observation_indices = [0]
+        self.video_observation_indices = (
+            [0, horizon] if future_alignment else [0]
+        )
 
     def modality_config(self):
         return {
-            "video": ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.video_keys),
+            "video": ModalityConfig(delta_indices=self.video_observation_indices, modality_keys=self.video_keys),
             "state": ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.state_keys),
             "action": ModalityConfig(delta_indices=self.action_indices, modality_keys=self.action_keys),
             "language": ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.language_keys),
@@ -44,6 +59,30 @@ class RoboCasaGR1DataConfig:
 
 class RoboCasaCoTLeRobotSingleDataset(CoTLeRobotSingleDataset):
     """CoT geometry variant that projects bilateral thumb-index pinch fields."""
+
+    def _pack_sample(self, data: dict) -> dict:
+        sample = super()._pack_sample(data)
+        enabled = self._cot_option("future_image_alignment", False)
+        if not isinstance(enabled, bool):
+            raise ValueError(
+                "future_image_alignment must be a boolean, "
+                f"got {enabled!r}"
+            )
+        if not enabled:
+            return sample
+        video_key = self.modality_keys["video"][0]
+        frames = data[video_key]
+        if len(frames) != 2:
+            raise ValueError(
+                "DA3 feature alignment expects exactly current/future RGB frames, "
+                f"got {len(frames)} for {video_key}"
+            )
+        target_size = int(self._cot_option("image_size", 224))
+        sample["future_image"] = Image.fromarray(frames[1]).convert("RGB").resize(
+            (target_size, target_size)
+        )
+        return sample
+
     def _load_episode_geometry(self, trajectory_id: int):
         cached = self._cot_cache.get(trajectory_id)
         if cached is not None:
@@ -109,7 +148,7 @@ def get_vla_dataset(data_cfg: Any, mode: str = "train", balance_dataset_weights:
     missing = [str(path) for path in paths if not path.exists()]
     if missing:
         raise FileNotFoundError(f"RoboCasa dataset does not exist: {missing}")
-    config = RoboCasaGR1DataConfig()
+    config = RoboCasaGR1DataConfig(data_cfg)
     dataset_cls = RoboCasaCoTLeRobotSingleDataset if bool(data_cfg.get("enable_cot_geometry", False)) else LeRobotSingleDataset
     datasets = [
         dataset_cls(path, modality_configs=config.modality_config(), transforms=config.transform(), embodiment_tag=config.embodiment_tag, video_backend=data_cfg.get("video_backend", "torchvision_av"), delete_pause_frame=bool(data_cfg.get("delete_pause_frame", False)), data_cfg=data_cfg)

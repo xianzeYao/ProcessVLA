@@ -101,6 +101,16 @@ class CotV2Trainer(CotV1Trainer):
     ) -> tuple[dict[str, float], float]:
         metrics: dict[str, float] = {}
         weighted_total = 0.0
+        da3_key = "da3_feature_alignment_loss"
+        if da3_key in output_dict:
+            value = output_dict[da3_key].item()
+            weighted = (
+                float(getattr(self.model, "lambda_da3_feature_alignment"))
+                * value
+            )
+            metrics[da3_key] = value
+            metrics[f"weighted_{da3_key}"] = weighted
+            weighted_total += weighted
         for branch in ("current", "future"):
             key = f"wrist_depth_{branch}_loss"
             if key not in output_dict:
